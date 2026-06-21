@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "ChatGPT 生图队列助手",
+  "version": "0.1.0",
+  "description": "接管本地生图队列，在 ChatGPT 中执行任务并保存图片结果。",
+  "permissions": ["tabs", "scripting", "storage", "downloads", "alarms"],
+  "host_permissions": [
+    "https://chatgpt.com/*",
+    "http://127.0.0.1:17321/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://chatgpt.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "ChatGPT 生图队列助手",
+    "default_popup": "popup.html"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "@wechat-topic/extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@wechat-topic/shared": "0.1.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.287",
+    "esbuild": "^0.28.1",
+    "typescript": "^5.9.0"
+  }
+}

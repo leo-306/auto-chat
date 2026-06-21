@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ChatGPT 生图队列助手</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div>
+        <p class="eyebrow">ChatGPT Image Jobs</p>
+        <h1>生图任务助手</h1>
+      </div>
+      <span id="server" class="status-pill">检测中</span>
+    </header>
+
+    <section class="panel">
+      <div class="section-head">
+        <div>
+          <h2>执行控制</h2>
+          <p>自动执行会持续领取队列；手动调度只领取一轮。</p>
+        </div>
+      </div>
+      <div class="actions">
+        <button id="pause" class="primary">读取中</button>
+        <button id="tick">立即领取一轮</button>
+        <a href="http://127.0.0.1:17321/" target="_blank">打开本地控制台</a>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="section-head">
+        <div>
+          <h2>正在处理</h2>
+          <p>当前由插件接管的 ChatGPT 标签页。</p>
+        </div>
+      </div>
+      <div id="workers"></div>
+    </section>
+
+    <section class="panel">
+      <div class="section-head">
+        <div>
+          <h2>诊断工具</h2>
+          <p>用于检查页面状态或模拟任务结果。</p>
+        </div>
+      </div>
+      <div class="debug-grid">
+        <button id="inspect">检查当前 ChatGPT 页</button>
+        <button id="open-tab">切到任务标签页</button>
+        <button id="debug-success">模拟：保存成功</button>
+        <button id="debug-error" class="warn">模拟：可重试错误</button>
+        <button id="debug-stalled" class="warn">模拟：生成卡住</button>
+        <button id="debug-timeout" class="danger">模拟：需要人工接管</button>
+      </div>
+      <pre id="debug-output">暂无调试输出</pre>
+    </section>
+    <script src="popup.js"></script>
+  </body>
+</html>

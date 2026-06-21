@@ -1,0 +1,29 @@
+{
+  "name": "wechat-topic",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @wechat-topic/shared && npm run build -w @wechat-topic/extension && npm run build -w @wechat-topic/server",
+    "check": "npm run build -w @wechat-topic/shared && npm run check --workspaces --if-present",
+    "test": "npm run build -w @wechat-topic/shared && npm run test --workspaces --if-present",
+    "dev:server": "npm run dev -w @wechat-topic/server",
+    "job:add": "npm run cli -w @wechat-topic/server -- job:add",
+    "job:list": "npm run cli -w @wechat-topic/server -- job:list",
+    "job:show": "npm run cli -w @wechat-topic/server -- job:show",
+    "job:watch": "npm run cli -w @wechat-topic/server -- job:watch",
+    "job:listen": "npm run cli -w @wechat-topic/server -- job:listen",
+    "job:dispatch": "npm run cli -w @wechat-topic/server -- job:dispatch",
+    "job:doctor": "npm run cli -w @wechat-topic/server -- job:doctor",
+    "job:retry": "npm run cli -w @wechat-topic/server -- job:retry",
+    "job:open": "npm run cli -w @wechat-topic/server -- job:open"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "typescript": "^5.9.0"
+  }
+}
