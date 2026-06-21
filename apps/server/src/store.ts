@@ -18,6 +18,7 @@ import { ResolvedPaths, resolvePaths } from "./paths.js";
 
 type JobRow = {
   id: string;
+  mode: Job["mode"];
   status: JobStatus;
   prompt: string;
   expected_image_count: number;
@@ -30,6 +31,7 @@ type JobRow = {
   error_message: string | null;
   worker_id: string | null;
   output_files: string;
+  text_output_file: string | null;
   screenshot_files: string;
   created_at: string;
   updated_at: string;
@@ -68,26 +70,28 @@ export class JobStore {
       throw new DuplicateJobError(id);
     }
     const now = new Date().toISOString();
-    const expectedImageCount = input.expectedImageCount ?? this.config.expectedImageCount;
     fs.mkdirSync(path.join(this.paths.jobDir(id), "source"), { recursive: true });
     fs.mkdirSync(path.join(this.paths.jobDir(id), "outputs"), { recursive: true });
     fs.mkdirSync(path.join(this.paths.jobDir(id), "screenshots"), { recursive: true });
     fs.writeFileSync(this.paths.jobFile(id, "prompt.txt"), withJobId(id, input.prompt));
-    const sourceImages = this.normalizeSourceImages(id, input.sourceImages);
+    const sourceImages = this.normalizeSourceImages(id, input.sourceImages ?? []);
+    const mode = input.mode ?? "image";
+    const expectedImageCount = mode === "text" ? 0 : input.expectedImageCount ?? this.config.expectedImageCount;
 
     this.run(
       `insert into jobs (
-        id, status, prompt, expected_image_count, source_images, metadata,
+        id, mode, status, prompt, expected_image_count, source_images, metadata,
         conversation_url, tab_id, attempt, refresh_count, error_message,
-        worker_id, output_files, screenshot_files, created_at, updated_at
-      ) values (?, ?, ?, ?, ?, ?, null, null, 0, 0, null, null, ?, ?, ?, ?)`,
+        worker_id, output_files, text_output_file, screenshot_files, created_at, updated_at
+      ) values (?, ?, ?, ?, ?, ?, ?, null, null, 0, 0, null, null, ?, null, ?, ?, ?)`,
       [
         id,
+        mode,
         "queued",
         withJobId(id, input.prompt),
         expectedImageCount,
         JSON.stringify(sourceImages),
-        JSON.stringify(input.metadata),
+        JSON.stringify(input.metadata ?? {}),
         JSON.stringify([]),
         JSON.stringify([]),
         now,
@@ -196,7 +200,7 @@ export class JobStore {
 
   saveArtifact(id: string, artifact: ArtifactRequest): { path: string; job: Job } {
     this.mustGet(id);
-    const folder = artifact.kind === "output"
+    const folder = artifact.kind === "output" || artifact.kind === "text_output"
       ? "outputs"
       : artifact.kind === "screenshot"
         ? "screenshots"
@@ -212,6 +216,9 @@ export class JobStore {
     const job = this.mustGet(id);
     if (artifact.kind === "output") {
       this.setJsonColumn(id, "output_files", [...job.outputFiles, target]);
+    }
+    if (artifact.kind === "text_output") {
+      this.setTextOutput(id, target);
     }
     if (artifact.kind === "screenshot") {
       this.setJsonColumn(id, "screenshot_files", [...job.screenshotFiles, target]);
@@ -267,6 +274,7 @@ export class JobStore {
     this.db.run(`
       create table if not exists jobs (
         id text primary key,
+        mode text not null default 'image',
         status text not null,
         prompt text not null,
         expected_image_count integer not null,
@@ -279,6 +287,7 @@ export class JobStore {
         error_message text,
         worker_id text,
         output_files text not null,
+        text_output_file text,
         screenshot_files text not null,
         created_at text not null,
         updated_at text not null
@@ -288,6 +297,8 @@ export class JobStore {
         value text not null
       );
     `);
+    this.addColumnIfMissing("jobs", "mode", "text not null default 'image'");
+    this.addColumnIfMissing("jobs", "text_output_file", "text");
   }
 
   private loadConfig(): void {
@@ -333,6 +344,22 @@ export class JobStore {
     this.writeMeta(id);
   }
 
+  private setTextOutput(id: string, target: string): void {
+    this.run("update jobs set output_files = ?, text_output_file = ?, updated_at = ? where id = ?", [
+      JSON.stringify([target]),
+      target,
+      new Date().toISOString(),
+      id
+    ]);
+    this.writeMeta(id);
+  }
+
+  private addColumnIfMissing(table: string, column: string, definition: string): void {
+    const columns = this.query<{ name: string }>(`pragma table_info(${table})`);
+    if (columns.some(existing => existing.name === column)) return;
+    this.db.run(`alter table ${table} add column ${column} ${definition}`);
+  }
+
   private mustGet(id: string): Job {
     const job = this.getJob(id);
     if (!job) throw new Error(`Job not found: ${id}`);
@@ -363,6 +390,7 @@ export class JobStore {
 function rowToJob(row: JobRow): Job {
   return {
     id: row.id,
+    mode: row.mode ?? "image",
     status: row.status,
     prompt: row.prompt,
     expectedImageCount: row.expected_image_count,
@@ -375,6 +403,7 @@ function rowToJob(row: JobRow): Job {
     errorMessage: row.error_message,
     workerId: row.worker_id,
     outputFiles: JSON.parse(row.output_files),
+    textOutputFile: row.text_output_file,
     screenshotFiles: JSON.parse(row.screenshot_files),
     createdAt: row.created_at,
     updatedAt: row.updated_at

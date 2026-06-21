@@ -1,100 +1,176 @@
+#!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import open from "open";
+import type { Job, JobStatus } from "@wechat-topic/shared";
 import { workspaceRoot } from "./paths.js";
 
 const baseUrl = process.env.JOB_SERVER_URL ?? "http://127.0.0.1:17321";
+const terminalStatuses = new Set<JobStatus>(["done", "failed_final", "needs_manual"]);
 
-async function main(): Promise<void> {
-  const [cmd, ...args] = process.argv.slice(2);
-  if (!cmd) return usage();
+type CliOptions = {
+  json: boolean;
+  replace: boolean;
+  autoId: boolean;
+};
 
-  if (cmd === "job:add") {
-    const file = readFlag(args, "--file");
-    if (!file) throw new Error("Missing --file");
+type ListRow = {
+  id: string;
+  mode: Job["mode"];
+  status: JobStatus;
+  progress: string;
+  result: string;
+  updatedAt: string;
+};
+
+export async function main(argv = process.argv.slice(2)): Promise<void> {
+  const [rawCommand, ...rawArgs] = argv;
+  const command = normalizeCommand(rawCommand ?? "--help");
+  const args = rawArgs.filter(arg => arg !== "--");
+  const options = parseOptions(args);
+
+  if (command === "help" || command === "--help" || command === "-h") {
+    usage();
+    return;
+  }
+
+  if (command === "server") {
+    await import("./index.js");
+    return;
+  }
+
+  if (command === "add") {
+    const file = args.find(arg => !arg.startsWith("-")) ?? readFlag(args, "--file");
+    if (!file) throw new Error("缺少任务文件。用法：auto-chat add examples/job.json");
     const body = JSON.parse(fs.readFileSync(resolveInputFile(file), "utf8"));
-    if (args.includes("--auto-id")) delete body.id;
-    const path = args.includes("--replace") ? "/jobs?replace=1" : "/jobs";
-    const job = await request(path, { method: "POST", body });
-    console.log(JSON.stringify(job, null, 2));
+    if (options.autoId) delete body.id;
+    const apiPath = options.replace ? "/jobs?replace=1" : "/jobs";
+    const job = await request<Job>(apiPath, { method: "POST", body });
+    print(options.json ? JSON.stringify(job, null, 2) : formatAddResult(job));
     return;
   }
 
-  if (cmd === "job:list") {
-    const jobs = await request("/jobs");
-    console.table(jobs.map((job: any) => ({
-      id: job.id,
-      status: job.status,
-      attempt: job.attempt,
-      outputs: job.outputFiles.length,
-      updatedAt: job.updatedAt
-    })));
-    return;
-  }
-
-  if (cmd === "job:show") {
-    const id = args[0];
-    if (!id) throw new Error("Missing job id");
-    console.log(JSON.stringify(await request(`/jobs/${id}`), null, 2));
-    return;
-  }
-
-  if (cmd === "job:watch") {
-    const id = args[0];
-    if (!id) throw new Error("Missing job id");
-    let last = "";
-    while (true) {
-      const job = await request(`/jobs/${id}`);
-      const line = `${new Date().toLocaleTimeString()} ${job.id} ${job.status} outputs=${job.outputFiles.length} error=${job.errorMessage ?? ""}`;
-      if (line !== last) {
-        console.log(line);
-        last = line;
-      }
-      if (["done", "failed_final", "needs_manual"].includes(job.status)) break;
-      await new Promise(resolve => setTimeout(resolve, 5000));
+  if (command === "list") {
+    const jobs = await request<Job[]>("/jobs");
+    if (options.json) {
+      print(JSON.stringify(jobs, null, 2));
+    } else {
+      console.table(jobs.map(formatListRow));
     }
     return;
   }
 
-  if (cmd === "job:retry") {
-    const id = args[0];
-    if (!id) throw new Error("Missing job id");
-    console.log(JSON.stringify(await request(`/jobs/${id}/retry`, { method: "POST" }), null, 2));
+  if (command === "show") {
+    const id = args.find(arg => !arg.startsWith("-"));
+    if (!id) throw new Error("缺少任务 id。用法：auto-chat show <jobId>");
+    const job = await request<Job>(`/jobs/${id}`);
+    print(options.json ? JSON.stringify(job, null, 2) : formatJobSummary(job));
     return;
   }
 
-  if (cmd === "job:open") {
-    const id = args[0];
-    if (!id) throw new Error("Missing job id");
-    const job = await request(`/jobs/${id}`);
+  if (command === "watch") {
+    const id = args.find(arg => !arg.startsWith("-"));
+    if (!id) throw new Error("缺少任务 id。用法：auto-chat watch <jobId>");
+    await watch(id);
+    return;
+  }
+
+  if (command === "retry") {
+    const id = args.find(arg => !arg.startsWith("-"));
+    if (!id) throw new Error("缺少任务 id。用法：auto-chat retry <jobId>");
+    const job = await request<Job>(`/jobs/${id}/retry`, { method: "POST" });
+    print(options.json ? JSON.stringify(job, null, 2) : formatAddResult(job));
+    return;
+  }
+
+  if (command === "open") {
+    const id = args.find(arg => !arg.startsWith("-"));
+    if (!id) throw new Error("缺少任务 id。用法：auto-chat open <jobId>");
+    const job = await request<Job>(`/jobs/${id}`);
     await open(job.conversationUrl ?? `${baseUrl}/jobs/${id}`);
     return;
   }
 
-  if (cmd === "job:doctor") {
-    const id = args[0];
-    if (!id) throw new Error("Missing job id");
-    const job = await request(`/jobs/${id}`);
-    console.log(formatDoctor(job));
+  if (command === "doctor") {
+    const id = args.find(arg => !arg.startsWith("-"));
+    if (!id) throw new Error("缺少任务 id。用法：auto-chat doctor <jobId>");
+    const job = await request<Job>(`/jobs/${id}`);
+    print(options.json ? JSON.stringify(job, null, 2) : formatDoctor(job));
     return;
   }
 
-  if (cmd === "job:listen") {
-    const id = args[0];
-    await listen(id);
+  if (command === "listen") {
+    const id = args.find(arg => !arg.startsWith("-"));
+    await listen(id, options);
     return;
   }
 
-  if (cmd === "job:dispatch") {
-    console.log(JSON.stringify(await request("/dispatch", { method: "POST" }), null, 2));
+  if (command === "dispatch") {
+    const dispatch = await request("/dispatch", { method: "POST" });
+    print(options.json ? JSON.stringify(dispatch, null, 2) : "已请求插件执行一次调度。");
     return;
   }
 
-  usage();
+  throw new Error(`未知命令：${rawCommand ?? ""}\n运行 auto-chat --help 查看可用命令。`);
 }
 
-async function request(path: string, options: { method?: string; body?: unknown } = {}): Promise<any> {
-  const response = await fetch(`${baseUrl}${path}`, {
+export function normalizeCommand(command: string): string {
+  const legacy = /^job:(.+)$/.exec(command);
+  return legacy ? legacy[1] : command;
+}
+
+export function formatListRow(job: Job): ListRow {
+  return {
+    id: job.id,
+    mode: job.mode,
+    status: job.status,
+    progress: formatProgress(job),
+    result: formatResult(job),
+    updatedAt: job.updatedAt
+  };
+}
+
+export function formatJobSummary(job: Job): string {
+  const lines = [
+    `任务: ${job.id}`,
+    `模式: ${formatMode(job.mode)}`,
+    `状态: ${formatStatus(job.status)}`,
+    `进度: ${formatProgress(job)}`,
+    `结果: ${formatResult(job) || "暂无"}`
+  ];
+  if (job.mode === "text") {
+    const preview = readTextPreview(job.textOutputFile);
+    if (preview) lines.push(`预览: ${preview}`);
+  }
+  if (job.conversationUrl) lines.push(`对话: ${job.conversationUrl}`);
+  if (job.errorMessage) lines.push(`错误: ${job.errorMessage}`);
+  lines.push(`更新: ${job.updatedAt}`);
+  return lines.join("\n");
+}
+
+export function formatDoctor(job: Job): string {
+  const lines = [doctorHeadline(job), formatJobSummary(job)];
+
+  if (job.status === "done") {
+    lines.push(job.mode === "text"
+      ? `下一步: 读取 ${displayPath(job.textOutputFile ?? job.outputFiles[0] ?? "")}`
+      : "下一步: 使用输出图片；如需确认顺序，查看 events.jsonl 中的 image_order。");
+  } else if (job.status === "failed_retryable") {
+    lines.push(`下一步: auto-chat retry ${job.id}`);
+  } else if (job.status === "needs_manual" || job.status === "failed_final") {
+    lines.push(`下一步: auto-chat open ${job.id}`);
+  } else if (job.status === "stalled" || job.status === "refreshing") {
+    lines.push(`下一步: auto-chat listen ${job.id}`);
+  } else {
+    lines.push(`下一步: auto-chat listen ${job.id}`);
+  }
+
+  return lines.join("\n");
+}
+
+async function request<T>(apiPath: string, options: { method?: string; body?: unknown } = {}): Promise<T> {
+  const response = await fetch(`${baseUrl}${apiPath}`, {
     method: options.method ?? "GET",
     headers: options.body ? { "content-type": "application/json" } : undefined,
     body: options.body ? JSON.stringify(options.body) : undefined
@@ -102,11 +178,19 @@ async function request(path: string, options: { method?: string; body?: unknown 
   if (!response.ok) {
     const text = await response.text();
     if (response.status === 409) {
-      throw new Error(`${text}\n提示：如果想复用同一个 id，请用 --replace；如果想创建新任务，请用 --auto-id。`);
+      throw new Error(`${text}\n提示：复用同一个 id 用 --replace；创建新任务用 --auto-id。`);
     }
     throw new Error(`${response.status} ${text}`);
   }
-  return response.json();
+  return response.json() as Promise<T>;
+}
+
+function parseOptions(args: string[]): CliOptions {
+  return {
+    json: args.includes("--json"),
+    replace: args.includes("--replace"),
+    autoId: args.includes("--auto-id")
+  };
 }
 
 function readFlag(args: string[], flag: string): string | undefined {
@@ -121,20 +205,35 @@ function resolveInputFile(file: string): string {
   return path.resolve(workspaceRoot, file);
 }
 
-async function listen(jobId?: string): Promise<void> {
-  if (jobId) {
+async function watch(jobId: string): Promise<void> {
+  let last = "";
+  while (true) {
+    const job = await request<Job>(`/jobs/${jobId}`);
+    const line = `${new Date().toLocaleTimeString()} ${job.id} ${formatStatus(job.status)} ${formatProgress(job)} ${job.errorMessage ?? ""}`.trim();
+    if (line !== last) {
+      print(line);
+      last = line;
+    }
+    if (terminalStatuses.has(job.status)) break;
+    await sleep(5000);
+  }
+}
+
+async function listen(jobId: string | undefined, options: CliOptions): Promise<void> {
+  if (jobId && !options.json) {
     try {
-      const job = await request(`/jobs/${jobId}`);
-      console.log(`${new Date().toISOString()} ${job.id} ${job.status} ${job.errorMessage ?? ""}`.trim());
+      const job = await request<Job>(`/jobs/${jobId}`);
+      print(`[${time()}] ${job.id} ${formatStatus(job.status)} ${formatProgress(job)}`);
     } catch (error) {
-      console.log(`initial status unavailable: ${String(error)}`);
+      print(`[${time()}] 初始状态不可用：${String(error)}`);
     }
   }
+
   const response = await fetch(`${baseUrl}/events`);
   if (!response.ok || !response.body) {
     const text = await response.text();
     if (response.status === 404) {
-      throw new Error("SSE route /events is unavailable. Please restart npm run dev:server.");
+      throw new Error("SSE 路由 /events 不可用。请重启 auto-chat server。");
     }
     throw new Error(`${response.status} ${text}`);
   }
@@ -149,72 +248,149 @@ async function listen(jobId?: string): Promise<void> {
     while (index >= 0) {
       const chunk = buffer.slice(0, index);
       buffer = buffer.slice(index + 2);
-      printSseChunk(chunk, jobId);
+      printSseChunk(chunk, jobId, options);
       index = buffer.indexOf("\n\n");
     }
   }
 }
 
-function printSseChunk(chunk: string, jobId?: string): void {
+function printSseChunk(chunk: string, jobId: string | undefined, options: CliOptions): void {
   const dataLine = chunk.split("\n").find(line => line.startsWith("data: "));
   if (!dataLine) return;
   const payload = JSON.parse(dataLine.slice(6));
+  if (options.json) {
+    if (!payload.ok && (!jobId || payload.jobId === jobId)) print(JSON.stringify(payload));
+    return;
+  }
   if (payload.ok) {
-    console.log(`LISTENING ${baseUrl}/events`);
+    print(`[${time()}] 已连接事件流：${baseUrl}/events`);
     return;
   }
   if (jobId && payload.jobId !== jobId) return;
-  const job = payload.job;
-  console.log(`${payload.at} ${payload.jobId} ${job?.status ?? payload.type} ${job?.errorMessage ?? ""}`.trim());
+  print(formatSseEvent(payload));
 }
 
-function formatDoctor(job: any): string {
-  const status = job.status as string;
-  const outputs = job.outputFiles?.length ?? 0;
-  const lines = [
-    `job: ${job.id}`,
-    `status: ${status}`,
-    `outputs: ${outputs}/${job.expectedImageCount}`,
-    `conversationUrl: ${job.conversationUrl ?? ""}`,
-    `error: ${job.errorMessage ?? ""}`
-  ];
+function formatSseEvent(payload: any): string {
+  const job = payload.job as Job | null;
+  const event = payload.event as { type?: string; payload?: Record<string, unknown> } | undefined;
+  const prefix = `[${time(payload.at)}] ${payload.jobId}`;
+  if (event?.type === "job_created") return `${prefix} 已创建任务`;
+  if (event?.type === "job_claimed") return `${prefix} 插件已领取任务`;
+  if (event?.type === "artifact_saved") return `${prefix} 已保存${artifactLabel(event.payload?.kind)}：${displayPath(String(event.payload?.path ?? ""))}`;
+  if (event?.type === "image_order") return `${prefix} 已记录图片顺序`;
+  if (event?.type === "text_output") return `${prefix} 已复制文本响应`;
+  if (event?.type === "job_retry") return `${prefix} 已重新入队`;
+  if (job) return `${prefix} ${formatStatus(job.status)} ${formatProgress(job)} ${job.errorMessage ?? ""}`.trim();
+  return `${prefix} ${payload.type}`;
+}
 
-  if (status === "done") {
-    lines.unshift("OK");
-    lines.push("next: 使用 outputFiles 和 events.jsonl 中的 image_order。");
-  } else if (status === "failed_retryable") {
-    lines.unshift("RETRYABLE");
-    lines.push(`next: npm run job:retry -- ${job.id}`);
-  } else if (status === "needs_manual" || status === "failed_final") {
-    lines.unshift("NEEDS_MANUAL");
-    lines.push(`next: npm run job:open -- ${job.id}`);
-  } else if (status === "stalled" || status === "refreshing") {
-    lines.unshift("RECOVERING");
-    lines.push(`next: npm run job:listen -- ${job.id}`);
-  } else {
-    lines.unshift("RUNNING");
-    lines.push(`next: npm run job:listen -- ${job.id}`);
-  }
+function formatAddResult(job: Job): string {
+  return [
+    `已创建任务: ${job.id}`,
+    `模式: ${formatMode(job.mode)}`,
+    `状态: ${formatStatus(job.status)}`,
+    `下一步: auto-chat dispatch && auto-chat listen ${job.id}`
+  ].join("\n");
+}
 
-  return lines.join("\n");
+function formatProgress(job: Job): string {
+  if (job.mode === "text") return job.textOutputFile ? "text ready" : "waiting text";
+  return `${job.outputFiles.length}/${job.expectedImageCount} images`;
+}
+
+function formatResult(job: Job): string {
+  if (job.mode === "text") return displayPath(job.textOutputFile ?? job.outputFiles[0] ?? "");
+  return job.outputFiles.map(displayPath).join(", ");
+}
+
+function readTextPreview(file: string | null): string {
+  if (!file || !fs.existsSync(file)) return "";
+  const text = fs.readFileSync(file, "utf8").replace(/\s+/g, " ").trim();
+  return text.length > 120 ? `${text.slice(0, 120)}...` : text;
+}
+
+function displayPath(value: string): string {
+  if (!value) return "";
+  const normalized = value.replaceAll(path.sep, "/");
+  const outputsIndex = normalized.lastIndexOf("/outputs/");
+  if (outputsIndex >= 0) return normalized.slice(outputsIndex + 1);
+  const relative = path.relative(process.cwd(), value);
+  return relative.startsWith("..") ? value : relative;
+}
+
+function formatMode(mode: Job["mode"]): string {
+  return mode === "text" ? "常规文本" : "图片生成";
+}
+
+function formatStatus(status: JobStatus): string {
+  const labels: Record<JobStatus, string> = {
+    queued: "排队中",
+    opening_tab: "打开 ChatGPT 标签页",
+    waiting_chat_ready: "等待 ChatGPT 输入框",
+    uploading: "上传参考图片",
+    sending_prompt: "发送提示词",
+    waiting_generation: "等待响应",
+    stalled: "响应停滞",
+    refreshing: "刷新恢复中",
+    collecting_outputs: "收集输出",
+    downloading: "下载输出",
+    done: "完成",
+    failed_retryable: "可重试失败",
+    failed_final: "最终失败",
+    needs_manual: "需要人工接管"
+  };
+  return labels[status] ?? status;
+}
+
+function doctorHeadline(job: Job): string {
+  if (job.status === "done") return "OK";
+  if (job.status === "failed_retryable") return "RETRYABLE";
+  if (job.status === "needs_manual" || job.status === "failed_final") return "NEEDS_MANUAL";
+  if (job.status === "stalled" || job.status === "refreshing") return "RECOVERING";
+  return "RUNNING";
+}
+
+function artifactLabel(kind: unknown): string {
+  if (kind === "text_output") return "文本结果";
+  if (kind === "output") return "图片";
+  if (kind === "screenshot") return "截图";
+  return "文件";
+}
+
+function time(value?: string): string {
+  return new Date(value ?? Date.now()).toLocaleTimeString();
+}
+
+function print(message: string): void {
+  console.log(message);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function usage(): void {
-  console.log(`Usage:
-  npm run job:add -- --file examples/job.json
-  npm run job:add -- --file examples/job.json --auto-id
-  npm run job:add -- --file examples/job.json --replace
-  npm run job:list
-  npm run job:show -- <jobId>
-  npm run job:watch -- <jobId>
-  npm run job:listen -- [jobId]
-  npm run job:dispatch
-  npm run job:doctor -- <jobId>
-  npm run job:retry -- <jobId>
-  npm run job:open -- <jobId>`);
+  print(`auto-chat
+
+Usage:
+  auto-chat server
+  auto-chat add <job.json> [--replace] [--auto-id] [--json]
+  auto-chat list [--json]
+  auto-chat show <jobId> [--json]
+  auto-chat listen [jobId] [--json]
+  auto-chat dispatch [--json]
+  auto-chat doctor <jobId>
+  auto-chat retry <jobId>
+  auto-chat open <jobId>
+
+Legacy npm scripts still work, for example:
+  npm run job:add -- --file examples/job.json`);
 }
 
-main().catch(error => {
-  console.error(error);
-  process.exit(1);
-});
+const isEntryPoint = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isEntryPoint) {
+  main().catch(error => {
+    console.error(error);
+    process.exit(1);
+  });
+}

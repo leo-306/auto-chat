@@ -221,23 +221,39 @@ async function handleProgress(message: JobProgressMessage, tabId?: number): Prom
 
   if (message.status === "done") {
     try {
-      for (const image of message.images ?? []) {
+      const job = await api<Job>(`/jobs/${message.jobId}`);
+      if (job.mode === "text") {
         await saveArtifact(message.jobId, {
-          kind: "output",
-          filename: `output-${String(image.index + 1).padStart(2, "0")}.${extensionFor(image.contentType)}`,
-          contentType: image.contentType,
-          dataBase64: image.dataUrl.split(",")[1] ?? image.dataUrl
+          kind: "text_output",
+          filename: "output-01.txt",
+          contentType: "text/plain; charset=utf-8",
+          dataBase64: textToBase64(message.text ?? "")
+        });
+        await postEvent(message.jobId, {
+          type: "text_output",
+          payload: {
+            length: message.text?.length ?? 0
+          }
+        });
+      } else {
+        for (const image of message.images ?? []) {
+          await saveArtifact(message.jobId, {
+            kind: "output",
+            filename: `output-${String(image.index + 1).padStart(2, "0")}.${extensionFor(image.contentType)}`,
+            contentType: image.contentType,
+            dataBase64: image.dataUrl.split(",")[1] ?? image.dataUrl
+          });
+        }
+        await postEvent(message.jobId, {
+          type: "image_order",
+          payload: {
+            images: (message.images ?? []).map(image => ({
+              index: image.index + 1,
+              sourceId: image.sourceId
+            }))
+          }
         });
       }
-      await postEvent(message.jobId, {
-        type: "image_order",
-        payload: {
-          images: (message.images ?? []).map(image => ({
-            index: image.index + 1,
-            sourceId: image.sourceId
-          }))
-        }
-      });
       await postStatus(message.jobId, {
         status: "done",
         tabId,
@@ -372,4 +388,11 @@ function extensionFor(contentType: string): string {
   if (contentType.includes("jpeg")) return "jpg";
   if (contentType.includes("webp")) return "webp";
   return "png";
+}
+
+function textToBase64(text: string): string {
+  const bytes = new TextEncoder().encode(text);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
 }

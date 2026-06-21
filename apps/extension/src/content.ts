@@ -86,8 +86,25 @@ async function monitorJob(job: Job, appConfig: AppConfig, signal: AbortSignal): 
       return;
     }
 
+    if (job.mode === "text" && state.assistantText.trim() && !state.isGenerating) {
+      if (!maybeDoneAt) {
+        maybeDoneAt = Date.now();
+        await sendProgress({ type: "JOB_PROGRESS", jobId: job.id, status: "maybe_done", signature: state.signature });
+      }
+      if (Date.now() - maybeDoneAt > 3000) {
+        await sendProgress({
+          type: "JOB_PROGRESS",
+          jobId: job.id,
+          status: "done",
+          signature: state.signature,
+          text: await collectTextResponse(job.id)
+        });
+        return;
+      }
+    }
+
     const enoughImages = state.loadedImages.length >= job.expectedImageCount;
-    if (enoughImages && !state.isGenerating) {
+    if (job.mode === "image" && enoughImages && !state.isGenerating) {
       if (!maybeDoneAt) {
         maybeDoneAt = Date.now();
         await sendProgress({ type: "JOB_PROGRESS", jobId: job.id, status: "maybe_done", signature: state.signature });
@@ -114,6 +131,7 @@ async function inspectJob(jobId: string): Promise<{
   isInterrupted: boolean;
   interruptedText: string;
   isGenerating: boolean;
+  assistantText: string;
   loadedImages: HTMLImageElement[];
   scopedImages: HTMLImageElement[];
   pageImages: HTMLImageElement[];
@@ -133,6 +151,7 @@ async function inspectJob(jobId: string): Promise<{
       isInterrupted,
       interruptedText: isInterrupted ? jobText.slice(0, 500) : "",
       isGenerating: GENERATING_TEXT_PATTERN.test(text),
+      assistantText: "",
       loadedImages: scopedImages,
       scopedImages,
       pageImages,
@@ -155,6 +174,7 @@ async function inspectJob(jobId: string): Promise<{
     isInterrupted,
     interruptedText: isInterrupted ? jobText.slice(0, 500) : "",
     isGenerating,
+    assistantText: extractAssistantText(assistant),
     loadedImages,
     scopedImages,
     pageImages,
@@ -272,6 +292,40 @@ function findGeneratedImageElements(root: ParentNode): HTMLImageElement[] {
       const hasGeneratedSource = /\/backend-api\/estuary\/content|Generated image/i.test(`${img.currentSrc || img.src} ${img.alt}`);
       return img.complete && naturalLargeEnough && hasGeneratedSource && Boolean(img.currentSrc || img.src);
     });
+}
+
+function extractAssistantText(assistant: HTMLElement): string {
+  const message = assistant.querySelector<HTMLElement>("[data-message-author-role='assistant']");
+  return (message?.innerText || assistant.innerText || "").trim();
+}
+
+async function collectTextResponse(jobId: string): Promise<string> {
+  const assistant = findJobAssistant(jobId);
+  if (!assistant) throw new Error("Assistant response was not found.");
+  const copyButton = findCopyResponseButton(assistant);
+  if (!copyButton) throw new Error("Copy response button was not found.");
+  copyButton.click();
+  await sleep(300);
+
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const text = await navigator.clipboard.readText();
+    if (text.trim()) return text;
+    await sleep(200);
+  }
+  throw new Error("Copy response produced empty clipboard text.");
+}
+
+function findCopyResponseButton(assistant: HTMLElement): HTMLButtonElement | null {
+  const buttons = [...assistant.querySelectorAll<HTMLButtonElement>("button")];
+  return buttons.find(button => {
+    const label = `${button.innerText} ${button.ariaLabel ?? ""} ${button.title ?? ""}`;
+    return isVisible(button) &&
+      button.getAttribute("data-testid") === "copy-turn-action-button" &&
+      /copy response/i.test(label);
+  }) ?? buttons.find(button => {
+    const label = `${button.innerText} ${button.ariaLabel ?? ""} ${button.title ?? ""}`;
+    return isVisible(button) && /copy response/i.test(label);
+  }) ?? null;
 }
 
 function uniqueImages(images: HTMLImageElement[]): HTMLImageElement[] {

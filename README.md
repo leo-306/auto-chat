@@ -1,63 +1,169 @@
-# ChatGPT Image Automation
+# auto-chat
 
-本项目实现本地任务服务、Chrome MV3 插件和 CLI，用浏览器中的 ChatGPT 会话完成生图/修图任务，并把任务状态、对话链接、图片和日志保存在当前项目目录。
+auto-chat 是一个本地 ChatGPT 任务自动化工具：本地 Fastify 服务负责队列和文件，Chrome MV3 插件负责在你自己的 ChatGPT 页面里发送任务并采集结果，CLI 负责创建、监听和诊断任务。
 
-## 快速开始
+它支持两种模式：
+
+- `image`：图片生成/修图任务，输出图片文件。
+- `text`：常规聊天任务，输出文本文件。
+
+两种模式都可以附带可选参考图片。项目不会托管 ChatGPT 账号、不保存登录凭据，也不绕过 ChatGPT 的登录或权限机制。
+
+## 安装
 
 ```bash
 npm install
 npm run build
-npm run dev:server
 ```
 
-加载插件：
+本地开发时可以直接用：
+
+```bash
+node apps/server/dist/cli.js --help
+```
+
+如果你在仓库内执行 `npm link`，也可以使用：
+
+```bash
+auto-chat --help
+```
+
+## 启动服务
+
+```bash
+auto-chat server
+```
+
+服务默认监听：
+
+```text
+http://127.0.0.1:17321
+```
+
+任务数据默认写入当前仓库的 `data/`，该目录不应提交到 Git。
+
+## 加载 Chrome 插件
 
 1. 打开 Chrome `chrome://extensions`
 2. 启用 Developer mode
-3. Load unpacked
-4. 选择 `apps/extension/dist`
+3. 选择 Load unpacked
+4. 加载目录：
 
-创建任务：
-
-```bash
-npm run job:add -- --file examples/job.json
-npm run job:add -- --file examples/job.json --auto-id
-npm run job:add -- --file examples/job.json --replace
-npm run job:list
-npm run job:dispatch
-npm run job:watch -- img_20260620_001
-npm run job:listen -- img_20260620_001
-npm run job:doctor -- img_20260620_001
+```text
+apps/extension/dist
 ```
 
-本地服务默认监听 `http://127.0.0.1:17321`，数据保存在当前目录的 `data/`。
-
-插件默认暂停自动执行。需要从脚本或 Codex 触发一次领取队列时，可以运行：
+插件默认暂停，不会自动领取队列。你可以在 popup 中点击“执行一次调度”，或使用：
 
 ```bash
-npm run job:dispatch
+auto-chat dispatch
 ```
 
-也可以直接调用：
+## 创建文本任务
 
 ```bash
-curl -X POST http://127.0.0.1:17321/dispatch
+auto-chat add examples/text-job.json --replace
+auto-chat dispatch
+auto-chat listen text_test_001
 ```
 
-## 回调与监听
+完成后文本结果会写入：
 
-服务端提供 SSE：
+```text
+data/jobs/<jobId>/outputs/output-01.txt
+```
+
+任务详情中的 `textOutputFile` 会指向该文件。
+
+## 创建图片任务
 
 ```bash
-npm run job:listen -- <jobId>
+auto-chat add examples/job.json --replace
+auto-chat dispatch
+auto-chat listen img_order_test_002
 ```
 
-也可以配置 webhook：
+完成后图片结果会写入：
+
+```text
+data/jobs/<jobId>/outputs/
+```
+
+图片文件名固定为 `output-01.*`、`output-02.*`，顺序对应提示词中的图 1、图 2。完整顺序映射记录在 `events.jsonl` 的 `image_order` 事件中。
+
+## 常用命令
 
 ```bash
-curl -X PATCH http://127.0.0.1:17321/config \
-  -H 'content-type: application/json' \
-  --data '{"webhookUrls":["http://127.0.0.1:18080/codex-hook"]}'
+auto-chat server
+auto-chat add <job.json> [--replace] [--auto-id]
+auto-chat list
+auto-chat show <jobId>
+auto-chat show <jobId> --json
+auto-chat listen [jobId]
+auto-chat listen [jobId] --json
+auto-chat dispatch
+auto-chat doctor <jobId>
+auto-chat retry <jobId>
+auto-chat open <jobId>
 ```
 
-任务状态、事件和图片顺序都会推送到 SSE 和 webhook。
+旧的 `npm run job:*` 脚本仍保留，方便兼容已有工作流。
+
+## 任务 JSON
+
+图片任务：
+
+```json
+{
+  "id": "img_order_test_002",
+  "mode": "image",
+  "prompt": "生成一张图，要求严格按顺序：红色裙子。每张图人物一致。",
+  "expectedImageCount": 1,
+  "sourceImages": []
+}
+```
+
+文本任务：
+
+```json
+{
+  "id": "text_test_001",
+  "mode": "text",
+  "prompt": "请用一句话介绍一下太阳系。",
+  "sourceImages": []
+}
+```
+
+`mode` 省略时默认为 `image`。
+
+## 诊断
+
+查看任务摘要：
+
+```bash
+auto-chat doctor <jobId>
+```
+
+如果任务需要人工接管：
+
+```bash
+auto-chat open <jobId>
+```
+
+如果任务是可重试失败：
+
+```bash
+auto-chat retry <jobId>
+auto-chat dispatch
+auto-chat listen <jobId>
+```
+
+## 开发
+
+```bash
+npm run build
+npm run check
+npm test
+```
+
+详细 agent/自动化集成协议见 `docs/agent-integration.md`。

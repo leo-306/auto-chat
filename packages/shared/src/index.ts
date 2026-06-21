@@ -20,6 +20,9 @@ export const JOB_STATUSES = [
 export const JobStatusSchema = z.enum(JOB_STATUSES);
 export type JobStatus = z.infer<typeof JobStatusSchema>;
 
+export const JobModeSchema = z.enum(["image", "text"]);
+export type JobMode = z.infer<typeof JobModeSchema>;
+
 export const ConfigSchema = z.object({
   maxConcurrency: z.number().int().min(1).max(8).default(1),
   stallTimeoutMs: z.number().int().min(30_000).default(120_000),
@@ -44,13 +47,22 @@ export const DEFAULT_CONFIG: AppConfig = {
 
 export const CreateJobSchema = z.object({
   id: z.string().min(1).optional(),
+  mode: JobModeSchema.default("image"),
   prompt: z.string().min(1),
-  expectedImageCount: z.number().int().min(1).max(12).optional(),
+  expectedImageCount: z.number().int().min(0).max(12).optional(),
   sourceImages: z.array(z.string()).default([]),
   metadata: z.record(z.unknown()).default({})
+}).superRefine((value, ctx) => {
+  if ((value.mode ?? "image") === "image" && value.expectedImageCount === 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["expectedImageCount"],
+      message: "Image jobs must expect at least one image."
+    });
+  }
 });
 
-export type CreateJobRequest = z.infer<typeof CreateJobSchema>;
+export type CreateJobRequest = z.input<typeof CreateJobSchema>;
 
 export const UpdateStatusSchema = z.object({
   status: JobStatusSchema,
@@ -72,7 +84,7 @@ export const EventSchema = z.object({
 export type JobEvent = z.infer<typeof EventSchema>;
 
 export const ArtifactSchema = z.object({
-  kind: z.enum(["output", "source", "screenshot", "log"]),
+  kind: z.enum(["output", "text_output", "source", "screenshot", "log"]),
   filename: z.string().min(1),
   contentType: z.string().min(1).default("application/octet-stream"),
   dataBase64: z.string().min(1)
@@ -82,9 +94,10 @@ export type ArtifactRequest = z.infer<typeof ArtifactSchema>;
 
 export const JobSchema = z.object({
   id: z.string(),
+  mode: JobModeSchema,
   status: JobStatusSchema,
   prompt: z.string(),
-  expectedImageCount: z.number().int(),
+  expectedImageCount: z.number().int().min(0),
   sourceImages: z.array(z.string()),
   metadata: z.record(z.unknown()),
   conversationUrl: z.string().nullable(),
@@ -94,6 +107,7 @@ export const JobSchema = z.object({
   errorMessage: z.string().nullable(),
   workerId: z.string().nullable(),
   outputFiles: z.array(z.string()),
+  textOutputFile: z.string().nullable(),
   screenshotFiles: z.array(z.string()),
   createdAt: z.string(),
   updatedAt: z.string()

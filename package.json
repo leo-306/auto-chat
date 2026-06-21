@@ -3,6 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "auto-chat": "apps/server/dist/cli.js"
+  },
   "workspaces": [
     "packages/*",
     "apps/*"
@@ -12,6 +15,7 @@
     "check": "npm run build -w @wechat-topic/shared && npm run check --workspaces --if-present",
     "test": "npm run build -w @wechat-topic/shared && npm run test --workspaces --if-present",
     "dev:server": "npm run dev -w @wechat-topic/server",
+    "auto-chat": "node apps/server/dist/cli.js",
     "job:add": "npm run cli -w @wechat-topic/server -- job:add",
     "job:list": "npm run cli -w @wechat-topic/server -- job:list",
     "job:show": "npm run cli -w @wechat-topic/server -- job:show",

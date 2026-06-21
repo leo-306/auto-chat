@@ -1,5 +1,5 @@
 body {
-  min-width: 360px;
+  min-width: 380px;
   margin: 0;
   padding: 14px;
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -91,6 +91,11 @@ a:hover {
   background: #f8fafc;
 }
 
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 button.primary {
   border-color: #2563eb;
   background: #2563eb;
@@ -175,6 +180,21 @@ button.warn {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px;
+}
+
+.advanced {
+  margin-top: 10px;
+  color: #344054;
+  font-size: 12px;
+}
+
+.advanced summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.advanced .debug-grid {
+  margin-top: 8px;
 }
 
 #debug-output {

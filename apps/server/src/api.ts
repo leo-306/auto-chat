@@ -71,7 +71,7 @@ export async function buildServer(store: JobStore, events = new EventHub()): Pro
           error: "duplicate_job",
           message: `Job already exists: ${error.jobId}`,
           jobId: error.jobId,
-          hint: "Use npm run job:retry -- <jobId>, job:add -- --replace, or job:add -- --auto-id."
+          hint: "Use auto-chat retry <jobId>, auto-chat add <file> --replace, or auto-chat add <file> --auto-id."
         });
       }
       throw error;

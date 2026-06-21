@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "ChatGPT 生图队列助手",
+  "name": "auto-chat",
   "version": "0.1.0",
-  "description": "接管本地生图队列，在 ChatGPT 中执行任务并保存图片结果。",
-  "permissions": ["tabs", "scripting", "storage", "downloads", "alarms"],
+  "description": "接管本地任务队列，在 ChatGPT 中执行图片或文本任务并保存结果。",
+  "permissions": ["tabs", "scripting", "storage", "downloads", "alarms", "clipboardRead"],
   "host_permissions": [
     "https://chatgpt.com/*",
     "http://127.0.0.1:17321/*"
@@ -19,7 +19,7 @@
     }
   ],
   "action": {
-    "default_title": "ChatGPT 生图队列助手",
+  "default_title": "auto-chat",
     "default_popup": "popup.html"
   }
 }

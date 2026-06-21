@@ -21,6 +21,7 @@ export type JobProgressMessage = {
   signature?: string;
   errorMessage?: string;
   images?: Array<{ index: number; sourceId: string; dataUrl: string; contentType: string }>;
+  text?: string;
 };
 
 export type PopupState = {

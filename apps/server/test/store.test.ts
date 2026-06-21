@@ -23,11 +23,42 @@ describe("JobStore", () => {
     const store = new JobStore(tmp);
     await store.init();
     const created = store.createJob({ id: "job_1", prompt: "hello", sourceImages: [], metadata: {} });
+    expect(created.mode).toBe("image");
     expect(created.prompt).toContain("JOB_ID: job_1");
     const claimed = store.claimJob({ workerId: "worker", runningJobIds: [] });
     expect(claimed?.id).toBe("job_1");
     expect(claimed?.status).toBe("opening_tab");
     expect(store.claimJob({ workerId: "worker", runningJobIds: [] })).toBeNull();
+    store.close();
+  });
+
+  it("creates text jobs with text output defaults", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+    const created = store.createJob({ id: "job_text", mode: "text", prompt: "hello", sourceImages: [], metadata: {} });
+
+    expect(created.mode).toBe("text");
+    expect(created.expectedImageCount).toBe(0);
+    expect(created.textOutputFile).toBeNull();
+
+    store.close();
+  });
+
+  it("saves text output artifacts", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+    store.createJob({ id: "job_text_output", mode: "text", prompt: "hello", sourceImages: [], metadata: {} });
+
+    const result = store.saveArtifact("job_text_output", {
+      kind: "text_output",
+      filename: "output-01.txt",
+      contentType: "text/plain; charset=utf-8",
+      dataBase64: Buffer.from("文本结果").toString("base64")
+    });
+
+    expect(fs.readFileSync(result.path, "utf8")).toBe("文本结果");
+    expect(result.job.outputFiles).toEqual([result.path]);
+    expect(result.job.textOutputFile).toBe(result.path);
     store.close();
   });
 
