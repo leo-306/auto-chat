@@ -25,13 +25,15 @@ node apps/server/dist/cli.js --help
 如果你在仓库内执行 `npm link`，也可以使用：
 
 ```bash
+npm link
 auto-chat --help
 ```
 
 ## 启动服务
 
 ```bash
-auto-chat server
+auto-chat start
+auto-chat status
 ```
 
 服务默认监听：
@@ -41,6 +43,12 @@ http://127.0.0.1:17321
 ```
 
 任务数据默认写入当前仓库的 `data/`，该目录不应提交到 Git。
+
+停止后台服务：
+
+```bash
+auto-chat stop
+```
 
 ## 加载 Chrome 插件
 
@@ -94,7 +102,9 @@ data/jobs/<jobId>/outputs/
 ## 常用命令
 
 ```bash
-auto-chat server
+auto-chat start
+auto-chat status
+auto-chat stop
 auto-chat add <job.json> [--replace] [--auto-id]
 auto-chat list
 auto-chat show <jobId>
@@ -107,7 +117,7 @@ auto-chat retry <jobId>
 auto-chat open <jobId>
 ```
 
-旧的 `npm run job:*` 脚本仍保留，方便兼容已有工作流。
+旧的 `npm run job:*` 脚本仍保留用于兼容已有工作流；本地调试和自举请使用 `npm link` 后的真实 `auto-chat` CLI。
 
 ## 任务 JSON
 

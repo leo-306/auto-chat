@@ -28,6 +28,9 @@ describe("CLI formatting", () => {
     expect(normalizeCommand("job:add")).toBe("add");
     expect(normalizeCommand("job:list")).toBe("list");
     expect(normalizeCommand("job:listen")).toBe("listen");
+    expect(normalizeCommand("server")).toBe("start");
+    expect(normalizeCommand("server:start")).toBe("start");
+    expect(normalizeCommand("server:stop")).toBe("stop");
     expect(normalizeCommand("add")).toBe("add");
   });
 

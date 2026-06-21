@@ -1,0 +1,4 @@
+interface:
+  display_name: "auto-chat"
+  short_description: "Use real CLI flows for auto-chat development"
+  default_prompt: "Use $auto-chat to test and operate this project through the real CLI."

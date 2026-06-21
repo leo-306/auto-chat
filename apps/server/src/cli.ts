@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { spawn } from "node:child_process";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import open from "open";
 import type { Job, JobStatus } from "@wechat-topic/shared";
 import { workspaceRoot } from "./paths.js";
 
 const baseUrl = process.env.JOB_SERVER_URL ?? "http://127.0.0.1:17321";
+const dataDir = path.join(workspaceRoot, "data");
+const pidFile = path.join(dataDir, "server.pid");
+const logFile = path.join(dataDir, "server.log");
 const terminalStatuses = new Set<JobStatus>(["done", "failed_final", "needs_manual"]);
 
 type CliOptions = {
@@ -35,8 +39,18 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     return;
   }
 
-  if (command === "server") {
-    await import("./index.js");
+  if (command === "start") {
+    await startServer();
+    return;
+  }
+
+  if (command === "stop") {
+    await stopServer();
+    return;
+  }
+
+  if (command === "status") {
+    await printServerStatus();
     return;
   }
 
@@ -116,6 +130,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
 }
 
 export function normalizeCommand(command: string): string {
+  if (command === "server") return "start";
+  if (command === "server:start") return "start";
+  if (command === "server:stop") return "stop";
+  if (command === "server:status") return "status";
   const legacy = /^job:(.+)$/.exec(command);
   return legacy ? legacy[1] : command;
 }
@@ -185,6 +203,116 @@ async function request<T>(apiPath: string, options: { method?: string; body?: un
   return response.json() as Promise<T>;
 }
 
+async function startServer(): Promise<void> {
+  fs.mkdirSync(dataDir, { recursive: true });
+  if (await isServerHealthy()) {
+    print(`auto-chat 服务已在后台运行：${baseUrl}`);
+    return;
+  }
+
+  const existingPid = readPid();
+  if (existingPid && isProcessAlive(existingPid)) {
+    print(`发现已有服务进程 pid=${existingPid}，但健康检查未通过。日志：${displayPath(logFile)}`);
+    return;
+  }
+
+  const logFd = fs.openSync(logFile, "a");
+  const child = spawn(process.execPath, [path.join(path.dirname(fileURLToPath(import.meta.url)), "index.js")], {
+    detached: true,
+    env: {
+      ...process.env,
+      PORT: portFromBaseUrl()
+    },
+    stdio: ["ignore", logFd, logFd]
+  });
+  child.unref();
+  fs.writeFileSync(pidFile, `${child.pid}\n`);
+
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    if (await isServerHealthy()) {
+      print(`auto-chat 服务已后台启动：${baseUrl}`);
+      print(`pid: ${child.pid}`);
+      print(`日志: ${displayPath(logFile)}`);
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(`服务已启动但健康检查未通过。pid=${child.pid} 日志=${displayPath(logFile)}`);
+}
+
+async function stopServer(): Promise<void> {
+  const pid = readPid();
+  if (!pid) {
+    print("没有找到 auto-chat 服务 pid 文件。");
+    return;
+  }
+  if (!isProcessAlive(pid)) {
+    fs.rmSync(pidFile, { force: true });
+    print("pid 文件已过期，已清理。");
+    return;
+  }
+
+  process.kill(pid, "SIGTERM");
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    if (!isProcessAlive(pid)) {
+      fs.rmSync(pidFile, { force: true });
+      print("auto-chat 服务已停止。");
+      return;
+    }
+    await sleep(250);
+  }
+  throw new Error(`服务未在预期时间内退出，请手动检查 pid=${pid}`);
+}
+
+async function printServerStatus(): Promise<void> {
+  const pid = readPid();
+  const healthy = await isServerHealthy();
+  if (healthy) {
+    print(`auto-chat 服务在线：${baseUrl}`);
+    if (pid) print(`pid: ${pid}`);
+    return;
+  }
+  if (pid && isProcessAlive(pid)) {
+    print(`auto-chat 服务进程存在但健康检查失败：pid=${pid}`);
+    print(`日志: ${displayPath(logFile)}`);
+    return;
+  }
+  print("auto-chat 服务未运行。");
+}
+
+async function isServerHealthy(): Promise<boolean> {
+  try {
+    const response = await fetch(`${baseUrl}/health`);
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+function readPid(): number | null {
+  if (!fs.existsSync(pidFile)) return null;
+  const pid = Number(fs.readFileSync(pidFile, "utf8").trim());
+  return Number.isInteger(pid) && pid > 0 ? pid : null;
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function portFromBaseUrl(): string {
+  try {
+    const url = new URL(baseUrl);
+    return url.port || (url.protocol === "https:" ? "443" : "80");
+  } catch {
+    return "17321";
+  }
+}
+
 function parseOptions(args: string[]): CliOptions {
   return {
     json: args.includes("--json"),
@@ -233,7 +361,7 @@ async function listen(jobId: string | undefined, options: CliOptions): Promise<v
   if (!response.ok || !response.body) {
     const text = await response.text();
     if (response.status === 404) {
-      throw new Error("SSE 路由 /events 不可用。请重启 auto-chat server。");
+      throw new Error("SSE 路由 /events 不可用。请运行 auto-chat stop 后再 auto-chat start。");
     }
     throw new Error(`${response.status} ${text}`);
   }
@@ -373,7 +501,9 @@ function usage(): void {
   print(`auto-chat
 
 Usage:
-  auto-chat server
+  auto-chat start
+  auto-chat stop
+  auto-chat status
   auto-chat add <job.json> [--replace] [--auto-id] [--json]
   auto-chat list [--json]
   auto-chat show <jobId> [--json]
@@ -387,10 +517,21 @@ Legacy npm scripts still work, for example:
   npm run job:add -- --file examples/job.json`);
 }
 
-const isEntryPoint = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+const isEntryPoint = isCliEntryPoint();
 if (isEntryPoint) {
   main().catch(error => {
     console.error(error);
     process.exit(1);
   });
+}
+
+function isCliEntryPoint(): boolean {
+  if (!process.argv[1]) return false;
+  try {
+    const modulePath = fs.realpathSync(fileURLToPath(import.meta.url));
+    const argvPath = fs.realpathSync(process.argv[1]);
+    return modulePath === argvPath;
+  } catch {
+    return import.meta.url === pathToFileURL(process.argv[1]).href;
+  }
 }

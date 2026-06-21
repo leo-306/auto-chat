@@ -12,14 +12,16 @@ Agent / Codex
   -> ChatGPT 页面
 ```
 
-agent 的机器接口是本地服务和 CLI，不是 ChatGPT 网页 DOM。
+agent 的机器接口是真实安装后的 `auto-chat` CLI、本地服务和 SSE；不是 ChatGPT 网页 DOM。调试和自举必须先 `npm link`，再通过全局 `auto-chat` 命令执行。
 
 ## 启动与加载
 
 ```bash
 npm install
 npm run build
-auto-chat server
+npm link
+auto-chat start
+auto-chat status
 ```
 
 Chrome 插件加载目录：
@@ -32,6 +34,12 @@ apps/extension/dist
 
 ```bash
 curl http://127.0.0.1:17321/health
+```
+
+停止后台服务：
+
+```bash
+auto-chat stop
 ```
 
 插件默认处于暂停状态，不会自动 claim 队列任务。点击 popup 的“执行一次调度”会执行一次手动调度；点击“开启自动执行”才会持续自动领取队列任务。
