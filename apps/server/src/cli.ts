@@ -5,7 +5,8 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import open from "open";
-import type { Job, JobStatus } from "@wechat-topic/shared";
+import { JobPlatformSchema } from "@wechat-topic/shared";
+import type { Job, JobPlatform, JobStatus } from "@wechat-topic/shared";
 import { workspaceRoot } from "./paths.js";
 
 const baseUrl = process.env.JOB_SERVER_URL ?? "http://127.0.0.1:17321";
@@ -18,10 +19,12 @@ type CliOptions = {
   json: boolean;
   replace: boolean;
   autoId: boolean;
+  platform?: JobPlatform;
 };
 
 type ListRow = {
   id: string;
+  platform: JobPlatform;
   mode: Job["mode"];
   status: JobStatus;
   progress: string;
@@ -65,6 +68,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     if (!file) throw new Error("缺少任务文件。用法：auto-chat add examples/job.json");
     const body = JSON.parse(fs.readFileSync(resolveInputFile(file), "utf8"));
     if (options.autoId) delete body.id;
+    if (options.platform) body.platform = options.platform;
     const apiPath = options.replace ? "/jobs?replace=1" : "/jobs";
     const job = await request<Job>(apiPath, { method: "POST", body });
     print(options.json ? JSON.stringify(job, null, 2) : formatAddResult(job));
@@ -127,7 +131,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   }
 
   if (command === "dispatch") {
-    const dispatch = await request("/dispatch", { method: "POST" });
+    const dispatch = await request("/dispatch", {
+      method: "POST",
+      body: options.platform ? { platform: options.platform } : {}
+    });
     print(options.json ? JSON.stringify(dispatch, null, 2) : "已请求插件执行一次调度。");
     return;
   }
@@ -157,6 +164,7 @@ export function defaultSkillInstallDirs(homeDir = os.homedir()): string[] {
 export function formatListRow(job: Job, textPreview: (file: string | null) => string = readTextPreview): ListRow {
   return {
     id: job.id,
+    platform: job.platform,
     mode: job.mode,
     status: job.status,
     progress: formatProgress(job),
@@ -168,6 +176,7 @@ export function formatListRow(job: Job, textPreview: (file: string | null) => st
 export function formatJobSummary(job: Job): string {
   const lines = [
     `任务: ${job.id}`,
+    `平台: ${formatPlatform(job.platform)}`,
     `模式: ${formatMode(job.mode)}`,
     `状态: ${formatStatus(job.status)}`,
     `进度: ${formatProgress(job)}`,
@@ -362,10 +371,12 @@ function portFromBaseUrl(): string {
 }
 
 function parseOptions(args: string[]): CliOptions {
+  const rawPlatform = readFlag(args, "--platform");
   return {
     json: args.includes("--json"),
     replace: args.includes("--replace"),
-    autoId: args.includes("--auto-id")
+    autoId: args.includes("--auto-id"),
+    platform: rawPlatform ? JobPlatformSchema.parse(rawPlatform) : undefined
   };
 }
 
@@ -470,12 +481,13 @@ function formatSseEvent(payload: any): string {
   return `${prefix} ${payload.type}`;
 }
 
-function formatAddResult(job: Job): string {
+export function formatAddResult(job: Job): string {
   return [
     `已创建任务: ${job.id}`,
+    `平台: ${formatPlatform(job.platform)}`,
     `模式: ${formatMode(job.mode)}`,
     `状态: ${formatStatus(job.status)}`,
-    `下一步: auto-chat dispatch && auto-chat listen ${job.id}`
+    `下一步: auto-chat dispatch --platform ${job.platform} && auto-chat listen ${job.id}`
   ].join("\n");
 }
 
@@ -509,6 +521,10 @@ function displayPath(value: string): string {
 
 function formatMode(mode: Job["mode"]): string {
   return mode === "text" ? "常规文本" : "图片生成";
+}
+
+function formatPlatform(platform: JobPlatform): string {
+  return platform === "gemini" ? "Gemini" : "GPT";
 }
 
 function formatStatus(status: JobStatus): string {
@@ -567,10 +583,11 @@ Usage:
   auto-chat stop
   auto-chat status
   auto-chat add <job.json> [--replace] [--auto-id] [--json]
+  auto-chat add <job.json> [--platform gpt|gemini]
   auto-chat list [--json]
   auto-chat show <jobId> [--json]
   auto-chat listen [jobId] [--json]
-  auto-chat dispatch [--json]
+  auto-chat dispatch [--platform gpt|gemini] [--json]
   auto-chat doctor <jobId>
   auto-chat retry <jobId>
   auto-chat open <jobId>

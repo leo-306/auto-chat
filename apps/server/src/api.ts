@@ -6,6 +6,7 @@ import {
   ConfigSchema,
   CreateJobSchema,
   EventSchema,
+  JobPlatformSchema,
   UpdateStatusSchema
 } from "@wechat-topic/shared";
 import { DuplicateJobError, JobStore } from "./store.js";
@@ -57,7 +58,11 @@ export async function buildServer(store: JobStore, events = new EventHub()): Pro
 
   app.get("/dispatch", async () => store.getDispatch());
 
-  app.post("/dispatch", async () => store.requestDispatch());
+  app.post("/dispatch", async (request) => {
+    const body = (request.body ?? {}) as { platform?: unknown };
+    const platform = body.platform === undefined ? null : JobPlatformSchema.parse(body.platform);
+    return store.requestDispatch(platform);
+  });
 
   app.post("/jobs", async (request, reply) => {
     const body = CreateJobSchema.parse(request.body);

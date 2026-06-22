@@ -1,0 +1,7 @@
+{
+  "id": "gemini_text_test_001",
+  "platform": "gemini",
+  "mode": "text",
+  "prompt": "请用一句话介绍一下你自己。",
+  "sourceImages": []
+}

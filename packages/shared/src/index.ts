@@ -23,6 +23,9 @@ export type JobStatus = z.infer<typeof JobStatusSchema>;
 export const JobModeSchema = z.enum(["image", "text"]);
 export type JobMode = z.infer<typeof JobModeSchema>;
 
+export const JobPlatformSchema = z.enum(["gpt", "gemini"]);
+export type JobPlatform = z.infer<typeof JobPlatformSchema>;
+
 export const ConfigSchema = z.object({
   maxConcurrency: z.number().int().min(1).max(8).default(1),
   stallTimeoutMs: z.number().int().min(30_000).default(120_000),
@@ -30,6 +33,7 @@ export const ConfigSchema = z.object({
   maxRefreshPerJob: z.number().int().min(0).max(10).default(2),
   expectedImageCount: z.number().int().min(1).max(12).default(4),
   chatgptUrl: z.string().url().default("https://chatgpt.com/"),
+  geminiUrl: z.string().url().default("https://gemini.google.com/app"),
   webhookUrls: z.array(z.string().url()).default([])
 });
 
@@ -42,13 +46,16 @@ export const DEFAULT_CONFIG: AppConfig = {
   maxRefreshPerJob: 2,
   expectedImageCount: 4,
   chatgptUrl: "https://chatgpt.com/",
+  geminiUrl: "https://gemini.google.com/app",
   webhookUrls: []
 };
 
 export const CreateJobSchema = z.object({
   id: z.string().min(1).optional(),
+  platform: JobPlatformSchema.default("gpt"),
   mode: JobModeSchema.default("image"),
   prompt: z.string().min(1),
+  prompts: z.array(z.string().min(1)).optional(),
   expectedImageCount: z.number().int().min(0).max(12).optional(),
   sourceImages: z.array(z.string()).default([]),
   metadata: z.record(z.unknown()).default({})
@@ -94,6 +101,7 @@ export type ArtifactRequest = z.infer<typeof ArtifactSchema>;
 
 export const JobSchema = z.object({
   id: z.string(),
+  platform: JobPlatformSchema,
   mode: JobModeSchema,
   status: JobStatusSchema,
   prompt: z.string(),
@@ -117,17 +125,66 @@ export type Job = z.infer<typeof JobSchema>;
 
 export const ClaimJobSchema = z.object({
   workerId: z.string().min(1),
+  platform: JobPlatformSchema.default("gpt"),
   runningJobIds: z.array(z.string()).default([])
 });
 
-export type ClaimJobRequest = z.infer<typeof ClaimJobSchema>;
+export type ClaimJobRequest = z.input<typeof ClaimJobSchema>;
 
 export const DispatchStateSchema = z.object({
   id: z.number().int().min(0),
+  platform: JobPlatformSchema.nullable().default(null),
   requestedAt: z.string().nullable()
 });
 
 export type DispatchState = z.infer<typeof DispatchStateSchema>;
+
+export function buildGeminiOutputPrompt(prompt: string, outputIndex: number, prompts?: string[]): string {
+  const explicitPrompt = prompts?.[outputIndex - 1]?.trim();
+  if (explicitPrompt) return explicitPrompt;
+  const imagePrompt = explicitPrompt || extractImagePrompt(prompt, outputIndex);
+  const globalConstraints = extractGeminiGlobalConstraints(prompt);
+  return [
+    imagePrompt,
+    globalConstraints,
+    "只生成这一张图片，不要生成拼图，不要生成多张图。",
+    `JOB_OUTPUT_INDEX: ${outputIndex}`
+  ].filter(Boolean).join("\n\n");
+}
+
+function extractImagePrompt(prompt: string, outputIndex: number): string {
+  const normalized = prompt.trim();
+  const marker = new RegExp(`图\\s*${outputIndex}\\s*[：:=]?`, "u");
+  const markerMatch = marker.exec(normalized);
+  if (!markerMatch) return normalized;
+
+  const start = markerMatch.index + markerMatch[0].length;
+  const nextMarker = new RegExp(`图\\s*${outputIndex + 1}\\s*[：:=]?`, "u").exec(normalized.slice(start));
+  const end = nextMarker ? start + nextMarker.index : normalized.length;
+  const raw = normalized.slice(start, end);
+  return cleanupGeminiImagePrompt(raw);
+}
+
+function cleanupGeminiImagePrompt(value: string): string {
+  return value
+    .replace(/^[\s,，。；;、]+/u, "")
+    .replace(/[\s,，；;、]+$/u, "")
+    .trim();
+}
+
+function extractGeminiGlobalConstraints(prompt: string): string {
+  return prompt
+    .split(/(?<=[。！？!?])\s*/u)
+    .map(sentence => sentence.trim())
+    .filter(sentence =>
+      /^每张图/u.test(sentence) ||
+      /^所有图片/u.test(sentence) ||
+      /^人物一致/u.test(sentence) ||
+      /^保持/u.test(sentence)
+    )
+    .filter(sentence => !/图\s*\d/u.test(sentence))
+    .join("\n");
+}
 
 export type ConversationTurnRole = "user" | "assistant" | "other";
 

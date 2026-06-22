@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { buildGeminiOutputPrompt } from "@wechat-topic/shared";
 import type { Job } from "@wechat-topic/shared";
 import {
   defaultSkillInstallDirs,
+  formatAddResult,
   formatDoctor,
   formatJobSummary,
   formatListRow,
@@ -11,6 +13,7 @@ import {
 
 const baseJob: Job = {
   id: "job_1",
+  platform: "gpt",
   mode: "image",
   status: "done",
   prompt: "JOB_ID: job_1\nhello",
@@ -44,6 +47,7 @@ describe("CLI formatting", () => {
   it("formats image and text job rows with readable progress and result", () => {
     expect(formatListRow(baseJob)).toMatchObject({
       id: "job_1",
+      platform: "gpt",
       mode: "image",
       status: "done",
       progress: "2/2 images",
@@ -112,8 +116,25 @@ describe("CLI formatting", () => {
 
   it("formats job summaries and doctor output with next actions", () => {
     expect(formatJobSummary(baseJob)).toContain("任务: job_1");
+    expect(formatJobSummary({ ...baseJob, platform: "gemini" })).toContain("平台: Gemini");
     expect(formatJobSummary(baseJob)).toContain("结果: outputs/output-01.png, outputs/output-02.png");
     expect(formatDoctor({ ...baseJob, status: "failed_retryable", errorMessage: "rate limited" }))
       .toContain("下一步: auto-chat retry job_1");
+  });
+
+  it("formats add result with platform-specific dispatch command", () => {
+    expect(formatAddResult({ ...baseJob, platform: "gemini" })).toContain(
+      "下一步: auto-chat dispatch --platform gemini && auto-chat listen job_1"
+    );
+    expect(formatAddResult(baseJob)).toContain(
+      "下一步: auto-chat dispatch --platform gpt && auto-chat listen job_1"
+    );
+  });
+
+  it("builds stable Gemini per-image prompts", () => {
+    expect(buildGeminiOutputPrompt("生成两张图，人物一致。", 2, ["红色裙子单人街拍。", "蓝色裙子单人咖啡店。"])).toBe("蓝色裙子单人咖啡店。");
+    expect(buildGeminiOutputPrompt("请生成：\n图1：红色外套，街拍。\n图2：蓝色外套，咖啡店。\n图3：绿色外套，公园。", 3)).toBe(
+      "绿色外套，公园。\n\n只生成这一张图片，不要生成拼图，不要生成多张图。\n\nJOB_OUTPUT_INDEX: 3"
+    );
   });
 });

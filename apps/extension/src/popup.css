@@ -139,6 +139,26 @@ button.warn {
   color: #b42318;
 }
 
+.tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin: 0 0 8px;
+}
+
+.tab {
+  min-height: 32px;
+  border-color: #d9e1ea;
+  background: #eef2f6;
+  color: #475467;
+}
+
+.tab.active {
+  border-color: #172033;
+  background: #172033;
+  color: #ffffff;
+}
+
 .worker {
   border: 1px solid #d9e1ea;
   border-radius: 7px;

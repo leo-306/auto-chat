@@ -10,6 +10,7 @@ import {
   DispatchState,
   Job,
   JobEvent,
+  JobPlatform,
   JobStatus,
   UpdateStatusRequest
 } from "@wechat-topic/shared";
@@ -18,6 +19,7 @@ import { ResolvedPaths, resolvePaths } from "./paths.js";
 
 type JobRow = {
   id: string;
+  platform: JobPlatform;
   mode: Job["mode"];
   status: JobStatus;
   prompt: string;
@@ -41,7 +43,7 @@ export class JobStore {
   private sql!: SqlJsStatic;
   private db!: Database;
   private config: AppConfig = DEFAULT_CONFIG;
-  private dispatch: DispatchState = { id: 0, requestedAt: null };
+  private dispatch: DispatchState = { id: 0, platform: null, requestedAt: null };
   private paths: ResolvedPaths;
   private events?: EventHub;
 
@@ -75,23 +77,29 @@ export class JobStore {
     fs.mkdirSync(path.join(this.paths.jobDir(id), "screenshots"), { recursive: true });
     fs.writeFileSync(this.paths.jobFile(id, "prompt.txt"), withJobId(id, input.prompt));
     const sourceImages = this.normalizeSourceImages(id, input.sourceImages ?? []);
+    const platform = input.platform ?? "gpt";
     const mode = input.mode ?? "image";
+    const metadata = {
+      ...(input.metadata ?? {}),
+      ...(input.prompts ? { geminiPrompts: input.prompts } : {})
+    };
     const expectedImageCount = mode === "text" ? 0 : input.expectedImageCount ?? this.config.expectedImageCount;
 
     this.run(
       `insert into jobs (
-        id, mode, status, prompt, expected_image_count, source_images, metadata,
+        id, platform, mode, status, prompt, expected_image_count, source_images, metadata,
         conversation_url, tab_id, attempt, refresh_count, error_message,
         worker_id, output_files, text_output_file, screenshot_files, created_at, updated_at
-      ) values (?, ?, ?, ?, ?, ?, ?, null, null, 0, 0, null, null, ?, null, ?, ?, ?)`,
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, null, null, 0, 0, null, null, ?, null, ?, ?, ?)`,
       [
         id,
+        platform,
         mode,
         "queued",
         withJobId(id, input.prompt),
         expectedImageCount,
         JSON.stringify(sourceImages),
-        JSON.stringify(input.metadata ?? {}),
+        JSON.stringify(metadata),
         JSON.stringify([]),
         JSON.stringify([]),
         now,
@@ -99,7 +107,7 @@ export class JobStore {
       ]
     );
     this.writeMeta(id);
-    this.appendEvent(id, { type: "job_created", payload: { expectedImageCount } });
+    this.appendEvent(id, { type: "job_created", payload: { expectedImageCount, platform } });
     this.persist();
     return this.getJob(id)!;
   }
@@ -126,7 +134,8 @@ export class JobStore {
 
   claimJob(input: ClaimJobRequest): Job | null {
     const row = this.query<JobRow>(
-      "select * from jobs where status = 'queued' order by created_at asc limit 1"
+      "select * from jobs where status = 'queued' and platform = ? order by created_at asc limit 1",
+      [input.platform ?? "gpt"]
     )[0];
     if (!row) return null;
     const now = new Date().toISOString();
@@ -236,9 +245,10 @@ export class JobStore {
     return this.dispatch;
   }
 
-  requestDispatch(): DispatchState {
+  requestDispatch(platform: JobPlatform | null = null): DispatchState {
     this.dispatch = {
       id: this.dispatch.id + 1,
+      platform,
       requestedAt: new Date().toISOString()
     };
     this.run("insert or replace into config (key, value) values ('dispatch', ?)", [
@@ -274,6 +284,7 @@ export class JobStore {
     this.db.run(`
       create table if not exists jobs (
         id text primary key,
+        platform text not null default 'gpt',
         mode text not null default 'image',
         status text not null,
         prompt text not null,
@@ -298,6 +309,7 @@ export class JobStore {
       );
     `);
     this.addColumnIfMissing("jobs", "mode", "text not null default 'image'");
+    this.addColumnIfMissing("jobs", "platform", "text not null default 'gpt'");
     this.addColumnIfMissing("jobs", "text_output_file", "text");
   }
 
@@ -313,7 +325,7 @@ export class JobStore {
   private loadDispatch(): void {
     const rows = this.query<{ value: string }>("select value from config where key = 'dispatch'");
     if (rows[0]) {
-      this.dispatch = { ...this.dispatch, ...JSON.parse(rows[0].value) };
+      this.dispatch = { ...this.dispatch, platform: null, ...JSON.parse(rows[0].value) };
     }
   }
 
@@ -390,6 +402,7 @@ export class JobStore {
 function rowToJob(row: JobRow): Job {
   return {
     id: row.id,
+    platform: row.platform ?? "gpt",
     mode: row.mode ?? "image",
     status: row.status,
     prompt: row.prompt,

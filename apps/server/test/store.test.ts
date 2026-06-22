@@ -24,11 +24,47 @@ describe("JobStore", () => {
     await store.init();
     const created = store.createJob({ id: "job_1", prompt: "hello", sourceImages: [], metadata: {} });
     expect(created.mode).toBe("image");
+    expect(created.platform).toBe("gpt");
     expect(created.prompt).toContain("JOB_ID: job_1");
     const claimed = store.claimJob({ workerId: "worker", runningJobIds: [] });
     expect(claimed?.id).toBe("job_1");
     expect(claimed?.status).toBe("opening_tab");
     expect(store.claimJob({ workerId: "worker", runningJobIds: [] })).toBeNull();
+    store.close();
+  });
+
+  it("claims only jobs for the requested platform", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+    store.createJob({ id: "job_gpt", platform: "gpt", prompt: "gpt", sourceImages: [], metadata: {} });
+    store.createJob({ id: "job_gemini", platform: "gemini", prompt: "gemini", sourceImages: [], metadata: {} });
+
+    const geminiClaim = store.claimJob({ workerId: "gemini_worker", platform: "gemini", runningJobIds: [] });
+    expect(geminiClaim?.id).toBe("job_gemini");
+    expect(geminiClaim?.platform).toBe("gemini");
+
+    const gptClaim = store.claimJob({ workerId: "gpt_worker", platform: "gpt", runningJobIds: [] });
+    expect(gptClaim?.id).toBe("job_gpt");
+    expect(gptClaim?.platform).toBe("gpt");
+
+    store.close();
+  });
+
+  it("stores explicit Gemini image prompts in metadata", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+    const created = store.createJob({
+      id: "job_gemini_prompts",
+      platform: "gemini",
+      prompt: "生成两张图，人物一致。",
+      prompts: ["红色裙子单人街拍。", "蓝色裙子单人咖啡店。"],
+      expectedImageCount: 2,
+      sourceImages: [],
+      metadata: {}
+    });
+
+    expect(created.metadata.geminiPrompts).toEqual(["红色裙子单人街拍。", "蓝色裙子单人咖啡店。"]);
+
     store.close();
   });
 
@@ -40,6 +76,28 @@ describe("JobStore", () => {
     expect(created.mode).toBe("text");
     expect(created.expectedImageCount).toBe(0);
     expect(created.textOutputFile).toBeNull();
+
+    store.close();
+  });
+
+  it("creates Gemini text jobs with optional source images", async () => {
+    const source = path.join(tmp, "gemini-input.png");
+    fs.writeFileSync(source, "fake-image");
+    const store = new JobStore(tmp);
+    await store.init();
+    const created = store.createJob({
+      id: "job_gemini_text",
+      platform: "gemini",
+      mode: "text",
+      prompt: "describe this image",
+      sourceImages: [source],
+      metadata: {}
+    });
+
+    expect(created.platform).toBe("gemini");
+    expect(created.mode).toBe("text");
+    expect(created.expectedImageCount).toBe(0);
+    expect(created.sourceImages[0]).toBe("http://127.0.0.1:17321/job-assets/job_gemini_text/source/source-1.png");
 
     store.close();
   });
@@ -120,16 +178,20 @@ describe("JobStore", () => {
   it("persists dispatch requests", async () => {
     const store = new JobStore(tmp);
     await store.init();
-    expect(store.getDispatch()).toEqual({ id: 0, requestedAt: null });
+    expect(store.getDispatch()).toEqual({ id: 0, requestedAt: null, platform: null });
 
     const requested = store.requestDispatch();
     expect(requested.id).toBe(1);
     expect(requested.requestedAt).toEqual(expect.any(String));
+    expect(requested.platform).toBeNull();
+    const geminiRequested = store.requestDispatch("gemini");
+    expect(geminiRequested.id).toBe(2);
+    expect(geminiRequested.platform).toBe("gemini");
     store.close();
 
     const restored = new JobStore(tmp);
     await restored.init();
-    expect(restored.getDispatch()).toEqual(requested);
+    expect(restored.getDispatch()).toEqual(geminiRequested);
     restored.close();
   });
 });

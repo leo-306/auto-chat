@@ -4,8 +4,8 @@
 - 始终用中文回复用户。
 
 ## 项目定位
-- 本仓库是 ChatGPT 生图自动化系统：本地 Fastify 服务 + Chrome MV3 插件 + CLI。
-- agent 不应直接用浏览器/Chrome skill 逐步控制 ChatGPT 页面；优先通过本地服务、CLI、SSE 和 webhook 感知任务。
+- 本仓库是 GPT/Gemini 生图自动化系统：本地 Fastify 服务 + Chrome MV3 插件 + CLI。
+- agent 不应直接用浏览器/Chrome skill 逐步控制 GPT/Gemini 页面；优先通过本地服务、CLI、SSE 和 webhook 感知任务。
 - 所有项目代码都在当前仓库内，默认数据目录是 `data/`。
 
 ## 常用命令
@@ -30,6 +30,8 @@ apps/extension/dist
 
 ```bash
 auto-chat add examples/job.json
+auto-chat add examples/gemini-job.json --platform gemini
+auto-chat add examples/gemini-text-job.json --platform gemini
 auto-chat add examples/job.json --auto-id
 auto-chat add examples/job.json --replace
 auto-chat list
@@ -64,7 +66,8 @@ auto-chat open <jobId>
 ## 输出顺序规则
 - 导出图片文件名固定为 `output-01.*`、`output-02.*`、`output-03.*`、`output-04.*`。
 - 图片顺序必须和提示词中“图1/图2/图3/图4”一致。
-- 插件按 ChatGPT 生成图片卡片顺序采集，并按 estuary `file_...` 去重。
+- GPT 任务按生成图片卡片顺序采集，并按 estuary `file_...` 去重；Gemini 多图任务按串行轮次采集。
+- Gemini 一次对话只生成一张图片，多图任务必须串行拆成多次新对话。
 - 不要只按页面 `<img>` 数量判断顺序，因为同一张图可能有主图、缩略图、模糊背景等多个 DOM 节点。
 
 ## 修改要求

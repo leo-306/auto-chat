@@ -1,4 +1,4 @@
-import { findLatestJobConversationScope } from "@wechat-topic/shared";
+import { buildGeminiOutputPrompt, findLatestJobConversationScope } from "@wechat-topic/shared";
 import type { AppConfig, ConversationTurnRole, Job } from "@wechat-topic/shared";
 import type { DebugInspectMessage, DebugInspectResult, JobProgressMessage, StartJobMessage } from "./types.js";
 
@@ -37,6 +37,11 @@ async function startJob(job: Job, nextConfig: AppConfig): Promise<void> {
   monitorAbort?.abort();
   monitorAbort = new AbortController();
 
+  if (job.platform === "gemini" && job.mode === "image") {
+    void runGeminiImageJob(job, nextConfig, monitorAbort.signal);
+    return;
+  }
+
   const existing = findJobAssistant(job.id);
   if (existing) {
     void monitorJob(job, nextConfig, monitorAbort.signal);
@@ -51,6 +56,103 @@ async function startJob(job: Job, nextConfig: AppConfig): Promise<void> {
   await fillPromptAndSend(job.prompt);
   await report(job.id, "waiting_generation");
   void monitorJob(job, nextConfig, monitorAbort.signal);
+}
+
+async function runGeminiImageJob(job: Job, appConfig: AppConfig, signal: AbortSignal): Promise<void> {
+  const images: Array<{ index: number; sourceId: string; dataUrl: string; contentType: string }> = [];
+  const total = Math.max(1, job.expectedImageCount);
+
+  try {
+    for (let outputIndex = 1; outputIndex <= total; outputIndex += 1) {
+      if (signal.aborted) return;
+      if (outputIndex > 1) await startGeminiNewChat(appConfig);
+
+      const prompt = total > 1
+        ? buildGeminiOutputPrompt(job.prompt, outputIndex, geminiPrompts(job))
+        : job.prompt;
+      await report(job.id, "waiting_chat_ready");
+      await waitForComposer();
+      await report(job.id, "uploading");
+      await uploadSources(job);
+      await report(job.id, "sending_prompt");
+      await fillPromptAndSend(prompt);
+      await report(job.id, "waiting_generation");
+
+      const image = await waitForGeminiSingleImage(job, appConfig, signal);
+      images.push({ ...image, index: outputIndex - 1 });
+      await sendProgress({ type: "JOB_PROGRESS", jobId: job.id, status: "maybe_done", images: [...images] });
+    }
+
+    await sendProgress({
+      type: "JOB_PROGRESS",
+      jobId: job.id,
+      status: "done",
+      images
+    });
+  } catch (error) {
+    await report(job.id, "failed_retryable", String(error));
+  }
+}
+
+function geminiPrompts(job: Job): string[] | undefined {
+  const value = job.metadata.geminiPrompts;
+  if (!Array.isArray(value) || !value.every(item => typeof item === "string")) return undefined;
+  return value;
+}
+
+async function waitForGeminiSingleImage(
+  job: Job,
+  appConfig: AppConfig,
+  signal: AbortSignal
+): Promise<{ index: number; sourceId: string; dataUrl: string; contentType: string }> {
+  const startedAt = Date.now();
+  let lastSignature = "";
+  let lastChangedAt = Date.now();
+  let maybeDoneAt = 0;
+
+  while (!signal.aborted) {
+    const state = await inspectJob(job.id);
+    if (state.signature !== lastSignature) {
+      lastSignature = state.signature;
+      lastChangedAt = Date.now();
+      maybeDoneAt = 0;
+    }
+
+    if (state.hasError) throw new Error(state.errorText || "Gemini returned an error.");
+    if (state.isInterrupted) throw new Error(state.interruptedText || "Gemini response was interrupted.");
+    if (Date.now() - startedAt > appConfig.hardTimeoutMs) throw new Error("Job exceeded hard timeout.");
+    if (Date.now() - lastChangedAt > appConfig.stallTimeoutMs) throw new Error("No visible progress before stall timeout.");
+
+    if (state.loadedImages.length >= 1 && !state.isGenerating) {
+      if (!maybeDoneAt) {
+        maybeDoneAt = Date.now();
+        await sendProgress({ type: "JOB_PROGRESS", jobId: job.id, status: "maybe_done", signature: state.signature });
+      }
+      if (Date.now() - maybeDoneAt > 5000) {
+        const [image] = await collectImages(state.loadedImages.slice(0, 1));
+        if (!image) throw new Error("Gemini image was visible but could not be collected.");
+        return image;
+      }
+    }
+
+    await sleep(MONITOR_INTERVAL_MS);
+  }
+
+  throw new Error("Gemini job was aborted.");
+}
+
+async function startGeminiNewChat(appConfig: AppConfig): Promise<void> {
+  const newChat = findVisibleElement<HTMLAnchorElement>('a[aria-label="New chat"], a[data-test-id="side-nav-sparkle-button"], a[href="/app"]');
+  if (newChat) {
+    newChat.click();
+  } else if (!location.href.startsWith(appConfig.geminiUrl)) {
+    location.href = appConfig.geminiUrl;
+  } else {
+    history.pushState(null, "", "/app");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  }
+  await sleep(1500);
+  await waitForComposer();
 }
 
 async function monitorJob(job: Job, appConfig: AppConfig, signal: AbortSignal): Promise<void> {
@@ -228,7 +330,7 @@ async function debugInspect(jobId?: string): Promise<DebugInspectResult> {
 }
 
 function findLatestJobId(): string | null {
-  const matches = [...document.querySelectorAll<HTMLElement>("[data-message-author-role='user'], section[data-turn='user']")]
+  const matches = [...document.querySelectorAll<HTMLElement>("[data-message-author-role='user'], section[data-turn='user'], user-query")]
     .map(node => (node.innerText || "").match(/JOB_ID:\s*([^\s]+)/)?.[1])
     .filter((value): value is string => Boolean(value));
   return matches.at(-1) ?? null;
@@ -287,7 +389,7 @@ function findLoadedImages(root: ParentNode): HTMLImageElement[] {
 }
 
 function findGeneratedImagesInOrder(root: ParentNode): HTMLImageElement[] {
-  const cards = [...root.querySelectorAll<HTMLElement>(".group\\/imagegen-image, [id^='image-']")];
+  const cards = [...root.querySelectorAll<HTMLElement>(".group\\/imagegen-image, [id^='image-'], generated-image, single-image")];
   const images = cards
     .map(card => findGeneratedImageElements(card)[0])
     .filter((image): image is HTMLImageElement => Boolean(image));
@@ -304,14 +406,18 @@ function findGeneratedImageElements(root: ParentNode): HTMLImageElement[] {
       const height = img.naturalHeight || attrHeight || img.height;
       const largeEnough = width > 100 && height > 100;
       const hasEstuarySource = /\/backend-api\/estuary\/content/i.test(src);
+      const hasGeminiBlob = /^blob:https:\/\/gemini\.google\.com\//i.test(src);
       const hasGeneratedAlt = /Generated image/i.test(img.alt);
-      return Boolean(src) && (hasEstuarySource || (hasGeneratedAlt && largeEnough));
+      const hasGeminiGeneratedAlt = /AI generated/i.test(img.alt);
+      const isDecorative = /gstatic\.com\/lamda\/images\/gemini|googleusercontent\.com\/a\//i.test(src);
+      return Boolean(src) && !isDecorative && (hasEstuarySource || hasGeminiBlob || ((hasGeneratedAlt || hasGeminiGeneratedAlt) && largeEnough));
     });
 }
 
 function extractAssistantText(assistant: HTMLElement): string {
   const message = assistant.querySelector<HTMLElement>("[data-message-author-role='assistant']");
-  const markdown = message?.querySelector<HTMLElement>(".markdown");
+  const geminiMessage = assistant.querySelector<HTMLElement>("message-content .markdown, .model-response-text .markdown");
+  const markdown = message?.querySelector<HTMLElement>(".markdown") ?? geminiMessage;
   return (
     (markdown ? serializeRichText(markdown) : "") ||
     message?.innerText ||
@@ -443,7 +549,7 @@ function findCopyResponseButton(assistant: HTMLElement): HTMLButtonElement | nul
       /copy response/i.test(label);
   }) ?? buttons.find(button => {
     const label = `${button.innerText} ${button.ariaLabel ?? ""} ${button.title ?? ""}`;
-    return isVisible(button) && /copy response/i.test(label);
+    return isVisible(button) && /copy response|copy/i.test(label) && !/copy image|copy prompt/i.test(label);
   }) ?? null;
 }
 
@@ -470,26 +576,30 @@ function imageKey(image: HTMLImageElement): string {
 }
 
 function findJobUserTurn(jobId: string): HTMLElement | null {
-  const message = [...document.querySelectorAll<HTMLElement>("[data-message-author-role='user']")]
+  const message = [...document.querySelectorAll<HTMLElement>("[data-message-author-role='user'], user-query")]
     .find(node => (node.innerText || "").includes(`JOB_ID: ${jobId}`));
-  return message?.closest<HTMLElement>("section[data-turn='user'], [data-turn='user'], [data-testid^='conversation-turn']") ?? message ?? null;
+  return message?.closest<HTMLElement>("section[data-turn='user'], [data-turn='user'], [data-testid^='conversation-turn'], user-query") ?? message ?? null;
 }
 
 function findConversationTurns(): HTMLElement[] {
   const sectionTurns = [...document.querySelectorAll<HTMLElement>("section[data-turn]")];
   if (sectionTurns.length > 0) return sectionTurns;
+  const geminiTurns = [...document.querySelectorAll<HTMLElement>("user-query, model-response")];
+  if (geminiTurns.length > 0) return geminiTurns;
   return [...document.querySelectorAll<HTMLElement>("[data-message-author-role]")];
 }
 
 function isUserTurn(node: HTMLElement): boolean {
   return node.getAttribute("data-turn") === "user" ||
     node.getAttribute("data-message-author-role") === "user" ||
+    node.tagName.toLowerCase() === "user-query" ||
     Boolean(node.querySelector("[data-message-author-role='user']"));
 }
 
 function isAssistantTurn(node: HTMLElement): boolean {
   return node.getAttribute("data-turn") === "assistant" ||
     node.getAttribute("data-message-author-role") === "assistant" ||
+    node.tagName.toLowerCase() === "model-response" ||
     Boolean(node.querySelector("[data-message-author-role='assistant'], .agent-turn"));
 }
 
@@ -506,12 +616,17 @@ async function waitForComposer(): Promise<void> {
     if (findComposer()) return;
     await sleep(500);
   }
-  throw new Error("ChatGPT composer was not found.");
+  throw new Error(`${activeJob?.platform === "gemini" ? "Gemini" : "ChatGPT"} composer was not found.`);
 }
 
 async function uploadSources(job: Job): Promise<void> {
   if (job.sourceImages.length === 0) return;
-  const input = document.querySelector<HTMLInputElement>('input[type="file"]');
+  let input = document.querySelector<HTMLInputElement>('input[type="file"]');
+  if (!input && job.platform === "gemini") {
+    findUploadMenuButton()?.click();
+    await sleep(500);
+    input = document.querySelector<HTMLInputElement>('input[type="file"]');
+  }
   if (!input) throw new Error("File input was not found.");
   const files = await Promise.all(job.sourceImages.map((source, index) => sourceToFile(source, index)));
   const transfer = new DataTransfer();
@@ -546,7 +661,9 @@ async function fillPromptAndSend(prompt: string): Promise<void> {
 }
 
 function findComposer(): HTMLElement | HTMLTextAreaElement | null {
-  return findVisibleElement<HTMLElement>('[contenteditable="true"][role="textbox"]') ||
+  return findVisibleElement<HTMLElement>('[contenteditable="true"][aria-label="Enter a prompt for Gemini"]') ||
+    findVisibleElement<HTMLElement>("rich-textarea .ql-editor[role='textbox']") ||
+    findVisibleElement<HTMLElement>('[contenteditable="true"][role="textbox"]') ||
     findVisibleElement<HTMLElement>('[contenteditable="true"]') ||
     findVisibleElement<HTMLTextAreaElement>("textarea");
 }
@@ -558,10 +675,18 @@ function findSendButton(): HTMLButtonElement | null {
     const testId = button.getAttribute("data-testid") ?? "";
     return isVisible(button) &&
       !button.disabled &&
-      (/send|发送/i.test(label) || testId.includes("send")) &&
-      !/stop/i.test(label) &&
+      (/send|submit|发送/i.test(label) || testId.includes("send")) &&
+      !/stop|microphone|麦克风/i.test(label) &&
       testId !== "stop-button";
   }) ?? null;
+}
+
+function findUploadMenuButton(): HTMLButtonElement | null {
+  return [...document.querySelectorAll<HTMLButtonElement>("button")]
+    .find(button => {
+      const label = `${button.innerText} ${button.ariaLabel ?? ""} ${button.title ?? ""}`;
+      return isVisible(button) && /upload and tools|上传/i.test(label);
+    }) ?? null;
 }
 
 function selectEditableContents(element: HTMLElement): void {
@@ -593,7 +718,7 @@ async function waitForPromptSubmitted(prompt: string): Promise<void> {
     if (findJobUserTurn(jobId)) return;
     await sleep(500);
   }
-  throw new Error("Prompt was filled but no submitted ChatGPT user turn appeared.");
+  throw new Error(`Prompt was filled but no submitted ${activeJob?.platform === "gemini" ? "Gemini" : "ChatGPT"} user turn appeared.`);
 }
 
 async function sourceToFile(source: string, index: number): Promise<File> {

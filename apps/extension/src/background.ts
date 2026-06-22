@@ -1,18 +1,19 @@
-import type { AppConfig, ArtifactRequest, ClaimJobRequest, DispatchState, Job, UpdateStatusRequest } from "@wechat-topic/shared";
+import type { AppConfig, ArtifactRequest, ClaimJobRequest, DispatchState, Job, JobPlatform, UpdateStatusRequest } from "@wechat-topic/shared";
 import { DEFAULT_CONFIG } from "@wechat-topic/shared";
 import type { DebugInspectMessage, DebugInspectResult, JobProgressMessage, PopupState, StartJobMessage, WorkerRecord } from "./types.js";
 
 const SERVER_URL = "http://127.0.0.1:17321";
+const PLATFORMS: JobPlatform[] = ["gpt", "gemini"];
 const workerId = `ext_${crypto.randomUUID()}`;
 const workers = new Map<number, WorkerRecord>();
-let paused = true;
+let pausedByPlatform: Record<JobPlatform, boolean> = { gpt: true, gemini: true };
 let config: AppConfig = DEFAULT_CONFIG;
 let serverOk = false;
-let lastDebug = "";
+let lastDebugByPlatform: Record<JobPlatform, string> = { gpt: "", gemini: "" };
 let lastDispatchId: number | null = null;
 
 chrome.runtime.onInstalled.addListener(() => {
-  void chrome.storage.local.set({ paused: true });
+  void chrome.storage.local.set({ pausedByPlatform });
   chrome.alarms.create("scheduler", { periodInMinutes: 0.1 });
 });
 
@@ -26,7 +27,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   const worker = workers.get(tabId);
-  if (!worker || !changeInfo.url?.includes("/c/")) return;
+  if (!worker || !changeInfo.url || !isConversationUrl(worker.platform, changeInfo.url)) return;
   void postStatus(worker.jobId, {
     status: "waiting_generation",
     tabId,
@@ -59,37 +60,39 @@ async function handleMessage(message: unknown, sender: chrome.runtime.MessageSen
     return { ok: true };
   }
 
-  const typed = message as { type?: string; paused?: boolean; jobId?: string; tabId?: number };
+  const typed = message as { type?: string; paused?: boolean; platform?: JobPlatform; jobId?: string; tabId?: number };
+  const platform = normalizePlatform(typed.platform);
   if (typed.type === "GET_STATE") {
-    return state();
+    return state(platform);
   }
   if (typed.type === "SET_PAUSED") {
-    paused = Boolean(typed.paused);
-    await chrome.storage.local.set({ paused });
-    if (!paused) void schedulerTick();
-    return state();
+    pausedByPlatform[platform] = Boolean(typed.paused);
+    await chrome.storage.local.set({ pausedByPlatform });
+    if (!pausedByPlatform[platform]) void schedulerTick({ platform });
+    return state(platform);
   }
   if (typed.type === "TICK") {
-    await schedulerTick({ force: true });
-    return state();
+    await requestDispatch(platform);
+    await schedulerTick({ force: true, platform });
+    return state(platform);
   }
   if (typed.type === "DEBUG_INSPECT_CURRENT_TAB") {
     return debugInspectCurrentTab();
   }
   if (typed.type === "DEBUG_SIMULATE_SUCCESS") {
-    return debugSimulate("done");
+    return debugSimulate("done", undefined, platform);
   }
   if (typed.type === "DEBUG_SIMULATE_ERROR") {
-    return debugSimulate("failed_retryable", "Debug simulated ChatGPT error.");
+    return debugSimulate("failed_retryable", `Debug simulated ${platformName(platform)} error.`, platform);
   }
   if (typed.type === "DEBUG_SIMULATE_STALLED") {
-    return debugSimulate("stalled", "Debug simulated stalled generation.");
+    return debugSimulate("stalled", "Debug simulated stalled generation.", platform);
   }
   if (typed.type === "DEBUG_SIMULATE_TIMEOUT") {
-    return debugSimulate("needs_manual", "Debug simulated hard timeout.");
+    return debugSimulate("needs_manual", "Debug simulated hard timeout.", platform);
   }
   if (typed.type === "DEBUG_OPEN_ACTIVE_TAB") {
-    const worker = firstWorker();
+    const worker = firstWorker(platform);
     if (!worker) return debugResult("No active worker tab.");
     await chrome.tabs.update(worker.tabId, { active: true });
     return debugResult(`已切换到任务标签页：tab=${worker.tabId}，任务=${worker.jobId}。`);
@@ -97,24 +100,33 @@ async function handleMessage(message: unknown, sender: chrome.runtime.MessageSen
   return { ok: false };
 }
 
-async function schedulerTick(options: { force?: boolean } = {}): Promise<void> {
-  const stored = await chrome.storage.local.get(["paused"]);
-  paused = stored.paused !== false;
+async function schedulerTick(options: { force?: boolean; platform?: JobPlatform } = {}): Promise<void> {
+  const stored = await chrome.storage.local.get(["paused", "pausedByPlatform"]);
+  pausedByPlatform = {
+    gpt: stored.pausedByPlatform?.gpt ?? stored.paused !== false,
+    gemini: stored.pausedByPlatform?.gemini ?? true
+  };
   await refreshConfig();
   const dispatched = await consumeDispatchSignal();
-  if ((!options.force && paused && !dispatched) || !serverOk) return;
+  if (!serverOk) return;
 
-  while (workers.size < config.maxConcurrency) {
-    const job = await claimJob();
-    if (!job) break;
-    try {
-      await launchJob(job);
-    } catch (error) {
-      await postStatus(job.id, {
-        status: "needs_manual",
-        errorMessage: String(error),
-        workerId
-      });
+  const targetPlatforms = options.platform ? [options.platform] : PLATFORMS;
+  for (const platform of targetPlatforms) {
+    const dispatchMatches = dispatched === null || dispatched === platform;
+    if (!options.force && pausedByPlatform[platform] && !dispatchMatches) continue;
+
+    while (workerCount(platform) < config.maxConcurrency) {
+      const job = await claimJob(platform);
+      if (!job) break;
+      try {
+        await launchJob(job);
+      } catch (error) {
+        await postStatus(job.id, {
+          status: "needs_manual",
+          errorMessage: String(error),
+          workerId
+        });
+      }
     }
   }
 }
@@ -128,7 +140,7 @@ async function refreshConfig(): Promise<void> {
   }
 }
 
-async function consumeDispatchSignal(): Promise<boolean> {
+async function consumeDispatchSignal(): Promise<JobPlatform | null | false> {
   if (!serverOk) return false;
   try {
     const dispatch = await api<DispatchState>("/dispatch");
@@ -139,27 +151,32 @@ async function consumeDispatchSignal(): Promise<boolean> {
     if (dispatch.id <= lastDispatchId) return false;
     lastDispatchId = dispatch.id;
     await chrome.storage.local.set({ lastDispatchId });
-    lastDebug = `收到外部调度请求：${dispatch.requestedAt ?? "未知时间"}。`;
-    return true;
+    const targets = dispatch.platform ? [dispatch.platform] : PLATFORMS;
+    for (const platform of targets) {
+      lastDebugByPlatform[platform] = `收到外部调度请求：${dispatch.requestedAt ?? "未知时间"}。`;
+    }
+    return dispatch.platform ?? null;
   } catch {
     return false;
   }
 }
 
-async function claimJob(): Promise<Job | null> {
+async function claimJob(platform: JobPlatform): Promise<Job | null> {
   const body: ClaimJobRequest = {
     workerId,
+    platform,
     runningJobIds: [...workers.values()].map(worker => worker.jobId)
   };
   return api<Job | null>(`/jobs/claim`, { method: "POST", body });
 }
 
 async function launchJob(job: Job): Promise<void> {
-  const tab = await chrome.tabs.create({ url: config.chatgptUrl, active: false });
+  const tab = await chrome.tabs.create({ url: urlForPlatform(job.platform), active: false });
   if (!tab.id) throw new Error("Chrome did not return a tab id");
   const worker: WorkerRecord = {
     tabId: tab.id,
     jobId: job.id,
+    platform: job.platform,
     startedAt: Date.now(),
     lastStateAt: Date.now(),
     refreshCount: job.refreshCount
@@ -307,6 +324,10 @@ async function api<T>(path: string, options: { method?: string; body?: unknown }
   return response.json() as Promise<T>;
 }
 
+async function requestDispatch(platform: JobPlatform): Promise<void> {
+  await api("/dispatch", { method: "POST", body: { platform } });
+}
+
 async function waitForTabComplete(tabId: number): Promise<void> {
   for (let attempt = 0; attempt < 120; attempt += 1) {
     const tab = await chrome.tabs.get(tabId);
@@ -319,12 +340,22 @@ function isProgress(message: unknown): message is JobProgressMessage {
   return Boolean(message && typeof message === "object" && (message as { type?: string }).type === "JOB_PROGRESS");
 }
 
-function state(): PopupState {
+function state(activePlatform: JobPlatform): PopupState {
   return {
-    paused,
     serverOk,
-    workers: [...workers.values()],
-    lastDebug
+    activePlatform,
+    platforms: {
+      gpt: {
+        paused: pausedByPlatform.gpt,
+        workers: workersForPlatform("gpt"),
+        lastDebug: lastDebugByPlatform.gpt
+      },
+      gemini: {
+        paused: pausedByPlatform.gemini,
+        workers: workersForPlatform("gemini"),
+        lastDebug: lastDebugByPlatform.gemini
+      }
+    }
   };
 }
 
@@ -338,8 +369,9 @@ async function debugInspectCurrentTab(): Promise<{ ok: boolean; message: string;
     const mismatch = result.pageJobId && result.jobId && result.pageJobId !== result.jobId
       ? ` JOB_ID不一致：当前页=${result.pageJobId}`
       : "";
-    lastDebug = `检测：任务=${result.jobId ?? "无"} 可用图片=${result.loadedImages}/${result.expectedImages ?? "?"} 任务区=${result.scopedImages} 全页=${result.pageImages} 生成中=${result.isGenerating} 连接中断=${result.isInterrupted} 异常=${result.hasError}${mismatch}`;
-    return { ok: true, message: lastDebug, result };
+    const platform = worker?.platform ?? platformForUrl(result.url);
+    lastDebugByPlatform[platform] = `检测：任务=${result.jobId ?? "无"} 可用图片=${result.loadedImages}/${result.expectedImages ?? "?"} 任务区=${result.scopedImages} 全页=${result.pageImages} 生成中=${result.isGenerating} 连接中断=${result.isInterrupted} 异常=${result.hasError}${mismatch}`;
+    return { ok: true, message: lastDebugByPlatform[platform], result };
   } catch (error) {
     return debugResult(`检测失败：${String(error)}`, false);
   }
@@ -347,9 +379,10 @@ async function debugInspectCurrentTab(): Promise<{ ok: boolean; message: string;
 
 async function debugSimulate(
   status: JobProgressMessage["status"],
-  errorMessage?: string
+  errorMessage?: string,
+  platform?: JobPlatform
 ): Promise<{ ok: boolean; message: string }> {
-  const worker = firstWorker();
+  const worker = firstWorker(platform);
   if (!worker) return debugResult("没有插件接管中的任务。请先创建任务，再点击“立即领取一轮”或调用 dispatch。", false);
   await handleProgress({
     type: "JOB_PROGRESS",
@@ -361,13 +394,42 @@ async function debugSimulate(
   return debugResult(`已写入模拟结果：任务=${worker.jobId}，状态=${status}。`);
 }
 
-function firstWorker(): WorkerRecord | undefined {
-  return [...workers.values()][0];
+function firstWorker(platform?: JobPlatform): WorkerRecord | undefined {
+  return [...workers.values()].find(worker => !platform || worker.platform === platform);
 }
 
 function debugResult(message: string, ok = true): { ok: boolean; message: string } {
-  lastDebug = message;
+  for (const platform of PLATFORMS) lastDebugByPlatform[platform] = message;
   return { ok, message };
+}
+
+function normalizePlatform(platform: unknown): JobPlatform {
+  return platform === "gemini" ? "gemini" : "gpt";
+}
+
+function urlForPlatform(platform: JobPlatform): string {
+  return platform === "gemini" ? config.geminiUrl : config.chatgptUrl;
+}
+
+function workerCount(platform: JobPlatform): number {
+  return workersForPlatform(platform).length;
+}
+
+function workersForPlatform(platform: JobPlatform): WorkerRecord[] {
+  return [...workers.values()].filter(worker => worker.platform === platform);
+}
+
+function platformForUrl(url: string): JobPlatform {
+  return url.includes("gemini.google.com") ? "gemini" : "gpt";
+}
+
+function platformName(platform: JobPlatform): string {
+  return platform === "gemini" ? "Gemini" : "GPT";
+}
+
+function isConversationUrl(platform: JobPlatform, url: string): boolean {
+  if (platform === "gemini") return url.includes("gemini.google.com/app");
+  return url.includes("/c/");
 }
 
 function debugImage(): { index: number; sourceId: string; dataUrl: string; contentType: string } {

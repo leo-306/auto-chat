@@ -1,8 +1,9 @@
-import type { AppConfig, Job, JobStatus } from "@wechat-topic/shared";
+import type { AppConfig, Job, JobPlatform, JobStatus } from "@wechat-topic/shared";
 
 export type WorkerRecord = {
   tabId: number;
   jobId: string;
+  platform: JobPlatform;
   startedAt: number;
   lastStateAt: number;
   refreshCount: number;
@@ -21,14 +22,20 @@ export type JobProgressMessage = {
   signature?: string;
   errorMessage?: string;
   images?: Array<{ index: number; sourceId: string; dataUrl: string; contentType: string }>;
+  imageOrderComplete?: boolean;
   text?: string;
 };
 
-export type PopupState = {
+export type PlatformState = {
   paused: boolean;
-  serverOk: boolean;
   workers: WorkerRecord[];
   lastDebug?: string;
+};
+
+export type PopupState = {
+  serverOk: boolean;
+  activePlatform: JobPlatform;
+  platforms: Record<JobPlatform, PlatformState>;
 };
 
 export type DebugInspectMessage = {

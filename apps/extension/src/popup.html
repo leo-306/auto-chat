@@ -9,11 +9,16 @@
   <body>
     <header class="app-header">
       <div>
-        <p class="eyebrow">ChatGPT automation</p>
+        <p class="eyebrow">GPT / Gemini automation</p>
         <h1>auto-chat</h1>
       </div>
       <span id="server" class="status-pill">检测中</span>
     </header>
+
+    <nav class="tabs" aria-label="平台">
+      <button id="tab-gpt" class="tab active" data-platform="gpt">GPT</button>
+      <button id="tab-gemini" class="tab" data-platform="gemini">Gemini</button>
+    </nav>
 
     <section class="panel">
       <div class="section-head">
@@ -34,7 +39,7 @@
       <div class="section-head">
         <div>
           <h2>正在处理</h2>
-          <p>当前由插件接管的 ChatGPT 标签页和任务。</p>
+          <p id="workers-copy">当前由插件接管的平台标签页和任务。</p>
         </div>
       </div>
       <div id="workers"></div>
@@ -51,7 +56,7 @@
       <details class="advanced">
         <summary>高级/调试</summary>
         <div class="debug-grid">
-          <button id="inspect">检查当前 ChatGPT 页</button>
+          <button id="inspect">检查当前平台页</button>
           <button id="debug-success">模拟：保存成功</button>
           <button id="debug-error" class="warn">模拟：可重试错误</button>
           <button id="debug-stalled" class="warn">模拟：生成卡住</button>

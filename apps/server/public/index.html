@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>ChatGPT Image Jobs</title>
+    <title>auto-chat Jobs</title>
     <style>
       body { font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 32px; color: #202124; }
       table { border-collapse: collapse; width: 100%; }
@@ -21,10 +21,10 @@
     </style>
   </head>
   <body>
-    <h1>ChatGPT Image Jobs</h1>
+    <h1>auto-chat Jobs</h1>
     <p id="notice" class="notice"></p>
     <table>
-      <thead><tr><th>ID</th><th>Status</th><th>Outputs</th><th>Updated</th><th>Error</th><th>Action</th></tr></thead>
+      <thead><tr><th>ID</th><th>Platform</th><th>Status</th><th>Outputs</th><th>Updated</th><th>Error</th><th>Action</th></tr></thead>
       <tbody id="jobs"></tbody>
     </table>
     <script>
@@ -35,13 +35,14 @@
         document.querySelector('#jobs').innerHTML = jobs.map(job => `
           <tr>
             <td>${escapeHtml(job.id)}</td>
+            <td>${escapeHtml(platformLabel(job.platform))}</td>
             <td class="status">${escapeHtml(job.status)}</td>
             <td>${formatOutputs(job)}</td>
             <td>${escapeHtml(job.updatedAt)}</td>
             <td>${escapeHtml(job.errorMessage || '')}</td>
             <td>
               <div class="actions">
-                ${job.conversationUrl ? `<a href="${escapeAttribute(job.conversationUrl)}" target="_blank">ChatGPT</a>` : ''}
+                ${job.conversationUrl ? `<a href="${escapeAttribute(job.conversationUrl)}" target="_blank">${escapeHtml(platformLabel(job.platform))}</a>` : ''}
                 <button class="danger" data-delete="${escapeAttribute(job.id)}" ${deletingId === job.id ? 'disabled' : ''}>
                   ${deletingId === job.id ? 'Deleting...' : 'Delete'}
                 </button>
@@ -113,6 +114,10 @@
             }).join('')}
           </div>
         `;
+      }
+
+      function platformLabel(platform) {
+        return platform === 'gemini' ? 'Gemini' : 'GPT';
       }
 
       async function hydrateTextPreviews(jobs) {
