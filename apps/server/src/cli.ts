@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -41,6 +42,11 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
 
   if (command === "start") {
     await startServer();
+    return;
+  }
+
+  if (command === "init") {
+    await initAutoChat();
     return;
   }
 
@@ -136,6 +142,16 @@ export function normalizeCommand(command: string): string {
   if (command === "server:status") return "status";
   const legacy = /^job:(.+)$/.exec(command);
   return legacy ? legacy[1] : command;
+}
+
+export function defaultSkillInstallDirs(homeDir = os.homedir()): string[] {
+  return [
+    path.join(homeDir, ".codex", "skills"),
+    path.join(homeDir, ".claude", "skills"),
+    path.join(homeDir, ".agents", "skills"),
+    path.join(homeDir, ".config", "opencode", "skills"),
+    path.join(homeDir, ".opencode", "skills")
+  ];
 }
 
 export function formatListRow(job: Job, textPreview: (file: string | null) => string = readTextPreview): ListRow {
@@ -238,6 +254,38 @@ async function startServer(): Promise<void> {
     await sleep(250);
   }
   throw new Error(`服务已启动但健康检查未通过。pid=${child.pid} 日志=${displayPath(logFile)}`);
+}
+
+async function initAutoChat(): Promise<void> {
+  const installed = installAgentSkill();
+  for (const target of installed) print(`已安装 auto-chat skill: ${displayPath(target)}`);
+  await startServer();
+}
+
+function installAgentSkill(): string[] {
+  const source = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "skills", "auto-chat");
+  if (!fs.existsSync(source)) {
+    throw new Error(`未找到随包发布的 auto-chat skill：${source}`);
+  }
+
+  const dirs = skillInstallDirs();
+  const installed: string[] = [];
+  for (const dir of dirs) {
+    const target = path.join(dir, "auto-chat");
+    fs.rmSync(target, { recursive: true, force: true });
+    fs.mkdirSync(dir, { recursive: true });
+    fs.cpSync(source, target, { recursive: true });
+    installed.push(target);
+  }
+  return installed;
+}
+
+function skillInstallDirs(): string[] {
+  const raw = process.env.AUTO_CHAT_SKILL_DIRS;
+  const dirs = raw
+    ? raw.split(path.delimiter).map(value => value.trim()).filter(Boolean)
+    : defaultSkillInstallDirs();
+  return [...new Set(dirs.map(dir => path.resolve(dir)))];
 }
 
 async function stopServer(): Promise<void> {
@@ -514,6 +562,7 @@ function usage(): void {
   print(`auto-chat
 
 Usage:
+  auto-chat init
   auto-chat start
   auto-chat stop
   auto-chat status

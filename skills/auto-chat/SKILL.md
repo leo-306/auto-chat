@@ -1,6 +1,6 @@
 ---
 name: auto-chat
-description: Use when working on this repository's local ChatGPT automation system, especially for debugging, testing, starting or stopping the task service, creating jobs, listening to jobs, validating Chrome extension behavior, or documenting Agent integration. Requires real global CLI flows via npm link instead of npm run shortcuts.
+description: Use when working with the local ChatGPT automation system, especially starting or stopping the task service, creating jobs, listening to jobs, validating Chrome extension behavior, or documenting Agent integration. Requires real installed auto-chat CLI flows instead of npm run shortcuts.
 ---
 
 # auto-chat
@@ -13,16 +13,27 @@ Do not validate user-facing workflows through `npm run job:*` or direct service 
 
 ## Setup
 
-From the repository root:
+For production-style local use, install the package globally and initialize the agent integration:
+
+```bash
+npm install -g <package-or-tarball>
+auto-chat init
+auto-chat status
+```
+
+`auto-chat init` installs this skill into common global agent skill directories and starts the background service.
+
+For repository development only:
 
 ```bash
 npm install
 npm run build
-npm link
+npm pack
+npm install -g ./wechat-topic-*.tgz
 auto-chat --help
 ```
 
-If the CLI output does not come from the current checkout, rebuild and re-run `npm link`.
+Do not use `npm link` for production-flow testing. If the CLI output does not come from the intended installed package, rebuild, pack, and reinstall the tarball.
 
 ## Service Workflow
 
@@ -80,8 +91,8 @@ Before reporting completion for code changes:
 npm run build
 npm run check
 npm test
-npm link
 auto-chat --help
+auto-chat init
 auto-chat start
 auto-chat status
 auto-chat stop

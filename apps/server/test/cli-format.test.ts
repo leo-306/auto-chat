@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { Job } from "@wechat-topic/shared";
-import { formatDoctor, formatJobSummary, formatListRow, normalizeCommand, shouldStopListeningForPayload } from "../src/cli.js";
+import {
+  defaultSkillInstallDirs,
+  formatDoctor,
+  formatJobSummary,
+  formatListRow,
+  normalizeCommand,
+  shouldStopListeningForPayload
+} from "../src/cli.js";
 
 const baseJob: Job = {
   id: "job_1",
@@ -91,6 +98,16 @@ describe("CLI formatting", () => {
       jobId: "job_1",
       job: { ...baseJob, status: "waiting_generation" }
     }, "job_1")).toBe(false);
+  });
+
+  it("uses global agent skill directories for init installs", () => {
+    expect(defaultSkillInstallDirs("/Users/alice")).toEqual([
+      "/Users/alice/.codex/skills",
+      "/Users/alice/.claude/skills",
+      "/Users/alice/.agents/skills",
+      "/Users/alice/.config/opencode/skills",
+      "/Users/alice/.opencode/skills"
+    ]);
   });
 
   it("formats job summaries and doctor output with next actions", () => {
