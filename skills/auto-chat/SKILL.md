@@ -1,13 +1,13 @@
 ---
 name: auto-chat
-description: Use when working with the local ChatGPT automation system, especially starting or stopping the task service, creating jobs, listening to jobs, validating Chrome extension behavior, or documenting Agent integration. Requires real installed auto-chat CLI flows instead of npm run shortcuts.
+description: Use when working with the local GPT/Gemini browser automation system, including service lifecycle, job creation, platform dispatch, SSE listening, Chrome extension validation, or agent integration docs.
 ---
 
 # auto-chat
 
 ## Core Rule
 
-Use the installed `auto-chat` CLI as the source of truth for local debugging and self-tests.
+Use the real `auto-chat` CLI as the source of truth for local debugging and self-tests.
 
 Do not validate user-facing workflows through `npm run job:*` or direct service imports. Keep `npm run build`, `npm run check`, and `npm test` for development verification only.
 
@@ -51,21 +51,28 @@ Use `JOB_SERVER_URL=http://127.0.0.1:<port>` only when intentionally isolating a
 
 ## Job Workflow
 
-Create and inspect jobs through the real CLI:
+Create and inspect jobs through the real CLI. Prefer platform-specific dispatch so a GPT task does not wake Gemini and a Gemini task does not wake GPT:
 
 ```bash
 auto-chat add examples/text-job.json --replace
 auto-chat add examples/job.json --replace
+auto-chat add examples/gemini-job.json --replace
+auto-chat add examples/gemini-text-job.json --replace
 auto-chat list
 auto-chat show <jobId>
 auto-chat doctor <jobId>
-auto-chat dispatch
+auto-chat dispatch --platform gpt
+auto-chat dispatch --platform gemini
 auto-chat listen <jobId>
 ```
 
-Use `auto-chat listen <jobId> --json` when raw SSE event shape matters.
+Use `auto-chat listen <jobId> --json` when raw SSE event shape matters. Omitting `--platform` on `dispatch` wakes all platforms.
 
 Text output lives at `data/jobs/<jobId>/outputs/output-01.txt`. Image output lives under `data/jobs/<jobId>/outputs/`; use `image_order` events to confirm image order.
+
+Gemini image jobs should use `prompts: string[]` for multi-image tasks. Each array entry must describe exactly one image; the extension sends entries one by one because Gemini generates one image per conversation. GPT image jobs may still use a single multi-image prompt.
+
+GPT and Gemini text jobs both support optional `sourceImages`; set `mode: "text"` for text output and `mode: "image"` for image output.
 
 ## Chrome Extension
 
@@ -81,7 +88,7 @@ Reload Chrome from:
 apps/extension/dist
 ```
 
-The extension should automate only the user's own logged-in ChatGPT page. Do not drive ChatGPT manually through browser tooling when the local service, CLI, SSE, or job files can provide the needed state.
+The extension should automate only the user's own logged-in GPT/Gemini pages. Do not drive GPT/Gemini manually through browser tooling when the local service, CLI, SSE, or job files can provide the needed state.
 
 ## Required Verification
 
@@ -103,8 +110,11 @@ For task-flow changes, also run a real CLI job flow against the background servi
 ```bash
 auto-chat start
 auto-chat add examples/text-job.json --replace
+auto-chat dispatch --platform gpt
 auto-chat list
 auto-chat show text_test_001
 auto-chat doctor text_test_001
 auto-chat stop
 ```
+
+For full HTTP/SSE/webhook details, use `docs/agent-integration.md`. The skill is the quick operating guide; the doc is the detailed protocol reference.

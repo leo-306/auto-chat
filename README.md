@@ -216,4 +216,4 @@ npm run check
 npm test
 ```
 
-详细 agent/自动化集成协议见 `docs/agent-integration.md`。
+面向 agent 的快速操作规程见 `skills/auto-chat/SKILL.md`；完整 HTTP/SSE/webhook 和状态协议见 `docs/agent-integration.md`。

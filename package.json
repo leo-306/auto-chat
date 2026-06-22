@@ -3,6 +3,18 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "files": [
+    "apps/server/dist",
+    "apps/server/public",
+    "apps/extension/dist",
+    "packages/shared/dist",
+    "skills/auto-chat",
+    "docs/agent-integration.md",
+    "examples",
+    "README.md",
+    "LICENSE",
+    "SECURITY.md"
+  ],
   "bin": {
     "auto-chat": "apps/server/dist/cli.js"
   },

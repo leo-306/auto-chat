@@ -5,6 +5,11 @@
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "public",
+    "package.json"
+  ],
   "bin": {
     "auto-chat": "dist/cli.js"
   },
