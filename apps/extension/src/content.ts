@@ -58,70 +58,74 @@ async function monitorJob(job: Job, appConfig: AppConfig, signal: AbortSignal): 
   let lastChangedAt = Date.now();
   let maybeDoneAt = 0;
 
-  while (!signal.aborted) {
-    const state = await inspectJob(job.id);
-    if (state.signature !== lastSignature) {
-      lastSignature = state.signature;
-      lastChangedAt = Date.now();
-      maybeDoneAt = 0;
-    }
-
-    if (state.hasError) {
-      await report(job.id, "failed_retryable", state.errorText);
-      return;
-    }
-
-    if (state.isInterrupted) {
-      await report(job.id, "stalled", state.interruptedText || "Connection interrupted while waiting for the complete answer.");
-      return;
-    }
-
-    if (Date.now() - startedAt > appConfig.hardTimeoutMs) {
-      await report(job.id, "needs_manual", "Job exceeded hard timeout.");
-      return;
-    }
-
-    if (Date.now() - lastChangedAt > appConfig.stallTimeoutMs) {
-      await report(job.id, "stalled", "No visible progress before stall timeout.");
-      return;
-    }
-
-    if (job.mode === "text" && state.assistantText.trim() && !state.isGenerating) {
-      if (!maybeDoneAt) {
-        maybeDoneAt = Date.now();
-        await sendProgress({ type: "JOB_PROGRESS", jobId: job.id, status: "maybe_done", signature: state.signature });
+  try {
+    while (!signal.aborted) {
+      const state = await inspectJob(job.id);
+      if (state.signature !== lastSignature) {
+        lastSignature = state.signature;
+        lastChangedAt = Date.now();
+        maybeDoneAt = 0;
       }
-      if (Date.now() - maybeDoneAt > 3000) {
-        await sendProgress({
-          type: "JOB_PROGRESS",
-          jobId: job.id,
-          status: "done",
-          signature: state.signature,
-          text: await collectTextResponse(job.id)
-        });
+
+      if (state.hasError) {
+        await report(job.id, "failed_retryable", state.errorText);
         return;
       }
-    }
 
-    const enoughImages = state.loadedImages.length >= job.expectedImageCount;
-    if (job.mode === "image" && enoughImages && !state.isGenerating) {
-      if (!maybeDoneAt) {
-        maybeDoneAt = Date.now();
-        await sendProgress({ type: "JOB_PROGRESS", jobId: job.id, status: "maybe_done", signature: state.signature });
-      }
-      if (Date.now() - maybeDoneAt > 8000) {
-        await sendProgress({
-          type: "JOB_PROGRESS",
-          jobId: job.id,
-          status: "done",
-          signature: state.signature,
-          images: await collectImages(state.loadedImages.slice(0, job.expectedImageCount))
-        });
+      if (state.isInterrupted) {
+        await report(job.id, "stalled", state.interruptedText || "Connection interrupted while waiting for the complete answer.");
         return;
       }
-    }
 
-    await sleep(MONITOR_INTERVAL_MS);
+      if (Date.now() - startedAt > appConfig.hardTimeoutMs) {
+        await report(job.id, "needs_manual", "Job exceeded hard timeout.");
+        return;
+      }
+
+      if (Date.now() - lastChangedAt > appConfig.stallTimeoutMs) {
+        await report(job.id, "stalled", "No visible progress before stall timeout.");
+        return;
+      }
+
+      if (job.mode === "text" && state.assistantText.trim() && !state.isGenerating) {
+        if (!maybeDoneAt) {
+          maybeDoneAt = Date.now();
+          await sendProgress({ type: "JOB_PROGRESS", jobId: job.id, status: "maybe_done", signature: state.signature });
+        }
+        if (Date.now() - maybeDoneAt > 3000) {
+          await sendProgress({
+            type: "JOB_PROGRESS",
+            jobId: job.id,
+            status: "done",
+            signature: state.signature,
+            text: await collectTextResponse(job.id, state.assistantText)
+          });
+          return;
+        }
+      }
+
+      const enoughImages = state.loadedImages.length >= job.expectedImageCount;
+      if (job.mode === "image" && enoughImages && !state.isGenerating) {
+        if (!maybeDoneAt) {
+          maybeDoneAt = Date.now();
+          await sendProgress({ type: "JOB_PROGRESS", jobId: job.id, status: "maybe_done", signature: state.signature });
+        }
+        if (Date.now() - maybeDoneAt > 8000) {
+          await sendProgress({
+            type: "JOB_PROGRESS",
+            jobId: job.id,
+            status: "done",
+            signature: state.signature,
+            images: await collectImages(state.loadedImages.slice(0, job.expectedImageCount))
+          });
+          return;
+        }
+      }
+
+      await sleep(MONITOR_INTERVAL_MS);
+    }
+  } catch (error) {
+    await report(job.id, "failed_retryable", String(error));
   }
 }
 
@@ -296,23 +300,127 @@ function findGeneratedImageElements(root: ParentNode): HTMLImageElement[] {
 
 function extractAssistantText(assistant: HTMLElement): string {
   const message = assistant.querySelector<HTMLElement>("[data-message-author-role='assistant']");
-  return (message?.innerText || assistant.innerText || "").trim();
+  const markdown = message?.querySelector<HTMLElement>(".markdown");
+  return (
+    (markdown ? serializeRichText(markdown) : "") ||
+    message?.innerText ||
+    assistant.innerText ||
+    ""
+  ).trim();
 }
 
-async function collectTextResponse(jobId: string): Promise<string> {
+function serializeRichText(root: HTMLElement): string {
+  return [...root.childNodes]
+    .map(node => serializeBlock(node))
+    .filter(Boolean)
+    .join("\n\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function serializeBlock(node: Node, listIndex?: number): string {
+  if (node.nodeType === Node.TEXT_NODE) return normalizeInline(node.textContent ?? "");
+  if (!(node instanceof HTMLElement)) return "";
+
+  const tag = node.tagName.toLowerCase();
+  if (tag === "br") return "\n";
+  if (tag === "pre") return serializeCodeBlock(node);
+  if (/^h[1-6]$/.test(tag)) return `${"#".repeat(Number(tag[1]))} ${serializeInlineChildren(node)}`.trim();
+  if (tag === "blockquote") {
+    return serializeRichText(node)
+      .split("\n")
+      .map(line => line ? `> ${line}` : ">")
+      .join("\n");
+  }
+  if (tag === "ul" || tag === "ol") return serializeList(node, tag === "ol");
+  if (tag === "li") {
+    const marker = listIndex === undefined ? "-" : `${listIndex}.`;
+    return `${marker} ${serializeInlineChildren(node)}`.trim();
+  }
+  if (tag === "table") return serializeTable(node);
+  if (tag === "p") return serializeInlineChildren(node);
+
+  return isBlockElement(node) ? serializeRichText(node) : serializeInlineNode(node);
+}
+
+function serializeList(list: HTMLElement, ordered: boolean): string {
+  return [...list.children]
+    .filter((child): child is HTMLElement => child instanceof HTMLElement && child.tagName.toLowerCase() === "li")
+    .map((item, index) => serializeBlock(item, ordered ? index + 1 : undefined))
+    .filter(Boolean)
+    .join("\n");
+}
+
+function serializeCodeBlock(pre: HTMLElement): string {
+  const code = pre.querySelector<HTMLElement>("code");
+  const text = (code?.innerText || pre.innerText || "").replace(/\n+$/g, "");
+  return `\`\`\`\n${text}\n\`\`\``;
+}
+
+function serializeTable(table: HTMLElement): string {
+  const rows = [...table.querySelectorAll("tr")]
+    .map(row => [...row.children].map(cell => normalizeInline((cell as HTMLElement).innerText || "")).join(" | "))
+    .filter(Boolean);
+  return rows.join("\n");
+}
+
+function serializeInlineChildren(element: HTMLElement): string {
+  return [...element.childNodes].map(serializeInlineNode).join("").replace(/[ \t]+\n/g, "\n").trim();
+}
+
+function serializeInlineNode(node: Node): string {
+  if (node.nodeType === Node.TEXT_NODE) return normalizeInline(node.textContent ?? "");
+  if (!(node instanceof HTMLElement)) return "";
+
+  const tag = node.tagName.toLowerCase();
+  if (tag === "br") return "\n";
+  if (tag === "code" && node.closest("pre") === null) return `\`${node.innerText.trim()}\``;
+  if (tag === "a") {
+    const text = serializeInlineChildren(node) || node.innerText.trim();
+    const href = node.getAttribute("href");
+    return href && text && href !== text ? `${text} (${href})` : text;
+  }
+  if (tag === "ul" || tag === "ol" || tag === "pre" || tag === "table" || isBlockElement(node)) {
+    return `\n${serializeBlock(node)}\n`;
+  }
+  return serializeInlineChildren(node);
+}
+
+function isBlockElement(element: HTMLElement): boolean {
+  return /^(article|aside|div|figure|figcaption|footer|header|main|nav|section)$/.test(element.tagName.toLowerCase());
+}
+
+function normalizeInline(text: string): string {
+  return text.replace(/\s+/g, " ");
+}
+
+async function collectTextResponse(jobId: string, fallbackText: string): Promise<string> {
   const assistant = findJobAssistant(jobId);
   if (!assistant) throw new Error("Assistant response was not found.");
   const copyButton = findCopyResponseButton(assistant);
-  if (!copyButton) throw new Error("Copy response button was not found.");
-  copyButton.click();
-  await sleep(300);
+  if (copyButton) {
+    copyButton.click();
+    await sleep(300);
 
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    const text = await navigator.clipboard.readText();
-    if (text.trim()) return text;
-    await sleep(200);
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const text = await readClipboardText();
+      if (text?.trim()) return text;
+      await sleep(200);
+    }
   }
-  throw new Error("Copy response produced empty clipboard text.");
+
+  const extractedText = extractAssistantText(assistant);
+  if (fallbackText.trim()) return fallbackText;
+  if (extractedText.trim()) return extractedText;
+  throw new Error(copyButton ? "Copy response produced empty clipboard text." : "Copy response button was not found.");
+}
+
+async function readClipboardText(): Promise<string | null> {
+  try {
+    return await navigator.clipboard.readText();
+  } catch {
+    return null;
+  }
 }
 
 function findCopyResponseButton(assistant: HTMLElement): HTMLButtonElement | null {
