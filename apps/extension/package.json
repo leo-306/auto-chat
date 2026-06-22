@@ -9,7 +9,8 @@
   ],
   "scripts": {
     "build": "node scripts/build.mjs",
-    "check": "tsc -p tsconfig.json --noEmit"
+    "check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@wechat-topic/shared": "0.1.0",
@@ -18,6 +19,7 @@
   "devDependencies": {
     "@types/chrome": "^0.0.287",
     "esbuild": "^0.28.1",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "vitest": "^4.1.9"
   }
 }

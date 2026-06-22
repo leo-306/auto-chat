@@ -533,6 +533,7 @@ function formatStatus(status: JobStatus): string {
     opening_tab: "打开 ChatGPT 标签页",
     waiting_chat_ready: "等待 ChatGPT 输入框",
     uploading: "上传参考图片",
+    waiting_upload_ready: "等待图片上传完成",
     sending_prompt: "发送提示词",
     waiting_generation: "等待响应",
     stalled: "响应停滞",

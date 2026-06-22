@@ -5,6 +5,7 @@ export const JOB_STATUSES = [
   "opening_tab",
   "waiting_chat_ready",
   "uploading",
+  "waiting_upload_ready",
   "sending_prompt",
   "waiting_generation",
   "stalled",

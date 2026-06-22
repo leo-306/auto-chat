@@ -1,5 +1,6 @@
 import { buildGeminiOutputPrompt, findLatestJobConversationScope } from "@wechat-topic/shared";
 import type { AppConfig, ConversationTurnRole, Job } from "@wechat-topic/shared";
+import { submitPromptWithFallback } from "./submit.js";
 import type { DebugInspectMessage, DebugInspectResult, JobProgressMessage, StartJobMessage } from "./types.js";
 
 let activeJob: Job | null = null;
@@ -53,7 +54,11 @@ async function startJob(job: Job, nextConfig: AppConfig): Promise<void> {
   await report(job.id, "uploading");
   await uploadSources(job);
   await report(job.id, "sending_prompt");
-  await fillPromptAndSend(job.prompt);
+  if (job.platform === "gpt") {
+    await fillPromptAndSendGpt(job);
+  } else {
+    await fillPromptAndSendOriginal(job.prompt);
+  }
   await report(job.id, "waiting_generation");
   void monitorJob(job, nextConfig, monitorAbort.signal);
 }
@@ -75,7 +80,7 @@ async function runGeminiImageJob(job: Job, appConfig: AppConfig, signal: AbortSi
       await report(job.id, "uploading");
       await uploadSources(job);
       await report(job.id, "sending_prompt");
-      await fillPromptAndSend(prompt);
+      await fillPromptAndSendOriginal(prompt);
       await report(job.id, "waiting_generation");
 
       const image = await waitForGeminiSingleImage(job, appConfig, signal);
@@ -636,7 +641,36 @@ async function uploadSources(job: Job): Promise<void> {
   await sleep(1500);
 }
 
-async function fillPromptAndSend(prompt: string): Promise<void> {
+async function fillPromptAndSendGpt(job: Job): Promise<void> {
+  const { prompt } = job;
+  const composer = fillPrompt(prompt);
+  await sleep(300);
+  const sendButton = findSendButton();
+  if (await submitPromptWithFallback({
+    composer,
+    sendButton,
+    getSendButton: findSendButton,
+    isSubmitted: () => isPromptSubmitted(prompt),
+    onWaitingForSubmitReady: () => report(job.id, "waiting_upload_ready"),
+    sleep
+  })) return;
+
+  throw new Error(`Prompt was filled but no submitted ${activeJob?.platform === "gemini" ? "Gemini" : "ChatGPT"} user turn appeared.`);
+}
+
+async function fillPromptAndSendOriginal(prompt: string): Promise<void> {
+  const composer = fillPrompt(prompt);
+  await sleep(300);
+  const sendButton = findSendButton();
+  if (sendButton) {
+    sendButton.click();
+  } else {
+    composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true }));
+  }
+  await waitForPromptSubmitted(prompt);
+}
+
+function fillPrompt(prompt: string): HTMLElement | HTMLTextAreaElement {
   const composer = findComposer();
   if (!composer) throw new Error("Composer was not found.");
   composer.focus();
@@ -650,14 +684,7 @@ async function fillPromptAndSend(prompt: string): Promise<void> {
       composer.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: prompt }));
     }
   }
-  await sleep(300);
-  const sendButton = findSendButton();
-  if (sendButton) {
-    sendButton.click();
-  } else {
-    composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true }));
-  }
-  await waitForPromptSubmitted(prompt);
+  return composer;
 }
 
 function findComposer(): HTMLElement | HTMLTextAreaElement | null {
@@ -674,7 +701,6 @@ function findSendButton(): HTMLButtonElement | null {
     const label = `${button.innerText} ${button.ariaLabel ?? ""} ${button.title ?? ""}`;
     const testId = button.getAttribute("data-testid") ?? "";
     return isVisible(button) &&
-      !button.disabled &&
       (/send|submit|发送/i.test(label) || testId.includes("send")) &&
       !/stop|microphone|麦克风/i.test(label) &&
       testId !== "stop-button";
@@ -709,6 +735,11 @@ function isVisible(element: HTMLElement): boolean {
     style.display !== "none" &&
     style.visibility !== "hidden" &&
     style.opacity !== "0";
+}
+
+async function isPromptSubmitted(prompt: string): Promise<boolean> {
+  const jobId = prompt.match(/JOB_ID:\s*([^\s]+)/)?.[1];
+  return !jobId || Boolean(findJobUserTurn(jobId));
 }
 
 async function waitForPromptSubmitted(prompt: string): Promise<void> {
