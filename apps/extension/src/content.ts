@@ -1,5 +1,6 @@
 import { buildGeminiOutputPrompt, findLatestJobConversationScope } from "@wechat-topic/shared";
 import type { AppConfig, ConversationTurnRole, Job } from "@wechat-topic/shared";
+import { hasGeneratingText } from "./inspect.js";
 import { submitPromptWithFallback } from "./submit.js";
 import type { DebugInspectMessage, DebugInspectResult, JobProgressMessage, StartJobMessage } from "./types.js";
 
@@ -7,7 +8,6 @@ let activeJob: Job | null = null;
 let config: AppConfig | null = null;
 let monitorAbort: AbortController | null = null;
 const ERROR_TEXT_PATTERN = /Something went wrong|Retry|Try again|出错|重试/i;
-const GENERATING_TEXT_PATTERN = /Thinking|Generating a more detailed image|hang tight|正在生成|生成中/i;
 const INTERRUPTED_TEXT_PATTERN = /Connection interrupted|Waiting for the complete answer|连接中断|等待完整回答/i;
 const MONITOR_INTERVAL_MS = 5000;
 
@@ -262,7 +262,7 @@ async function inspectJob(jobId: string): Promise<{
       errorText: hasError ? jobText.slice(0, 500) : "",
       isInterrupted,
       interruptedText: isInterrupted ? jobText.slice(0, 500) : "",
-      isGenerating: GENERATING_TEXT_PATTERN.test(text),
+      isGenerating: hasGeneratingText(text),
       assistantText: "",
       loadedImages: scopedImages,
       scopedImages,
@@ -276,7 +276,7 @@ async function inspectJob(jobId: string): Promise<{
   const hasError = ERROR_TEXT_PATTERN.test(`${text}\n${jobText}`);
   const isInterrupted = INTERRUPTED_TEXT_PATTERN.test(`${text}\n${jobText}`);
   const isGenerating =
-    GENERATING_TEXT_PATTERN.test(text) ||
+    hasGeneratingText(text) ||
     Boolean(assistant.querySelector('[aria-busy="true"], [data-testid*="loading"], .animate-pulse'));
   const assistantImages = findGeneratedImagesInOrder(assistant);
   const loadedImages = uniqueImages([...assistantImages, ...scopedImages]);
@@ -306,7 +306,7 @@ async function debugInspect(jobId?: string): Promise<DebugInspectResult> {
       hasJobAssistant: false,
       hasError: false,
       isInterrupted: false,
-      isGenerating: GENERATING_TEXT_PATTERN.test(document.body.innerText),
+      isGenerating: hasGeneratingText(document.body.innerText),
       loadedImages: findLoadedImages(document).length,
       scopedImages: 0,
       pageImages: findLoadedImages(document).length,
