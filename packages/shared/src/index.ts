@@ -128,3 +128,40 @@ export const DispatchStateSchema = z.object({
 });
 
 export type DispatchState = z.infer<typeof DispatchStateSchema>;
+
+export type ConversationTurnRole = "user" | "assistant" | "other";
+
+export interface ConversationTurnCandidate {
+  role: ConversationTurnRole;
+  text: string;
+}
+
+export interface JobConversationScope {
+  userIndex: number;
+  assistantIndex: number | null;
+  nextUserIndex: number | null;
+}
+
+export function findLatestJobConversationScope(turns: ConversationTurnCandidate[], jobId: string): JobConversationScope | null {
+  for (let userIndex = turns.length - 1; userIndex >= 0; userIndex -= 1) {
+    const user = turns[userIndex];
+    if (user?.role !== "user" || !user.text.includes(`JOB_ID: ${jobId}`)) continue;
+
+    let assistantIndex: number | null = null;
+    let nextUserIndex: number | null = null;
+    for (let index = userIndex + 1; index < turns.length; index += 1) {
+      const role = turns[index]?.role;
+      if (role === "user") {
+        nextUserIndex = index;
+        break;
+      }
+      if (role === "assistant" && assistantIndex === null) {
+        assistantIndex = index;
+      }
+    }
+
+    return { userIndex, assistantIndex, nextUserIndex };
+  }
+
+  return null;
+}

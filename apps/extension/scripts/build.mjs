@@ -21,3 +21,5 @@ for (const entry of ["background", "content", "popup"]) {
 for (const file of ["manifest.json", "popup.html", "popup.css"]) {
   fs.copyFileSync(path.join(root, "src", file), path.join(dist, file));
 }
+
+fs.cpSync(path.join(root, "src", "icons"), path.join(dist, "icons"), { recursive: true });

@@ -1,4 +1,5 @@
-import type { AppConfig, Job } from "@wechat-topic/shared";
+import { findLatestJobConversationScope } from "@wechat-topic/shared";
+import type { AppConfig, ConversationTurnRole, Job } from "@wechat-topic/shared";
 import type { DebugInspectMessage, DebugInspectResult, JobProgressMessage, StartJobMessage } from "./types.js";
 
 let activeJob: Job | null = null;
@@ -234,47 +235,51 @@ function findLatestJobId(): string | null {
 }
 
 function findJobAssistant(jobId: string): HTMLElement | null {
-  const userTurn = findJobUserTurn(jobId);
-  if (!userTurn) return null;
-
-  const turns = findConversationTurns();
-  for (const turn of turns) {
-    if (isAfter(turn, userTurn) && isAssistantTurn(turn)) return turn;
-  }
-  return null;
+  return findJobConversationScope(jobId)?.assistant ?? null;
 }
 
 function findJobScopedImages(jobId: string): HTMLImageElement[] {
-  const user = findJobUserTurn(jobId);
-  if (!user) return [];
+  const scope = findJobConversationScope(jobId);
+  if (!scope) return [];
 
-  const nextUser = findNextUserTurn(user);
   return findLoadedImages(document).filter(img =>
-    isAfter(img, user) && (!nextUser || isBefore(img, nextUser))
+    isAfter(img, scope.user) && (!scope.nextUser || isBefore(img, scope.nextUser))
   );
 }
 
 function findJobScopeText(jobId: string): string {
-  const user = findJobUserTurn(jobId);
-  if (!user) return "";
+  const scope = findJobConversationScope(jobId);
+  if (!scope) return "";
 
   const turns = findConversationTurns();
-  const nextUser = findNextUserTurn(user);
   const scopedTurns = turns.filter(node =>
-    (node === user || isAfter(node, user)) &&
-    (!nextUser || node === nextUser || isBefore(node, nextUser)) &&
-    node !== nextUser
+    (node === scope.user || isAfter(node, scope.user)) &&
+    (!scope.nextUser || node === scope.nextUser || isBefore(node, scope.nextUser)) &&
+    node !== scope.nextUser
   );
 
   return scopedTurns.map(node => node.innerText || "").join("\n");
 }
 
-function findNextUserTurn(user: HTMLElement): HTMLElement | undefined {
-  return findConversationTurns().find(node =>
-    node !== user &&
-    isUserTurn(node) &&
-    isAfter(node, user)
-  );
+function findJobConversationScope(jobId: string): { user: HTMLElement; assistant: HTMLElement | null; nextUser: HTMLElement | null } | null {
+  const turns = findConversationTurns();
+  const scope = findLatestJobConversationScope(turns.map(turn => ({
+    role: conversationTurnRole(turn),
+    text: turn.innerText || ""
+  })), jobId);
+  if (!scope) return null;
+
+  return {
+    user: turns[scope.userIndex]!,
+    assistant: scope.assistantIndex === null ? null : turns[scope.assistantIndex]!,
+    nextUser: scope.nextUserIndex === null ? null : turns[scope.nextUserIndex]!
+  };
+}
+
+function conversationTurnRole(node: HTMLElement): ConversationTurnRole {
+  if (isUserTurn(node)) return "user";
+  if (isAssistantTurn(node)) return "assistant";
+  return "other";
 }
 
 function findLoadedImages(root: ParentNode): HTMLImageElement[] {
@@ -292,9 +297,15 @@ function findGeneratedImagesInOrder(root: ParentNode): HTMLImageElement[] {
 function findGeneratedImageElements(root: ParentNode): HTMLImageElement[] {
   return [...root.querySelectorAll("img")]
     .filter(img => {
-      const naturalLargeEnough = img.naturalWidth > 100 && img.naturalHeight > 100;
-      const hasGeneratedSource = /\/backend-api\/estuary\/content|Generated image/i.test(`${img.currentSrc || img.src} ${img.alt}`);
-      return img.complete && naturalLargeEnough && hasGeneratedSource && Boolean(img.currentSrc || img.src);
+      const src = img.currentSrc || img.src;
+      const attrWidth = Number(img.getAttribute("width") ?? 0);
+      const attrHeight = Number(img.getAttribute("height") ?? 0);
+      const width = img.naturalWidth || attrWidth || img.width;
+      const height = img.naturalHeight || attrHeight || img.height;
+      const largeEnough = width > 100 && height > 100;
+      const hasEstuarySource = /\/backend-api\/estuary\/content/i.test(src);
+      const hasGeneratedAlt = /Generated image/i.test(img.alt);
+      return Boolean(src) && (hasEstuarySource || (hasGeneratedAlt && largeEnough));
     });
 }
 
