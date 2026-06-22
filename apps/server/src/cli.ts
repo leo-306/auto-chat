@@ -11,7 +11,7 @@ const baseUrl = process.env.JOB_SERVER_URL ?? "http://127.0.0.1:17321";
 const dataDir = path.join(workspaceRoot, "data");
 const pidFile = path.join(dataDir, "server.pid");
 const logFile = path.join(dataDir, "server.log");
-const terminalStatuses = new Set<JobStatus>(["done", "failed_final", "needs_manual"]);
+const terminalStatuses = new Set<JobStatus>(["done", "failed_retryable", "failed_final", "needs_manual"]);
 
 type CliOptions = {
   json: boolean;
@@ -70,7 +70,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     if (options.json) {
       print(JSON.stringify(jobs, null, 2));
     } else {
-      console.table(jobs.map(formatListRow));
+      console.table(jobs.map(job => formatListRow(job)));
     }
     return;
   }
@@ -138,13 +138,13 @@ export function normalizeCommand(command: string): string {
   return legacy ? legacy[1] : command;
 }
 
-export function formatListRow(job: Job): ListRow {
+export function formatListRow(job: Job, textPreview: (file: string | null) => string = readTextPreview): ListRow {
   return {
     id: job.id,
     mode: job.mode,
     status: job.status,
     progress: formatProgress(job),
-    result: formatResult(job),
+    result: formatResult(job, textPreview),
     updatedAt: job.updatedAt
   };
 }
@@ -352,6 +352,7 @@ async function listen(jobId: string | undefined, options: CliOptions): Promise<v
     try {
       const job = await request<Job>(`/jobs/${jobId}`);
       print(`[${time()}] ${job.id} ${formatStatus(job.status)} ${formatProgress(job)}`);
+      if (terminalStatuses.has(job.status)) return;
     } catch (error) {
       print(`[${time()}] 初始状态不可用：${String(error)}`);
     }
@@ -376,26 +377,35 @@ async function listen(jobId: string | undefined, options: CliOptions): Promise<v
     while (index >= 0) {
       const chunk = buffer.slice(0, index);
       buffer = buffer.slice(index + 2);
-      printSseChunk(chunk, jobId, options);
+      if (printSseChunk(chunk, jobId, options)) {
+        await reader.cancel();
+        return;
+      }
       index = buffer.indexOf("\n\n");
     }
   }
 }
 
-function printSseChunk(chunk: string, jobId: string | undefined, options: CliOptions): void {
+function printSseChunk(chunk: string, jobId: string | undefined, options: CliOptions): boolean {
   const dataLine = chunk.split("\n").find(line => line.startsWith("data: "));
-  if (!dataLine) return;
+  if (!dataLine) return false;
   const payload = JSON.parse(dataLine.slice(6));
   if (options.json) {
     if (!payload.ok && (!jobId || payload.jobId === jobId)) print(JSON.stringify(payload));
-    return;
+    return shouldStopListeningForPayload(payload, jobId);
   }
   if (payload.ok) {
     print(`[${time()}] 已连接事件流：${baseUrl}/events`);
-    return;
+    return false;
   }
-  if (jobId && payload.jobId !== jobId) return;
+  if (jobId && payload.jobId !== jobId) return false;
   print(formatSseEvent(payload));
+  return shouldStopListeningForPayload(payload, jobId);
+}
+
+export function shouldStopListeningForPayload(payload: { jobId?: string; job?: Pick<Job, "status"> | null }, jobId: string | undefined): boolean {
+  if (!jobId || payload.jobId !== jobId || !payload.job) return false;
+  return terminalStatuses.has(payload.job.status);
 }
 
 function formatSseEvent(payload: any): string {
@@ -426,8 +436,11 @@ function formatProgress(job: Job): string {
   return `${job.outputFiles.length}/${job.expectedImageCount} images`;
 }
 
-function formatResult(job: Job): string {
-  if (job.mode === "text") return displayPath(job.textOutputFile ?? job.outputFiles[0] ?? "");
+function formatResult(job: Job, textPreview: (file: string | null) => string = readTextPreview): string {
+  if (job.mode === "text") {
+    const file = job.textOutputFile ?? job.outputFiles[0] ?? null;
+    return textPreview(file) || displayPath(file ?? "");
+  }
   return job.outputFiles.map(displayPath).join(", ");
 }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Job } from "@wechat-topic/shared";
-import { formatDoctor, formatJobSummary, formatListRow, normalizeCommand } from "../src/cli.js";
+import { formatDoctor, formatJobSummary, formatListRow, normalizeCommand, shouldStopListeningForPayload } from "../src/cli.js";
 
 const baseJob: Job = {
   id: "job_1",
@@ -56,6 +56,41 @@ describe("CLI formatting", () => {
       progress: "text ready",
       result: "outputs/output-01.txt"
     });
+  });
+
+  it("shows text previews in list rows when the text output exists", () => {
+    expect(formatListRow({
+      ...baseJob,
+      id: "text_1",
+      mode: "text",
+      expectedImageCount: 0,
+      outputFiles: ["/tmp/data/jobs/text_1/outputs/output-01.txt"],
+      textOutputFile: "/tmp/data/jobs/text_1/outputs/output-01.txt"
+    }, () => "太阳系是以太阳为中心的行星系统。")).toMatchObject({
+      id: "text_1",
+      mode: "text",
+      progress: "text ready",
+      result: "太阳系是以太阳为中心的行星系统。"
+    });
+  });
+
+  it("stops listening when the selected job reaches an actionable terminal status", () => {
+    expect(shouldStopListeningForPayload({
+      jobId: "job_1",
+      job: { ...baseJob, status: "done" }
+    }, "job_1")).toBe(true);
+    expect(shouldStopListeningForPayload({
+      jobId: "job_1",
+      job: { ...baseJob, status: "failed_retryable" }
+    }, "job_1")).toBe(true);
+    expect(shouldStopListeningForPayload({
+      jobId: "job_2",
+      job: { ...baseJob, status: "done" }
+    }, "job_1")).toBe(false);
+    expect(shouldStopListeningForPayload({
+      jobId: "job_1",
+      job: { ...baseJob, status: "waiting_generation" }
+    }, "job_1")).toBe(false);
   });
 
   it("formats job summaries and doctor output with next actions", () => {

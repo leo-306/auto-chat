@@ -16,6 +16,8 @@
       .danger:disabled { cursor: not-allowed; opacity: 0.6; }
       .notice { min-height: 20px; margin: 0 0 12px; color: #5f6368; font-size: 13px; }
       .notice.error { color: #b42318; }
+      .outputs { display: flex; flex-direction: column; gap: 4px; max-width: 420px; }
+      .preview { color: #3c4043; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     </style>
   </head>
   <body>
@@ -34,7 +36,7 @@
           <tr>
             <td>${escapeHtml(job.id)}</td>
             <td class="status">${escapeHtml(job.status)}</td>
-            <td>${job.outputFiles.length}</td>
+            <td>${formatOutputs(job)}</td>
             <td>${escapeHtml(job.updatedAt)}</td>
             <td>${escapeHtml(job.errorMessage || '')}</td>
             <td>
@@ -47,6 +49,7 @@
             </td>
           </tr>
         `).join('');
+        await hydrateTextPreviews(jobs);
       }
 
       document.querySelector('#jobs').addEventListener('click', async event => {
@@ -87,6 +90,59 @@
 
       function escapeAttribute(value) {
         return escapeHtml(value).replace(/`/g, '&#96;');
+      }
+
+      function formatOutputs(job) {
+        if (job.mode === 'text') {
+          const file = job.textOutputFile || job.outputFiles[0];
+          if (!file) return '';
+          const name = outputName(file);
+          return `
+            <div class="outputs">
+              <a href="${assetUrl(job.id, name)}" target="_blank">${escapeHtml(name)}</a>
+              <span class="preview" data-text-output="${escapeAttribute(job.id)}" data-output-name="${escapeAttribute(name)}">Loading...</span>
+            </div>
+          `;
+        }
+        if (!job.outputFiles.length) return '';
+        return `
+          <div class="outputs">
+            ${job.outputFiles.map(file => {
+              const name = outputName(file);
+              return `<a href="${assetUrl(job.id, name)}" target="_blank">${escapeHtml(name)}</a>`;
+            }).join('')}
+          </div>
+        `;
+      }
+
+      async function hydrateTextPreviews(jobs) {
+        await Promise.all(jobs
+          .filter(job => job.mode === 'text' && (job.textOutputFile || job.outputFiles[0]))
+          .map(async job => {
+            const file = job.textOutputFile || job.outputFiles[0];
+            const name = outputName(file);
+            const target = document.querySelector(`[data-text-output="${cssEscape(job.id)}"][data-output-name="${cssEscape(name)}"]`);
+            if (!target) return;
+            try {
+              const text = await fetch(assetUrl(job.id, name)).then(response => response.ok ? response.text() : '');
+              target.textContent = text.replace(/\s+/g, ' ').trim().slice(0, 160) || 'Empty text output';
+            } catch {
+              target.textContent = 'Preview unavailable';
+            }
+          }));
+      }
+
+      function outputName(file) {
+        const normalized = String(file).replaceAll('\\', '/');
+        return normalized.slice(normalized.lastIndexOf('/') + 1);
+      }
+
+      function assetUrl(jobId, name) {
+        return `/job-assets/${encodeURIComponent(jobId)}/outputs/${encodeURIComponent(name)}`;
+      }
+
+      function cssEscape(value) {
+        return String(value).replace(/["\\]/g, '\\$&');
       }
 
       refresh();
