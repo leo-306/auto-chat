@@ -77,7 +77,7 @@ auto-chat stop
 auto-chat init
 ```
 
-`auto-chat init` 会安装 agent skill、启动本地服务，并每次提示 Chrome 插件安装步骤。
+`auto-chat init` 会安装 agent skill、启动本地服务，并提示 Chrome 插件安装步骤。
 
 然后在 Codex 中直接发起任务请求，例如：
 
@@ -85,20 +85,17 @@ auto-chat init
 帮我用 Gemini 生成一张赛博朋克风格的猫咪头像，完成后把图片文件路径发给我。
 ```
 
-Codex 应通过 auto-chat 的本地 CLI、SSE 和输出文件完成任务，不要直接操作 ChatGPT/Gemini 页面 DOM。
+Codex 应通过 auto-chat 的本地 CLI、SSE 和输出文件完成任务。
 
 ### Claude Code 示例
 
-在项目的 `CLAUDE.md` 或团队说明里加入：
+把本仓库的 skill 安装到 Claude Code skill 目录，或使用：
 
-```text
-需要调用 GPT/Gemini 浏览器自动化时，使用本地 auto-chat CLI：
-1. auto-chat add <job.json> --replace
-2. auto-chat dispatch --platform <gpt|gemini> <jobId>
-3. auto-chat listen <jobId>
-4. done 后读取 data/jobs/<jobId>/outputs/
-不要直接操作 GPT/Gemini 页面 DOM。
+```bash
+auto-chat init
 ```
+
+`auto-chat init` 会安装 agent skill、启动本地服务，并提示 Chrome 插件安装步骤。
 
 Claude Code 侧可以直接给这样的请求：
 
