@@ -69,8 +69,6 @@ auto-chat stop
 
 ## Agent 集成
 
-Agent 不应该直接逐步控制 ChatGPT/Gemini 页面。推荐通过 CLI 或 HTTP/SSE 接入 auto-chat。
-
 ### Codex 示例
 
 把本仓库的 skill 安装到 Codex skill 目录，或使用：
