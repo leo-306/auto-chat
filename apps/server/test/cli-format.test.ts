@@ -123,6 +123,13 @@ describe("CLI formatting", () => {
       .toContain("下一步: auto-chat retry job_1");
   });
 
+  it("formats platform-specific running statuses", () => {
+    expect(formatJobSummary({ ...baseJob, platform: "gemini", status: "opening_tab" }))
+      .toContain("状态: 打开 Gemini 标签页");
+    expect(formatJobSummary({ ...baseJob, platform: "gpt", status: "waiting_chat_ready" }))
+      .toContain("状态: 等待 ChatGPT 输入框");
+  });
+
   it("formats add result with platform-specific dispatch command", () => {
     expect(formatAddResult({ ...baseJob, platform: "gemini" })).toContain(
       "下一步: auto-chat dispatch --platform gemini job_1 && auto-chat listen job_1"

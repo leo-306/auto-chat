@@ -50,10 +50,31 @@ agent 需要远程触发插件领取一轮队列时，使用 dispatch：
 auto-chat dispatch
 auto-chat dispatch --platform gpt
 auto-chat dispatch --platform gemini
+auto-chat dispatch --platform gpt <jobId>
+auto-chat dispatch --platform gemini <jobId>
 curl -X POST http://127.0.0.1:17321/dispatch
 ```
 
-dispatch 不会开启自动执行，只会让插件在下一次后台 tick 时强制 claim 一轮。
+dispatch 不会开启自动执行，只会让插件在下一次后台 tick 时强制 claim 一轮。推荐 agent 同时传 `--platform` 和 `<jobId>`，避免同平台旧队列任务先被领取。只传 `--platform` 时，插件会领取该平台最早的 queued 任务；不传 `--platform` 时会唤醒所有平台。
+
+HTTP 也支持指定平台和任务：
+
+```bash
+curl -X POST http://127.0.0.1:17321/dispatch \
+  -H 'content-type: application/json' \
+  --data '{"platform":"gemini","jobId":"gemini_text_test_001"}'
+```
+
+`GET /dispatch` 会返回当前调度信号：
+
+```json
+{
+  "id": 1,
+  "platform": "gemini",
+  "jobId": "gemini_text_test_001",
+  "requestedAt": "2026-06-23T00:00:00.000Z"
+}
+```
 
 ## 创建任务
 
@@ -113,12 +134,16 @@ Gemini 文本任务示例：
 }
 ```
 
-`platform` 省略时默认为 `gpt`，`mode` 省略时默认为 `image`。GPT 和 Gemini 都支持文本输入，可选附带 `sourceImages`；`image` 模式输出图片，`text` 模式通过插件点击响应的复制按钮或响应正文获取文本。
+`platform` 省略时默认为 `gpt`，`mode` 省略时默认为 `image`。GPT 和 Gemini 都支持文本输入，可选附带 `sourceImages`；`image` 模式输出图片，`text` 模式通过插件点击响应的复制按钮获取文本。若剪贴板仍是以 `auto-chat` 开头的旧命令文本，插件会忽略该内容并继续等待真实复制结果，仍然取不到时才失败。
+
+Gemini 带 `sourceImages` 的任务不会打开文件选择器。插件会把参考图直接粘贴到 Gemini 输入框，等待发送按钮解除禁用后再提交。Gemini 纯文本任务也会在提交后确认当前 `JOB_ID` 的用户消息已出现在对话中。
 
 创建任务：
 
 ```bash
 auto-chat add examples/job.json
+auto-chat dispatch --platform gpt img_order_test_001
+auto-chat listen img_order_test_001
 ```
 
 如果 JSON 里的 `id` 已存在：
@@ -321,6 +346,7 @@ stalled / refreshing
 常见原因：
 
 - ChatGPT 页面出现 `Something went wrong` / `Retry`。
+- Gemini 图片粘贴后发送按钮长期保持禁用，说明图片上传未完成或页面未接受粘贴。
 - 生成状态超过 2 分钟无变化。
 - 总等待超过 15 分钟。
 - 插件找不到输入框、上传控件或生成图片 DOM。

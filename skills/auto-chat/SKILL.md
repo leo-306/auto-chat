@@ -61,18 +61,20 @@ auto-chat add examples/gemini-text-job.json --replace
 auto-chat list
 auto-chat show <jobId>
 auto-chat doctor <jobId>
-auto-chat dispatch --platform gpt
-auto-chat dispatch --platform gemini
+auto-chat dispatch --platform gpt <jobId>
+auto-chat dispatch --platform gemini <jobId>
 auto-chat listen <jobId>
 ```
 
-Use `auto-chat listen <jobId> --json` when raw SSE event shape matters. Omitting `--platform` on `dispatch` wakes all platforms.
+Use `auto-chat listen <jobId> --json` when raw SSE event shape matters. Prefer passing both `--platform` and `<jobId>` to `dispatch`; this asks the extension to claim that specific queued job and avoids older queued tasks on the same platform being picked first. Omitting `<jobId>` claims the oldest queued task for the selected platform. Omitting `--platform` wakes all platforms.
 
 Text output lives at `data/jobs/<jobId>/outputs/output-01.txt`. Image output lives under `data/jobs/<jobId>/outputs/`; use `image_order` events to confirm image order.
 
 Gemini image jobs should use `prompts: string[]` for multi-image tasks. Each array entry must describe exactly one image; the extension sends entries one by one because Gemini generates one image per conversation. GPT image jobs may still use a single multi-image prompt.
 
-GPT and Gemini text jobs both support optional `sourceImages`; set `mode: "text"` for text output and `mode: "image"` for image output.
+GPT and Gemini text jobs both support optional `sourceImages`; set `mode: "text"` for text output and `mode: "image"` for image output. Gemini source images are pasted directly into the composer, not uploaded through the file picker. The extension waits until Gemini's send control is no longer disabled before submitting.
+
+For text outputs, the extension uses the platform copy action where available. If the clipboard still contains an old command beginning with `auto-chat`, treat it as stale automation text and keep waiting for a real copied response before marking the job failed.
 
 ## Chrome Extension
 
@@ -110,7 +112,7 @@ For task-flow changes, also run a real CLI job flow against the background servi
 ```bash
 auto-chat start
 auto-chat add examples/text-job.json --replace
-auto-chat dispatch --platform gpt
+auto-chat dispatch --platform gpt text_test_001
 auto-chat list
 auto-chat show text_test_001
 auto-chat doctor text_test_001

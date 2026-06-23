@@ -179,7 +179,7 @@ export function formatJobSummary(job: Job): string {
     `任务: ${job.id}`,
     `平台: ${formatPlatform(job.platform)}`,
     `模式: ${formatMode(job.mode)}`,
-    `状态: ${formatStatus(job.status)}`,
+    `状态: ${formatStatus(job.status, job.platform)}`,
     `进度: ${formatProgress(job)}`,
     `结果: ${formatResult(job) || "暂无"}`
   ];
@@ -412,7 +412,7 @@ async function watch(jobId: string): Promise<void> {
   let last = "";
   while (true) {
     const job = await request<Job>(`/jobs/${jobId}`);
-    const line = `${new Date().toLocaleTimeString()} ${job.id} ${formatStatus(job.status)} ${formatProgress(job)} ${job.errorMessage ?? ""}`.trim();
+    const line = `${new Date().toLocaleTimeString()} ${job.id} ${formatStatus(job.status, job.platform)} ${formatProgress(job)} ${job.errorMessage ?? ""}`.trim();
     if (line !== last) {
       print(line);
       last = line;
@@ -426,7 +426,7 @@ async function listen(jobId: string | undefined, options: CliOptions): Promise<v
   if (jobId && !options.json) {
     try {
       const job = await request<Job>(`/jobs/${jobId}`);
-      print(`[${time()}] ${job.id} ${formatStatus(job.status)} ${formatProgress(job)}`);
+      print(`[${time()}] ${job.id} ${formatStatus(job.status, job.platform)} ${formatProgress(job)}`);
       if (terminalStatuses.has(job.status)) return;
     } catch (error) {
       print(`[${time()}] 初始状态不可用：${String(error)}`);
@@ -493,7 +493,7 @@ function formatSseEvent(payload: any): string {
   if (event?.type === "image_order") return `${prefix} 已记录图片顺序`;
   if (event?.type === "text_output") return `${prefix} 已复制文本响应`;
   if (event?.type === "job_retry") return `${prefix} 已重新入队`;
-  if (job) return `${prefix} ${formatStatus(job.status)} ${formatProgress(job)} ${job.errorMessage ?? ""}`.trim();
+  if (job) return `${prefix} ${formatStatus(job.status, job.platform)} ${formatProgress(job)} ${job.errorMessage ?? ""}`.trim();
   return `${prefix} ${payload.type}`;
 }
 
@@ -502,7 +502,7 @@ export function formatAddResult(job: Job): string {
     `已创建任务: ${job.id}`,
     `平台: ${formatPlatform(job.platform)}`,
     `模式: ${formatMode(job.mode)}`,
-    `状态: ${formatStatus(job.status)}`,
+    `状态: ${formatStatus(job.status, job.platform)}`,
     `下一步: auto-chat dispatch --platform ${job.platform} ${job.id} && auto-chat listen ${job.id}`
   ].join("\n");
 }
@@ -543,11 +543,12 @@ function formatPlatform(platform: JobPlatform): string {
   return platform === "gemini" ? "Gemini" : "GPT";
 }
 
-function formatStatus(status: JobStatus): string {
+function formatStatus(status: JobStatus, platform?: JobPlatform): string {
+  const platformLabel = platform === "gemini" ? "Gemini" : "ChatGPT";
   const labels: Record<JobStatus, string> = {
     queued: "排队中",
-    opening_tab: "打开 ChatGPT 标签页",
-    waiting_chat_ready: "等待 ChatGPT 输入框",
+    opening_tab: `打开 ${platformLabel} 标签页`,
+    waiting_chat_ready: `等待 ${platformLabel} 输入框`,
     uploading: "上传参考图片",
     waiting_upload_ready: "等待图片上传完成",
     sending_prompt: "发送提示词",
