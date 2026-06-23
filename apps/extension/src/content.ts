@@ -517,19 +517,20 @@ function normalizeInline(text: string): string {
 async function collectTextResponse(jobId: string, fallbackText: string): Promise<string> {
   const assistant = findJobAssistant(jobId);
   if (!assistant) throw new Error("Assistant response was not found.");
+  const extractedText = extractAssistantText(assistant);
   const copyButton = findCopyResponseButton(assistant);
   if (copyButton) {
+    const previousClipboardText = await readClipboardText();
     copyButton.click();
     await sleep(300);
 
     for (let attempt = 0; attempt < 10; attempt += 1) {
       const text = await readClipboardText();
-      if (text?.trim()) return text;
+      if (text?.trim() && text !== previousClipboardText) return text;
       await sleep(200);
     }
   }
 
-  const extractedText = extractAssistantText(assistant);
   if (fallbackText.trim()) return fallbackText;
   if (extractedText.trim()) return extractedText;
   throw new Error(copyButton ? "Copy response produced empty clipboard text." : "Copy response button was not found.");

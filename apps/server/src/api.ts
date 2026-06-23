@@ -46,6 +46,8 @@ export async function buildServer(store: JobStore, events = new EventHub()): Pro
     if (!target) {
       return reply.code(404).send({ error: "not_found" });
     }
+    const contentType = contentTypeForAsset(file);
+    if (contentType) reply.type(contentType);
     return reply.send(fs.createReadStream(target));
   });
 
@@ -168,4 +170,15 @@ export async function buildServer(store: JobStore, events = new EventHub()): Pro
   });
 
   return app;
+}
+
+function contentTypeForAsset(file: string): string | null {
+  const ext = path.extname(file).toLowerCase();
+  if (ext === ".txt" || ext === ".md") return "text/plain; charset=utf-8";
+  if (ext === ".json" || ext === ".jsonl") return "application/json; charset=utf-8";
+  if (ext === ".png") return "image/png";
+  if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
+  if (ext === ".webp") return "image/webp";
+  if (ext === ".svg") return "image/svg+xml; charset=utf-8";
+  return null;
 }
