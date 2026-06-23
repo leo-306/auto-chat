@@ -11,6 +11,9 @@ let monitorAbort: AbortController | null = null;
 const ERROR_TEXT_PATTERN = /Something went wrong|Retry|Try again|出错|重试/i;
 const INTERRUPTED_TEXT_PATTERN = /Connection interrupted|Waiting for the complete answer|连接中断|等待完整回答/i;
 const MONITOR_INTERVAL_MS = 5000;
+const TEXT_DONE_STABLE_MS = 1000;
+const IMAGE_DONE_STABLE_MS = 2000;
+const GEMINI_SINGLE_IMAGE_DONE_STABLE_MS = 2000;
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   const typed = message as StartJobMessage | DebugInspectMessage;
@@ -131,7 +134,7 @@ async function waitForGeminiSingleImage(
         maybeDoneAt = Date.now();
         await sendProgress({ type: "JOB_PROGRESS", jobId: job.id, status: "maybe_done", signature: state.signature });
       }
-      if (Date.now() - maybeDoneAt > 5000) {
+      if (Date.now() - maybeDoneAt > GEMINI_SINGLE_IMAGE_DONE_STABLE_MS) {
         const [image] = await collectImages(state.loadedImages.slice(0, 1));
         if (!image) throw new Error("Gemini image was visible but could not be collected.");
         return image;
@@ -198,7 +201,7 @@ async function monitorJob(job: Job, appConfig: AppConfig, signal: AbortSignal): 
           maybeDoneAt = Date.now();
           await sendProgress({ type: "JOB_PROGRESS", jobId: job.id, status: "maybe_done", signature: state.signature });
         }
-        if (Date.now() - maybeDoneAt > 3000) {
+        if (Date.now() - maybeDoneAt > TEXT_DONE_STABLE_MS) {
           await sendProgress({
             type: "JOB_PROGRESS",
             jobId: job.id,
@@ -216,7 +219,7 @@ async function monitorJob(job: Job, appConfig: AppConfig, signal: AbortSignal): 
           maybeDoneAt = Date.now();
           await sendProgress({ type: "JOB_PROGRESS", jobId: job.id, status: "maybe_done", signature: state.signature });
         }
-        if (Date.now() - maybeDoneAt > 8000) {
+        if (Date.now() - maybeDoneAt > IMAGE_DONE_STABLE_MS) {
           await sendProgress({
             type: "JOB_PROGRESS",
             jobId: job.id,

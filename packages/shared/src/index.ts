@@ -144,15 +144,20 @@ export type DispatchState = z.infer<typeof DispatchStateSchema>;
 
 export function buildGeminiOutputPrompt(prompt: string, outputIndex: number, prompts?: string[]): string {
   const explicitPrompt = prompts?.[outputIndex - 1]?.trim();
-  if (explicitPrompt) return explicitPrompt;
   const imagePrompt = explicitPrompt || extractImagePrompt(prompt, outputIndex);
   const globalConstraints = extractGeminiGlobalConstraints(prompt);
+  const jobId = extractJobId(prompt);
   return [
+    jobId && !imagePrompt.includes(`JOB_ID: ${jobId}`) ? `JOB_ID: ${jobId}` : "",
     imagePrompt,
     globalConstraints,
     "只生成这一张图片，不要生成拼图，不要生成多张图。",
-    `JOB_OUTPUT_INDEX: ${outputIndex}`
+    imagePrompt.includes("JOB_OUTPUT_INDEX:") ? "" : `JOB_OUTPUT_INDEX: ${outputIndex}`
   ].filter(Boolean).join("\n\n");
+}
+
+function extractJobId(prompt: string): string | null {
+  return prompt.match(/JOB_ID:\s*([^\s]+)/)?.[1] ?? null;
 }
 
 function extractImagePrompt(prompt: string, outputIndex: number): string {
