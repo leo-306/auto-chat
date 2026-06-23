@@ -1,6 +1,6 @@
 {
   "id": "img_order_test_002",
-  "prompt": "生成一张图，要求严格按顺序：红色裙子。每张图人物一致。",
+  "prompt": "生成两张图，要求严格按顺序：红色裙子、蓝色衣服。每张图人物一致。",
   "expectedImageCount": 1,
   "sourceImages": []
 }

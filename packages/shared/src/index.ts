@@ -151,7 +151,7 @@ export function buildGeminiOutputPrompt(prompt: string, outputIndex: number, pro
     jobId && !imagePrompt.includes(`JOB_ID: ${jobId}`) ? `JOB_ID: ${jobId}` : "",
     imagePrompt,
     globalConstraints,
-    "只生成这一张图片，不要生成拼图，不要生成多张图。",
+    "生成这张图片。",
     imagePrompt.includes("JOB_OUTPUT_INDEX:") ? "" : `JOB_OUTPUT_INDEX: ${outputIndex}`
   ].filter(Boolean).join("\n\n");
 }

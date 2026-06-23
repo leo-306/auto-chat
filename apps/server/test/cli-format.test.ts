@@ -147,10 +147,10 @@ describe("CLI formatting", () => {
 
   it("builds stable Gemini per-image prompts", () => {
     expect(buildGeminiOutputPrompt("JOB_ID: gemini_img_test_001\n生成两张图，人物一致。", 2, ["红色裙子单人街拍。", "蓝色裙子单人咖啡店。"])).toBe(
-      "JOB_ID: gemini_img_test_001\n\n蓝色裙子单人咖啡店。\n\n只生成这一张图片，不要生成拼图，不要生成多张图。\n\nJOB_OUTPUT_INDEX: 2"
+      "JOB_ID: gemini_img_test_001\n\n蓝色裙子单人咖啡店。\n\n生成这张图片。\n\nJOB_OUTPUT_INDEX: 2"
     );
     expect(buildGeminiOutputPrompt("请生成：\n图1：红色外套，街拍。\n图2：蓝色外套，咖啡店。\n图3：绿色外套，公园。", 3)).toBe(
-      "绿色外套，公园。\n\n只生成这一张图片，不要生成拼图，不要生成多张图。\n\nJOB_OUTPUT_INDEX: 3"
+      "绿色外套，公园。\n\n生成这张图片。\n\nJOB_OUTPUT_INDEX: 3"
     );
   });
 });
