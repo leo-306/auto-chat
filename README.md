@@ -55,12 +55,16 @@ auto-chat start
 auto-chat status
 ```
 
+任务列表页面：`http://127.0.0.1:17321/`
+
 加载 Chrome 插件：
 
 1. 打开 Chrome `chrome://extensions`
 2. 启用 Developer mode
 3. 选择 Load unpacked
 4. 加载目录 `apps/extension/dist`
+
+面向用户分发时，仓库根目录会带上 `auto-chat-extension.zip`。用户可以下载 GitHub 上的 zip，也可以使用全局 npm 包里的本机 zip；解压后用 Load unpacked 选择解压目录。`auto-chat init` 每次都会打开 `chrome://extensions` 并打印下载地址、本机 zip 路径和安装引导。
 
 插件默认暂停，不会自动领取队列。可以在 popup 里点击“执行一次调度”，也可以用 CLI 触发。
 
@@ -227,16 +231,15 @@ Agent 不应该直接逐步控制 ChatGPT/Gemini 页面。推荐通过 CLI 或 H
 auto-chat init
 ```
 
-然后在 Codex 中让它使用 `auto-chat` skill。典型任务流：
+`auto-chat init` 会安装 agent skill、启动本地服务，并每次提示 Chrome 插件安装步骤。
 
-```bash
-auto-chat add examples/gemini-text-job.json --replace
-auto-chat dispatch --platform gemini gemini_text_test_001
-auto-chat listen gemini_text_test_001
-auto-chat show gemini_text_test_001 --json
+然后在 Codex 中直接发起任务请求，例如：
+
+```text
+帮我用 Gemini 生成一张赛博朋克风格的猫咪头像，完成后把图片文件路径发给我。
 ```
 
-Codex 应读取 `auto-chat listen` 的 SSE 输出，任务 `done` 后再消费 `outputFiles` 或 `textOutputFile`。
+Codex 应通过 auto-chat 的本地 CLI、SSE 和输出文件完成任务，不要直接操作 ChatGPT/Gemini 页面 DOM。
 
 ### Claude Code 示例
 
@@ -251,13 +254,10 @@ Codex 应读取 `auto-chat listen` 的 SSE 输出，任务 `done` 后再消费 `
 不要直接操作 GPT/Gemini 页面 DOM。
 ```
 
-Claude Code 侧调用示例：
+Claude Code 侧可以直接给这样的请求：
 
-```bash
-auto-chat add examples/text-job.json --replace
-auto-chat dispatch --platform gpt text_test_001
-auto-chat listen text_test_001
-cat data/jobs/text_test_001/outputs/output-01.txt
+```text
+帮我用 ChatGPT 生成一张白色极简风的咖啡店室内效果图，完成后告诉我图片保存在哪里。
 ```
 
 ### 其他 Agent / 脚本
@@ -351,9 +351,17 @@ npm test
 ```bash
 npm run build
 npm pack
-npm install -g ./wechat-topic-*.tgz
+npm install -g ./auto-chat-cli-*.tgz
 auto-chat init
 ```
+
+打包 Chrome 插件 zip：
+
+```bash
+npm run pack:extension
+```
+
+生成的 `auto-chat-extension.zip` 根目录会直接包含 `manifest.json`，需要随代码一起提交，供用户从 GitHub 下载后解压安装。
 
 ## 安全边界
 

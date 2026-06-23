@@ -21,7 +21,7 @@ auto-chat init
 auto-chat status
 ```
 
-`auto-chat init` installs this skill into common global agent skill directories and starts the background service.
+`auto-chat init` installs this skill into common global agent skill directories, starts the background service, opens `chrome://extensions`, and always prints Chrome extension installation steps with the GitHub zip URL and local npm package zip path.
 
 For repository development only:
 
@@ -29,7 +29,7 @@ For repository development only:
 npm install
 npm run build
 npm pack
-npm install -g ./wechat-topic-*.tgz
+npm install -g ./auto-chat-cli-*.tgz
 auto-chat --help
 ```
 
@@ -82,6 +82,12 @@ After extension or shared protocol changes:
 
 ```bash
 npm run build
+```
+
+To create the committed zip that users download from GitHub:
+
+```bash
+npm run pack:extension
 ```
 
 Reload Chrome from:

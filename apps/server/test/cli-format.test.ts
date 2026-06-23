@@ -5,6 +5,7 @@ import {
   defaultSkillInstallDirs,
   formatAddResult,
   formatDoctor,
+  formatExtensionInstallInstructions,
   formatJobSummary,
   formatListRow,
   normalizeCommand,
@@ -112,6 +113,25 @@ describe("CLI formatting", () => {
       "/Users/alice/.agents/skills",
       "/Users/alice/.config/opencode/skills",
       "/Users/alice/.opencode/skills"
+    ]);
+  });
+
+  it("formats GitHub-based Chrome extension install guidance", () => {
+    expect(formatExtensionInstallInstructions(
+      "https://github.com/leo-306/auto-chat",
+      "https://github.com/leo-306/auto-chat/raw/master/auto-chat-extension.zip",
+      "/usr/local/lib/node_modules/auto-chat-cli/auto-chat-extension.zip"
+    )).toEqual([
+      "Chrome 插件需要手动安装。已打开 chrome://extensions。",
+      "插件下载: https://github.com/leo-306/auto-chat/raw/master/auto-chat-extension.zip",
+      "本机 zip: /usr/local/lib/node_modules/auto-chat-cli/auto-chat-extension.zip",
+      "项目地址: https://github.com/leo-306/auto-chat",
+      "安装引导:",
+      "1. 使用本机 zip，或从 GitHub 下载 auto-chat-extension.zip。",
+      "2. 解压 zip 到一个固定目录，不要直接选择 zip 文件。",
+      "3. 在 chrome://extensions 页面启用 Developer mode / 开发者模式。",
+      "4. 点击 Load unpacked / 加载已解压的扩展程序，选择解压后的目录。",
+      "5. 安装后保持 auto-chat 服务运行，打开插件 popup，确认本地服务已连接。"
     ]);
   });
 

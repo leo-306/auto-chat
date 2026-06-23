@@ -20,14 +20,22 @@ agent 的机器接口是真实安装后的 `auto-chat` CLI、本地服务和 SSE
 npm install
 npm run build
 npm link
-auto-chat start
+auto-chat init
 auto-chat status
 ```
 
-Chrome 插件加载目录：
+`auto-chat init` 会安装 agent skill、启动本地服务，并每次打开 `chrome://extensions`，提示用户从 GitHub 或本机 npm 包里的 `auto-chat-extension.zip` 解压安装插件。
+
+本地开发的 Chrome 插件加载目录：
 
 ```text
 apps/extension/dist
+```
+
+分发用 Chrome 插件 zip：
+
+```bash
+npm run pack:extension
 ```
 
 服务健康检查：

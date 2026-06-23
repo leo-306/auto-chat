@@ -14,6 +14,8 @@ const dataDir = path.join(workspaceRoot, "data");
 const pidFile = path.join(dataDir, "server.pid");
 const logFile = path.join(dataDir, "server.log");
 const terminalStatuses = new Set<JobStatus>(["done", "failed_retryable", "failed_final", "needs_manual"]);
+const extensionGithubUrl = process.env.AUTO_CHAT_EXTENSION_GITHUB_URL ?? "https://github.com/leo-306/auto-chat";
+const extensionZipUrl = process.env.AUTO_CHAT_EXTENSION_ZIP_URL ?? `${extensionGithubUrl}/raw/master/auto-chat-extension.zip`;
 
 type CliOptions = {
   json: boolean;
@@ -270,6 +272,7 @@ async function initAutoChat(): Promise<void> {
   const installed = installAgentSkill();
   for (const target of installed) print(`已安装 auto-chat skill: ${displayPath(target)}`);
   await startServer();
+  await showChromeExtensionInstallGuide();
 }
 
 function installAgentSkill(): string[] {
@@ -296,6 +299,38 @@ function skillInstallDirs(): string[] {
     ? raw.split(path.delimiter).map(value => value.trim()).filter(Boolean)
     : defaultSkillInstallDirs();
   return [...new Set(dirs.map(dir => path.resolve(dir)))];
+}
+
+async function showChromeExtensionInstallGuide(): Promise<void> {
+  try {
+    await open("chrome://extensions");
+  } catch (error) {
+    print(`打开 Chrome 扩展管理页失败：${String(error)}`);
+  }
+  for (const line of formatExtensionInstallInstructions(extensionGithubUrl, extensionZipUrl, extensionPackageZipPath())) print(line);
+}
+
+export function formatExtensionInstallInstructions(githubUrl: string, zipUrl: string, localZipPath: string): string[] {
+  return [
+    "Chrome 插件需要手动安装。已打开 chrome://extensions。",
+    `插件下载: ${zipUrl}`,
+    `本机 zip: ${localZipPath}`,
+    `项目地址: ${githubUrl}`,
+    "安装引导:",
+    "1. 使用本机 zip，或从 GitHub 下载 auto-chat-extension.zip。",
+    "2. 解压 zip 到一个固定目录，不要直接选择 zip 文件。",
+    "3. 在 chrome://extensions 页面启用 Developer mode / 开发者模式。",
+    "4. 点击 Load unpacked / 加载已解压的扩展程序，选择解压后的目录。",
+    "5. 安装后保持 auto-chat 服务运行，打开插件 popup，确认本地服务已连接。"
+  ];
+}
+
+function extensionPackageZipPath(): string {
+  return path.join(packageRoot(), "auto-chat-extension.zip");
+}
+
+function packageRoot(): string {
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 }
 
 async function stopServer(): Promise<void> {
