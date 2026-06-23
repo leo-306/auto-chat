@@ -46,13 +46,13 @@ npm install -g auto-chat-cli
 auto-chat init
 ```
 
-`auto-chat init` 会启动后台服务、打开 Chrome 扩展管理页，并打印插件下载地址、本机 zip 路径和安装引导。按提示解压 `auto-chat-extension.zip`，在 `chrome://extensions` 里启用 Developer mode 后选择 Load unpacked。
+`auto-chat init` 会启动后台服务、打开 Chrome 扩展管理页，并打印插件下载地址、本机 zip 路径和安装引导。按提示解压 [auto-chat-extension.zip](auto-chat-extension.zip)，在 [chrome://extensions](chrome://extensions) 里启用 Developer mode 后选择 Load unpacked。
 
 安装 Chrome 插件：
 
-1. 下载或找到 `auto-chat-extension.zip`。
+1. 下载或找到 [auto-chat-extension.zip](auto-chat-extension.zip)。
 2. 解压到一个固定目录。
-3. 打开 `chrome://extensions`，启用 Developer mode。
+3. 打开 [chrome://extensions](chrome://extensions)，启用 Developer mode。
 4. 点击 Load unpacked，选择解压后的目录。
 
 任务列表页面：`http://127.0.0.1:17321/`
