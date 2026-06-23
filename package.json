@@ -1,7 +1,8 @@
 {
-  "name": "wechat-topic",
+  "name": "auto-chat-cli",
   "version": "0.1.0",
-  "private": true,
+  "description": "Local GPT/Gemini browser automation CLI for queued image and text jobs.",
+  "license": "MIT",
   "type": "module",
   "files": [
     "apps/server/dist",
@@ -26,6 +27,7 @@
     "build": "npm run build -w @wechat-topic/shared && npm run build -w @wechat-topic/extension && npm run build -w @wechat-topic/server",
     "check": "npm run build -w @wechat-topic/shared && npm run check --workspaces --if-present",
     "test": "npm run build -w @wechat-topic/shared && npm run test --workspaces --if-present",
+    "prepublishOnly": "npm run build && npm run check && npm test",
     "dev:server": "npm run dev -w @wechat-topic/server",
     "auto-chat": "node apps/server/dist/cli.js",
     "job:add": "npm run cli -w @wechat-topic/server -- job:add",
