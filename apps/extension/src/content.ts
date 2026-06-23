@@ -1,5 +1,6 @@
 import { buildGeminiOutputPrompt, findLatestJobConversationScope } from "@wechat-topic/shared";
 import type { AppConfig, ConversationTurnRole, Job } from "@wechat-topic/shared";
+import { findGeminiSendControl, isGeminiSendDisabled } from "./gemini.js";
 import { hasGeneratingText } from "./inspect.js";
 import { submitPromptWithFallback } from "./submit.js";
 import type { DebugInspectMessage, DebugInspectResult, JobProgressMessage, StartJobMessage } from "./types.js";
@@ -51,13 +52,13 @@ async function startJob(job: Job, nextConfig: AppConfig): Promise<void> {
 
   await report(job.id, "waiting_chat_ready");
   await waitForComposer();
-  await report(job.id, "uploading");
-  await uploadSources(job);
-  await report(job.id, "sending_prompt");
   if (job.platform === "gpt") {
+    await report(job.id, "uploading");
+    await uploadSources(job);
+    await report(job.id, "sending_prompt");
     await fillPromptAndSendGpt(job);
   } else {
-    await fillPromptAndSendOriginal(job.prompt);
+    await fillPromptPasteSourcesAndSendGemini(job, job.prompt);
   }
   await report(job.id, "waiting_generation");
   void monitorJob(job, nextConfig, monitorAbort.signal);
@@ -77,10 +78,7 @@ async function runGeminiImageJob(job: Job, appConfig: AppConfig, signal: AbortSi
         : job.prompt;
       await report(job.id, "waiting_chat_ready");
       await waitForComposer();
-      await report(job.id, "uploading");
-      await uploadSources(job);
-      await report(job.id, "sending_prompt");
-      await fillPromptAndSendOriginal(prompt);
+      await fillPromptPasteSourcesAndSendGemini(job, prompt);
       await report(job.id, "waiting_generation");
 
       const image = await waitForGeminiSingleImage(job, appConfig, signal);
@@ -641,6 +639,21 @@ async function uploadSources(job: Job): Promise<void> {
   await sleep(1500);
 }
 
+async function pasteGeminiSources(job: Job, composer: HTMLElement | HTMLTextAreaElement): Promise<void> {
+  if (job.sourceImages.length === 0) return;
+  const files = await Promise.all(job.sourceImages.map((source, index) => sourceToFile(source, index)));
+  const transfer = new DataTransfer();
+  for (const file of files) transfer.items.add(file);
+  const event = new ClipboardEvent("paste", {
+    bubbles: true,
+    cancelable: true,
+    clipboardData: transfer
+  });
+  composer.focus();
+  composer.dispatchEvent(event);
+  await sleep(500);
+}
+
 async function fillPromptAndSendGpt(job: Job): Promise<void> {
   const { prompt } = job;
   const composer = fillPrompt(prompt);
@@ -668,6 +681,40 @@ async function fillPromptAndSendOriginal(prompt: string): Promise<void> {
     composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true }));
   }
   await waitForPromptSubmitted(prompt);
+}
+
+async function fillPromptPasteSourcesAndSendGemini(job: Job, prompt: string): Promise<void> {
+  await report(job.id, "sending_prompt");
+  const composer = fillPrompt(prompt);
+  if (job.sourceImages.length > 0) {
+    await report(job.id, "uploading");
+    await pasteGeminiSources(job, composer);
+    await waitForGeminiUploadReady(job.id);
+  }
+
+  const sendControl = findGeminiSendControl();
+  if (sendControl && !isGeminiSendDisabled(sendControl)) {
+    sendControl.click();
+    await sleep(500);
+    if (!await isPromptSubmitted(prompt)) {
+      composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true }));
+    }
+  } else if (job.sourceImages.length === 0) {
+    composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true }));
+  } else {
+    throw new Error("Gemini send control was not ready after image upload.");
+  }
+  await waitForPromptSubmitted(prompt);
+}
+
+async function waitForGeminiUploadReady(jobId: string): Promise<void> {
+  await report(jobId, "waiting_upload_ready");
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    const sendControl = findGeminiSendControl();
+    if (sendControl && !isGeminiSendDisabled(sendControl)) return;
+    await sleep(500);
+  }
+  throw new Error("Gemini image upload did not finish before timeout.");
 }
 
 function fillPrompt(prompt: string): HTMLElement | HTMLTextAreaElement {

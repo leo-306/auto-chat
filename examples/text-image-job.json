@@ -1,5 +1,6 @@
 {
   "id": "text_test_001",
+  "platform": "gemini",
   "mode": "text",
   "prompt": "请识别并简要说明这张图片的内容。直接回答图片里主要文字和界面元素，不要展开无关内容。",
   "sourceImages": ["http://127.0.0.1:17321/job-assets/describe_clipboard_20260622_001/source/source-1.png"]
