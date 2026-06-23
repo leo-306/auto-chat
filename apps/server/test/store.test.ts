@@ -178,20 +178,40 @@ describe("JobStore", () => {
   it("persists dispatch requests", async () => {
     const store = new JobStore(tmp);
     await store.init();
-    expect(store.getDispatch()).toEqual({ id: 0, requestedAt: null, platform: null });
+    expect(store.getDispatch()).toEqual({ id: 0, requestedAt: null, platform: null, jobId: null });
 
     const requested = store.requestDispatch();
     expect(requested.id).toBe(1);
     expect(requested.requestedAt).toEqual(expect.any(String));
     expect(requested.platform).toBeNull();
-    const geminiRequested = store.requestDispatch("gemini");
+    expect(requested.jobId).toBeNull();
+    const geminiRequested = store.requestDispatch("gemini", "job_gemini");
     expect(geminiRequested.id).toBe(2);
     expect(geminiRequested.platform).toBe("gemini");
+    expect(geminiRequested.jobId).toBe("job_gemini");
     store.close();
 
     const restored = new JobStore(tmp);
     await restored.init();
     expect(restored.getDispatch()).toEqual(geminiRequested);
     restored.close();
+  });
+
+  it("claims the requested queued job when a job id is provided", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+    store.createJob({ id: "old_job", platform: "gemini", prompt: "old", sourceImages: [], metadata: {} });
+    store.createJob({ id: "target_job", platform: "gemini", prompt: "target", sourceImages: [], metadata: {} });
+
+    const claimed = store.claimJob({
+      workerId: "worker",
+      platform: "gemini",
+      jobId: "target_job",
+      runningJobIds: []
+    });
+
+    expect(claimed?.id).toBe("target_job");
+    expect(store.getJob("old_job")?.status).toBe("queued");
+    store.close();
   });
 });

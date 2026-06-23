@@ -43,7 +43,7 @@ export class JobStore {
   private sql!: SqlJsStatic;
   private db!: Database;
   private config: AppConfig = DEFAULT_CONFIG;
-  private dispatch: DispatchState = { id: 0, platform: null, requestedAt: null };
+  private dispatch: DispatchState = { id: 0, platform: null, jobId: null, requestedAt: null };
   private paths: ResolvedPaths;
   private events?: EventHub;
 
@@ -133,9 +133,14 @@ export class JobStore {
   }
 
   claimJob(input: ClaimJobRequest): Job | null {
+    const params = input.jobId
+      ? [input.platform ?? "gpt", input.jobId]
+      : [input.platform ?? "gpt"];
     const row = this.query<JobRow>(
-      "select * from jobs where status = 'queued' and platform = ? order by created_at asc limit 1",
-      [input.platform ?? "gpt"]
+      input.jobId
+        ? "select * from jobs where status = 'queued' and platform = ? and id = ? order by created_at asc limit 1"
+        : "select * from jobs where status = 'queued' and platform = ? order by created_at asc limit 1",
+      params
     )[0];
     if (!row) return null;
     const now = new Date().toISOString();
@@ -245,10 +250,11 @@ export class JobStore {
     return this.dispatch;
   }
 
-  requestDispatch(platform: JobPlatform | null = null): DispatchState {
+  requestDispatch(platform: JobPlatform | null = null, jobId: string | null = null): DispatchState {
     this.dispatch = {
       id: this.dispatch.id + 1,
       platform,
+      jobId,
       requestedAt: new Date().toISOString()
     };
     this.run("insert or replace into config (key, value) values ('dispatch', ?)", [
@@ -325,7 +331,7 @@ export class JobStore {
   private loadDispatch(): void {
     const rows = this.query<{ value: string }>("select value from config where key = 'dispatch'");
     if (rows[0]) {
-      this.dispatch = { ...this.dispatch, platform: null, ...JSON.parse(rows[0].value) };
+      this.dispatch = { ...this.dispatch, platform: null, jobId: null, ...JSON.parse(rows[0].value) };
     }
   }
 

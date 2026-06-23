@@ -64,7 +64,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   }
 
   if (command === "add") {
-    const file = args.find(arg => !arg.startsWith("-")) ?? readFlag(args, "--file");
+    const file = positionalArgs(args)[0] ?? readFlag(args, "--file");
     if (!file) throw new Error("缺少任务文件。用法：auto-chat add examples/job.json");
     const body = JSON.parse(fs.readFileSync(resolveInputFile(file), "utf8"));
     if (options.autoId) delete body.id;
@@ -86,7 +86,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   }
 
   if (command === "show") {
-    const id = args.find(arg => !arg.startsWith("-"));
+    const id = positionalArgs(args)[0];
     if (!id) throw new Error("缺少任务 id。用法：auto-chat show <jobId>");
     const job = await request<Job>(`/jobs/${id}`);
     print(options.json ? JSON.stringify(job, null, 2) : formatJobSummary(job));
@@ -94,14 +94,14 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   }
 
   if (command === "watch") {
-    const id = args.find(arg => !arg.startsWith("-"));
+    const id = positionalArgs(args)[0];
     if (!id) throw new Error("缺少任务 id。用法：auto-chat watch <jobId>");
     await watch(id);
     return;
   }
 
   if (command === "retry") {
-    const id = args.find(arg => !arg.startsWith("-"));
+    const id = positionalArgs(args)[0];
     if (!id) throw new Error("缺少任务 id。用法：auto-chat retry <jobId>");
     const job = await request<Job>(`/jobs/${id}/retry`, { method: "POST" });
     print(options.json ? JSON.stringify(job, null, 2) : formatAddResult(job));
@@ -109,7 +109,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   }
 
   if (command === "open") {
-    const id = args.find(arg => !arg.startsWith("-"));
+    const id = positionalArgs(args)[0];
     if (!id) throw new Error("缺少任务 id。用法：auto-chat open <jobId>");
     const job = await request<Job>(`/jobs/${id}`);
     await open(job.conversationUrl ?? `${baseUrl}/jobs/${id}`);
@@ -117,7 +117,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   }
 
   if (command === "doctor") {
-    const id = args.find(arg => !arg.startsWith("-"));
+    const id = positionalArgs(args)[0];
     if (!id) throw new Error("缺少任务 id。用法：auto-chat doctor <jobId>");
     const job = await request<Job>(`/jobs/${id}`);
     print(options.json ? JSON.stringify(job, null, 2) : formatDoctor(job));
@@ -125,15 +125,16 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   }
 
   if (command === "listen") {
-    const id = args.find(arg => !arg.startsWith("-"));
+    const id = positionalArgs(args)[0];
     await listen(id, options);
     return;
   }
 
   if (command === "dispatch") {
+    const id = positionalArgs(args)[0];
     const dispatch = await request("/dispatch", {
       method: "POST",
-      body: options.platform ? { platform: options.platform } : {}
+      body: { ...(options.platform ? { platform: options.platform } : {}), ...(id ? { jobId: id } : {}) }
     });
     print(options.json ? JSON.stringify(dispatch, null, 2) : "已请求插件执行一次调度。");
     return;
@@ -385,6 +386,21 @@ function readFlag(args: string[], flag: string): string | undefined {
   return index >= 0 ? args[index + 1] : undefined;
 }
 
+export function positionalArgs(args: string[]): string[] {
+  const flagsWithValues = new Set(["--file", "--platform"]);
+  const values: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (flagsWithValues.has(arg)) {
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("-")) continue;
+    values.push(arg);
+  }
+  return values;
+}
+
 function resolveInputFile(file: string): string {
   if (path.isAbsolute(file)) return file;
   const cwdPath = path.resolve(process.cwd(), file);
@@ -487,7 +503,7 @@ export function formatAddResult(job: Job): string {
     `平台: ${formatPlatform(job.platform)}`,
     `模式: ${formatMode(job.mode)}`,
     `状态: ${formatStatus(job.status)}`,
-    `下一步: auto-chat dispatch --platform ${job.platform} && auto-chat listen ${job.id}`
+    `下一步: auto-chat dispatch --platform ${job.platform} ${job.id} && auto-chat listen ${job.id}`
   ].join("\n");
 }
 
@@ -588,7 +604,7 @@ Usage:
   auto-chat list [--json]
   auto-chat show <jobId> [--json]
   auto-chat listen [jobId] [--json]
-  auto-chat dispatch [--platform gpt|gemini] [--json]
+  auto-chat dispatch [--platform gpt|gemini] [jobId] [--json]
   auto-chat doctor <jobId>
   auto-chat retry <jobId>
   auto-chat open <jobId>

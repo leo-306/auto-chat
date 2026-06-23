@@ -517,23 +517,23 @@ function normalizeInline(text: string): string {
 async function collectTextResponse(jobId: string, fallbackText: string): Promise<string> {
   const assistant = findJobAssistant(jobId);
   if (!assistant) throw new Error("Assistant response was not found.");
-  const extractedText = extractAssistantText(assistant);
   const copyButton = findCopyResponseButton(assistant);
   if (copyButton) {
-    const previousClipboardText = await readClipboardText();
     copyButton.click();
     await sleep(300);
 
     for (let attempt = 0; attempt < 10; attempt += 1) {
       const text = await readClipboardText();
-      if (text?.trim() && text !== previousClipboardText) return text;
+      if (text?.trim() && !isAutoChatClipboardText(text)) return text;
       await sleep(200);
     }
   }
 
-  if (fallbackText.trim()) return fallbackText;
-  if (extractedText.trim()) return extractedText;
   throw new Error(copyButton ? "Copy response produced empty clipboard text." : "Copy response button was not found.");
+}
+
+function isAutoChatClipboardText(text: string): boolean {
+  return /^auto-chat(?:\s|$)/i.test(text.trim());
 }
 
 async function readClipboardText(): Promise<string | null> {
@@ -693,19 +693,59 @@ async function fillPromptPasteSourcesAndSendGemini(job: Job, prompt: string): Pr
     await waitForGeminiUploadReady(job.id);
   }
 
-  const sendControl = findGeminiSendControl();
-  if (sendControl && !isGeminiSendDisabled(sendControl)) {
-    sendControl.click();
-    await sleep(500);
-    if (!await isPromptSubmitted(prompt)) {
-      composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true }));
-    }
-  } else if (job.sourceImages.length === 0) {
-    composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true }));
-  } else {
+  if (await submitGeminiPromptWithFallback(job, composer, prompt)) return;
+  if (job.sourceImages.length > 0) {
     throw new Error("Gemini send control was not ready after image upload.");
   }
-  await waitForPromptSubmitted(prompt);
+
+  throw new Error(`Prompt was filled but no submitted Gemini user turn appeared.`);
+}
+
+async function submitGeminiPromptWithFallback(
+  job: Job,
+  composer: HTMLElement | HTMLTextAreaElement,
+  prompt: string
+): Promise<boolean> {
+  let reportedWaiting = false;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const sendControl = findGeminiSendControl();
+    if (sendControl && !isGeminiSendDisabled(sendControl)) {
+      clickGeminiSendControl(sendControl);
+      if (await waitForSubmittedPrompt(prompt, 4, 250)) return true;
+    } else if (!reportedWaiting) {
+      reportedWaiting = true;
+      await report(job.id, "waiting_upload_ready");
+    }
+
+    dispatchGeminiEnter(composer);
+    if (await waitForSubmittedPrompt(prompt, 2, 250)) return true;
+    await sleep(250);
+  }
+
+  return false;
+}
+
+function clickGeminiSendControl(control: HTMLElement): void {
+  const target = control.querySelector<HTMLElement>("button:not([disabled]), [role='button']:not([aria-disabled='true'])") ?? control;
+  target.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
+  target.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+  target.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true }));
+  target.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+  target.click();
+}
+
+function dispatchGeminiEnter(composer: HTMLElement | HTMLTextAreaElement): void {
+  composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, cancelable: true }));
+  composer.dispatchEvent(new KeyboardEvent("keypress", { key: "Enter", code: "Enter", bubbles: true, cancelable: true }));
+  composer.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", bubbles: true, cancelable: true }));
+}
+
+async function waitForSubmittedPrompt(prompt: string, attempts: number, delayMs: number): Promise<boolean> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (await isPromptSubmitted(prompt)) return true;
+    await sleep(delayMs);
+  }
+  return false;
 }
 
 async function waitForGeminiUploadReady(jobId: string): Promise<void> {

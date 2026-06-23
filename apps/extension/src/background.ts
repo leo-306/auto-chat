@@ -112,11 +112,12 @@ async function schedulerTick(options: { force?: boolean; platform?: JobPlatform 
 
   const targetPlatforms = options.platform ? [options.platform] : PLATFORMS;
   for (const platform of targetPlatforms) {
-    const dispatchMatches = dispatched === null || dispatched === platform;
+    const dispatchMatches = dispatched !== false &&
+      (dispatched === null || dispatched.platform === null || dispatched.platform === platform);
     if (!options.force && pausedByPlatform[platform] && !dispatchMatches) continue;
 
     while (workerCount(platform) < config.maxConcurrency) {
-      const job = await claimJob(platform);
+      const job = await claimJob(platform, dispatchMatches && dispatched && dispatched !== null ? dispatched.jobId : null);
       if (!job) break;
       try {
         await launchJob(job);
@@ -140,7 +141,7 @@ async function refreshConfig(): Promise<void> {
   }
 }
 
-async function consumeDispatchSignal(): Promise<JobPlatform | null | false> {
+async function consumeDispatchSignal(): Promise<DispatchState | null | false> {
   if (!serverOk) return false;
   try {
     const dispatch = await api<DispatchState>("/dispatch");
@@ -155,16 +156,17 @@ async function consumeDispatchSignal(): Promise<JobPlatform | null | false> {
     for (const platform of targets) {
       lastDebugByPlatform[platform] = `收到外部调度请求：${dispatch.requestedAt ?? "未知时间"}。`;
     }
-    return dispatch.platform ?? null;
+    return dispatch;
   } catch {
     return false;
   }
 }
 
-async function claimJob(platform: JobPlatform): Promise<Job | null> {
+async function claimJob(platform: JobPlatform, jobId?: string | null): Promise<Job | null> {
   const body: ClaimJobRequest = {
     workerId,
     platform,
+    ...(jobId ? { jobId } : {}),
     runningJobIds: [...workers.values()].map(worker => worker.jobId)
   };
   return api<Job | null>(`/jobs/claim`, { method: "POST", body });
@@ -277,7 +279,12 @@ async function handleProgress(message: JobProgressMessage, tabId?: number): Prom
         workerId
       });
       workers.delete(tabId);
-      await chrome.tabs.remove(tabId);
+      try {
+        await chrome.tabs.remove(tabId);
+      } catch {
+        // The job is already saved and marked done. Tab cleanup failures should not
+        // overwrite the terminal job status.
+      }
     } catch (error) {
       await postStatus(message.jobId, {
         status: "needs_manual",

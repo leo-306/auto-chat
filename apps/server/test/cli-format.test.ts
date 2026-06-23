@@ -8,6 +8,7 @@ import {
   formatJobSummary,
   formatListRow,
   normalizeCommand,
+  positionalArgs,
   shouldStopListeningForPayload
 } from "../src/cli.js";
 
@@ -124,11 +125,17 @@ describe("CLI formatting", () => {
 
   it("formats add result with platform-specific dispatch command", () => {
     expect(formatAddResult({ ...baseJob, platform: "gemini" })).toContain(
-      "下一步: auto-chat dispatch --platform gemini && auto-chat listen job_1"
+      "下一步: auto-chat dispatch --platform gemini job_1 && auto-chat listen job_1"
     );
     expect(formatAddResult(baseJob)).toContain(
-      "下一步: auto-chat dispatch --platform gpt && auto-chat listen job_1"
+      "下一步: auto-chat dispatch --platform gpt job_1 && auto-chat listen job_1"
     );
+  });
+
+  it("reads positional args without treating option values as job ids", () => {
+    expect(positionalArgs(["--platform", "gemini", "img_1", "--json"])).toEqual(["img_1"]);
+    expect(positionalArgs(["--file", "examples/job.json", "--platform", "gpt"])).toEqual([]);
+    expect(positionalArgs(["examples/job.json", "--platform", "gpt"])).toEqual(["examples/job.json"]);
   });
 
   it("builds stable Gemini per-image prompts", () => {

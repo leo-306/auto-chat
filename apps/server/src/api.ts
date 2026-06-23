@@ -61,9 +61,10 @@ export async function buildServer(store: JobStore, events = new EventHub()): Pro
   app.get("/dispatch", async () => store.getDispatch());
 
   app.post("/dispatch", async (request) => {
-    const body = (request.body ?? {}) as { platform?: unknown };
+    const body = (request.body ?? {}) as { platform?: unknown; jobId?: unknown };
     const platform = body.platform === undefined ? null : JobPlatformSchema.parse(body.platform);
-    return store.requestDispatch(platform);
+    const jobId = typeof body.jobId === "string" && body.jobId.trim() ? body.jobId.trim() : null;
+    return store.requestDispatch(platform, jobId);
   });
 
   app.post("/jobs", async (request, reply) => {

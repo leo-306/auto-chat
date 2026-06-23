@@ -127,6 +127,7 @@ export type Job = z.infer<typeof JobSchema>;
 export const ClaimJobSchema = z.object({
   workerId: z.string().min(1),
   platform: JobPlatformSchema.default("gpt"),
+  jobId: z.string().min(1).optional(),
   runningJobIds: z.array(z.string()).default([])
 });
 
@@ -135,6 +136,7 @@ export type ClaimJobRequest = z.input<typeof ClaimJobSchema>;
 export const DispatchStateSchema = z.object({
   id: z.number().int().min(0),
   platform: JobPlatformSchema.nullable().default(null),
+  jobId: z.string().nullable().default(null),
   requestedAt: z.string().nullable()
 });
 
