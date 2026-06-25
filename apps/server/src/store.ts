@@ -195,6 +195,22 @@ export class JobStore {
     return this.mustGet(id);
   }
 
+  reloadJob(id: string): Job {
+    const existing = this.mustGet(id);
+    if (!existing.conversationUrl) {
+      throw new Error(`Job has no recorded conversation URL: ${id}`);
+    }
+    const now = new Date().toISOString();
+    this.run(
+      `update jobs set status = 'queued', tab_id = null, worker_id = null, error_message = null,
+       refresh_count = 0, attempt = ?, updated_at = ? where id = ?`,
+      [existing.attempt + 1, now, id]
+    );
+    this.appendEvent(id, { type: "job_reload", payload: { attempt: existing.attempt + 1, conversationUrl: existing.conversationUrl } });
+    this.persist();
+    return this.mustGet(id);
+  }
+
   markManual(id: string, message?: string): Job {
     return this.updateStatus(id, { status: "needs_manual", errorMessage: message });
   }

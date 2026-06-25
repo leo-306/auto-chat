@@ -160,6 +160,19 @@ export async function buildServer(store: JobStore, events = new EventHub()): Pro
     }
   });
 
+  app.post("/jobs/:id/reload", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    try {
+      return store.reloadJob(id);
+    } catch (error) {
+      const message = String(error);
+      if (message.includes("no recorded conversation URL")) {
+        return reply.code(400).send({ error: message });
+      }
+      return reply.code(404).send({ error: message });
+    }
+  });
+
   app.post("/jobs/:id/manual", async (request, reply) => {
     const { id } = request.params as { id: string };
     const body = (request.body ?? {}) as { message?: string };

@@ -42,14 +42,14 @@ async function startJob(job: Job, nextConfig: AppConfig): Promise<void> {
   monitorAbort?.abort();
   monitorAbort = new AbortController();
 
-  if (job.platform === "gemini" && job.mode === "image") {
-    void runGeminiImageJob(job, nextConfig, monitorAbort.signal);
-    return;
-  }
-
   const existing = findJobAssistant(job.id);
   if (existing) {
     void monitorJob(job, nextConfig, monitorAbort.signal);
+    return;
+  }
+
+  if (job.platform === "gemini" && job.mode === "image") {
+    void runGeminiImageJob(job, nextConfig, monitorAbort.signal);
     return;
   }
 

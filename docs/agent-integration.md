@@ -344,6 +344,9 @@ grep image_order data/jobs/<jobId>/events.jsonl
 failed_retryable
   -> auto-chat retry <jobId>
 
+已有对话 URL 且只需重新加载检查
+  -> auto-chat reload <jobId>
+
 needs_manual
   -> auto-chat open <jobId>
 

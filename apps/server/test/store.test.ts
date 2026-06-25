@@ -214,4 +214,38 @@ describe("JobStore", () => {
     expect(store.getJob("old_job")?.status).toBe("queued");
     store.close();
   });
+
+  it("reloads a job through the recorded conversation URL without clearing it", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+    store.createJob({ id: "reload_job", prompt: "hello", sourceImages: [], metadata: {} });
+    store.updateStatus("reload_job", {
+      status: "failed_retryable",
+      tabId: 123,
+      conversationUrl: "https://chatgpt.com/c/reload-job",
+      workerId: "worker",
+      errorMessage: "temporary failure",
+      refreshCount: 2
+    });
+
+    const reloaded = store.reloadJob("reload_job");
+
+    expect(reloaded.status).toBe("queued");
+    expect(reloaded.conversationUrl).toBe("https://chatgpt.com/c/reload-job");
+    expect(reloaded.tabId).toBeNull();
+    expect(reloaded.workerId).toBeNull();
+    expect(reloaded.errorMessage).toBeNull();
+    expect(reloaded.refreshCount).toBe(0);
+    expect(reloaded.attempt).toBe(1);
+    store.close();
+  });
+
+  it("rejects reload when no conversation URL was recorded", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+    store.createJob({ id: "new_job", prompt: "hello", sourceImages: [], metadata: {} });
+
+    expect(() => store.reloadJob("new_job")).toThrow("no recorded conversation URL");
+    store.close();
+  });
 });

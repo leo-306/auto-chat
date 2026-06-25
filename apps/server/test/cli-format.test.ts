@@ -8,6 +8,7 @@ import {
   formatExtensionInstallInstructions,
   formatJobSummary,
   formatListRow,
+  formatReloadResult,
   normalizeCommand,
   positionalArgs,
   shouldStopListeningForPayload
@@ -43,6 +44,7 @@ describe("CLI formatting", () => {
     expect(normalizeCommand("server")).toBe("start");
     expect(normalizeCommand("server:start")).toBe("start");
     expect(normalizeCommand("server:stop")).toBe("stop");
+    expect(normalizeCommand("retry-load")).toBe("reload");
     expect(normalizeCommand("add")).toBe("add");
   });
 
@@ -155,6 +157,14 @@ describe("CLI formatting", () => {
       "下一步: auto-chat dispatch --platform gemini job_1 && auto-chat listen job_1"
     );
     expect(formatAddResult(baseJob)).toContain(
+      "下一步: auto-chat dispatch --platform gpt job_1 && auto-chat listen job_1"
+    );
+  });
+
+  it("formats reload result with the preserved conversation URL", () => {
+    expect(formatReloadResult(baseJob)).toContain("已请求重试加载: job_1");
+    expect(formatReloadResult(baseJob)).toContain("对话: https://chatgpt.com/c/abc");
+    expect(formatReloadResult(baseJob)).toContain(
       "下一步: auto-chat dispatch --platform gpt job_1 && auto-chat listen job_1"
     );
   });

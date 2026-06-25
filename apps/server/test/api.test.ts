@@ -36,4 +36,17 @@ describe("job assets API", () => {
     await app.close();
     store.close();
   });
+
+  it("returns 400 when reloading a job without a recorded conversation URL", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+    store.createJob({ id: "job_without_url", prompt: "hello", sourceImages: [], metadata: {} });
+    const app = await buildServer(store);
+
+    const response = await app.inject({ method: "POST", url: "/jobs/job_without_url/reload" });
+
+    expect(response.statusCode).toBe(400);
+    await app.close();
+    store.close();
+  });
 });

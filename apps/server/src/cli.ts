@@ -110,6 +110,14 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     return;
   }
 
+  if (command === "reload") {
+    const id = positionalArgs(args)[0];
+    if (!id) throw new Error("缺少任务 id。用法：auto-chat reload <jobId>");
+    const job = await request<Job>(`/jobs/${id}/reload`, { method: "POST" });
+    print(options.json ? JSON.stringify(job, null, 2) : formatReloadResult(job));
+    return;
+  }
+
   if (command === "open") {
     const id = positionalArgs(args)[0];
     if (!id) throw new Error("缺少任务 id。用法：auto-chat open <jobId>");
@@ -150,6 +158,7 @@ export function normalizeCommand(command: string): string {
   if (command === "server:start") return "start";
   if (command === "server:stop") return "stop";
   if (command === "server:status") return "status";
+  if (command === "retry-load") return "reload";
   const legacy = /^job:(.+)$/.exec(command);
   return legacy ? legacy[1] : command;
 }
@@ -528,6 +537,7 @@ function formatSseEvent(payload: any): string {
   if (event?.type === "image_order") return `${prefix} 已记录图片顺序`;
   if (event?.type === "text_output") return `${prefix} 已复制文本响应`;
   if (event?.type === "job_retry") return `${prefix} 已重新入队`;
+  if (event?.type === "job_reload") return `${prefix} 已重新加载对话`;
   if (job) return `${prefix} ${formatStatus(job.status, job.platform)} ${formatProgress(job)} ${job.errorMessage ?? ""}`.trim();
   return `${prefix} ${payload.type}`;
 }
@@ -538,6 +548,17 @@ export function formatAddResult(job: Job): string {
     `平台: ${formatPlatform(job.platform)}`,
     `模式: ${formatMode(job.mode)}`,
     `状态: ${formatStatus(job.status, job.platform)}`,
+    `下一步: auto-chat dispatch --platform ${job.platform} ${job.id} && auto-chat listen ${job.id}`
+  ].join("\n");
+}
+
+export function formatReloadResult(job: Job): string {
+  return [
+    `已请求重试加载: ${job.id}`,
+    `平台: ${formatPlatform(job.platform)}`,
+    `模式: ${formatMode(job.mode)}`,
+    `状态: ${formatStatus(job.status, job.platform)}`,
+    `对话: ${job.conversationUrl ?? "未记录"}`,
     `下一步: auto-chat dispatch --platform ${job.platform} ${job.id} && auto-chat listen ${job.id}`
   ].join("\n");
 }
@@ -643,6 +664,7 @@ Usage:
   auto-chat dispatch [--platform gpt|gemini] [jobId] [--json]
   auto-chat doctor <jobId>
   auto-chat retry <jobId>
+  auto-chat reload <jobId>
   auto-chat open <jobId>
 
 Legacy npm scripts still work, for example:

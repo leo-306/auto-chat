@@ -173,7 +173,7 @@ async function claimJob(platform: JobPlatform, jobId?: string | null): Promise<J
 }
 
 async function launchJob(job: Job): Promise<void> {
-  const tab = await chrome.tabs.create({ url: urlForPlatform(job.platform), active: false });
+  const tab = await chrome.tabs.create({ url: job.conversationUrl ?? urlForPlatform(job.platform), active: false });
   if (!tab.id) throw new Error("Chrome did not return a tab id");
   const worker: WorkerRecord = {
     tabId: tab.id,

@@ -146,6 +146,7 @@ auto-chat listen [jobId]
 auto-chat listen [jobId] --json
 auto-chat doctor <jobId>
 auto-chat retry <jobId>
+auto-chat reload <jobId>
 auto-chat open <jobId>
 ```
 
@@ -298,6 +299,7 @@ data/jobs/<jobId>/outputs/output-02.*
 ```text
 done -> 成功，读取 outputs
 failed_retryable -> 可 auto-chat retry <jobId>
+已有对话 URL 且只需重新加载检查 -> 可 auto-chat reload <jobId>
 needs_manual / failed_final -> auto-chat open <jobId>
 stalled / refreshing -> 继续 auto-chat listen <jobId>
 其他状态 -> 运行中
