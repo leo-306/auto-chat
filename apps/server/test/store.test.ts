@@ -237,6 +237,24 @@ describe("JobStore", () => {
     expect(reloaded.errorMessage).toBeNull();
     expect(reloaded.refreshCount).toBe(0);
     expect(reloaded.attempt).toBe(1);
+    expect(reloaded.metadata.autoChatReloadOnly).toBe(true);
+    store.close();
+  });
+
+  it("clears reload-only mode when retrying a job for regeneration", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+    store.createJob({ id: "retry_job", prompt: "hello", sourceImages: [], metadata: {} });
+    store.updateStatus("retry_job", {
+      status: "failed_retryable",
+      conversationUrl: "https://chatgpt.com/c/retry-job"
+    });
+    store.reloadJob("retry_job");
+
+    const retried = store.retryJob("retry_job");
+
+    expect(retried.metadata.autoChatReloadOnly).toBeUndefined();
+    expect(retried.status).toBe("queued");
     store.close();
   });
 

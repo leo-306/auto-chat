@@ -42,6 +42,12 @@ async function startJob(job: Job, nextConfig: AppConfig): Promise<void> {
   monitorAbort?.abort();
   monitorAbort = new AbortController();
 
+  if (isReloadOnly(job)) {
+    await report(job.id, "waiting_generation");
+    void monitorJob(job, nextConfig, monitorAbort.signal);
+    return;
+  }
+
   const existing = findJobAssistant(job.id);
   if (existing) {
     void monitorJob(job, nextConfig, monitorAbort.signal);
@@ -104,6 +110,10 @@ function geminiPrompts(job: Job): string[] | undefined {
   const value = job.metadata.geminiPrompts;
   if (!Array.isArray(value) || !value.every(item => typeof item === "string")) return undefined;
   return value;
+}
+
+function isReloadOnly(job: Job): boolean {
+  return job.metadata.autoChatReloadOnly === true;
 }
 
 async function waitForGeminiSingleImage(

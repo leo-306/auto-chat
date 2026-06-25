@@ -185,10 +185,13 @@ export class JobStore {
   retryJob(id: string): Job {
     const existing = this.mustGet(id);
     const now = new Date().toISOString();
+    const metadata = { ...existing.metadata };
+    delete metadata.autoChatReloadOnly;
     this.run(
       `update jobs set status = 'queued', tab_id = null, worker_id = null, error_message = null,
+       metadata = ?,
        refresh_count = 0, attempt = ?, updated_at = ? where id = ?`,
-      [existing.attempt + 1, now, id]
+      [JSON.stringify(metadata), existing.attempt + 1, now, id]
     );
     this.appendEvent(id, { type: "job_retry", payload: { attempt: existing.attempt + 1 } });
     this.persist();
@@ -201,10 +204,12 @@ export class JobStore {
       throw new Error(`Job has no recorded conversation URL: ${id}`);
     }
     const now = new Date().toISOString();
+    const metadata = { ...existing.metadata, autoChatReloadOnly: true };
     this.run(
       `update jobs set status = 'queued', tab_id = null, worker_id = null, error_message = null,
+       metadata = ?,
        refresh_count = 0, attempt = ?, updated_at = ? where id = ?`,
-      [existing.attempt + 1, now, id]
+      [JSON.stringify(metadata), existing.attempt + 1, now, id]
     );
     this.appendEvent(id, { type: "job_reload", payload: { attempt: existing.attempt + 1, conversationUrl: existing.conversationUrl } });
     this.persist();
