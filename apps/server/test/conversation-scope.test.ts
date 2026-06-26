@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findLatestJobConversationScope, type ConversationTurnCandidate } from "@wechat-topic/shared";
+import { findLatestJobConversationScope, type ConversationTurnCandidate } from "auto-chat-shared";
 
 describe("conversation scope selection", () => {
   it("selects the latest assistant turn for repeated job submissions", () => {

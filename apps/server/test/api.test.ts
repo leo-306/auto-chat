@@ -8,7 +8,7 @@ import path from "node:path";
 let tmp = "";
 
 beforeEach(() => {
-  tmp = fs.mkdtempSync(path.join(os.tmpdir(), "wechat-topic-api-"));
+  tmp = fs.mkdtempSync(path.join(os.tmpdir(), "auto-chat-api-"));
 });
 
 afterEach(() => {

@@ -13,7 +13,7 @@ import {
   JobPlatform,
   JobStatus,
   UpdateStatusRequest
-} from "@wechat-topic/shared";
+} from "auto-chat-shared";
 import { EventHub } from "./events.js";
 import { ResolvedPaths, resolvePaths } from "./paths.js";
 

@@ -8,7 +8,7 @@ import {
   EventSchema,
   JobPlatformSchema,
   UpdateStatusSchema
-} from "@wechat-topic/shared";
+} from "auto-chat-shared";
 import { DuplicateJobError, JobStore } from "./store.js";
 import { publicDir } from "./paths.js";
 import fs from "node:fs";

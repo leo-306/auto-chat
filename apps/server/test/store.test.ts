@@ -9,7 +9,7 @@ let originalCwd = "";
 
 beforeEach(() => {
   originalCwd = process.cwd();
-  tmp = fs.mkdtempSync(path.join(os.tmpdir(), "wechat-topic-"));
+  tmp = fs.mkdtempSync(path.join(os.tmpdir(), "auto-chat-"));
   process.chdir(tmp);
 });
 

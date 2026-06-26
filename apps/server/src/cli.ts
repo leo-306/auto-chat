@@ -5,8 +5,8 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import open from "open";
-import { JobPlatformSchema } from "@wechat-topic/shared";
-import type { AppConfig, Job, JobPlatform, JobStatus } from "@wechat-topic/shared";
+import { JobPlatformSchema } from "auto-chat-shared";
+import type { AppConfig, Job, JobPlatform, JobStatus } from "auto-chat-shared";
 import { workspaceRoot } from "./paths.js";
 
 const baseUrl = process.env.JOB_SERVER_URL ?? "http://127.0.0.1:17321";

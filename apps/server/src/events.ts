@@ -1,4 +1,4 @@
-import type { AppConfig, Job, JobEvent } from "@wechat-topic/shared";
+import type { AppConfig, Job, JobEvent } from "auto-chat-shared";
 
 export type ServerEvent = {
   type: string;

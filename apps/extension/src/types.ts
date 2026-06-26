@@ -1,4 +1,4 @@
-import type { AppConfig, Job, JobPlatform, JobStatus } from "@wechat-topic/shared";
+import type { AppConfig, Job, JobPlatform, JobStatus } from "auto-chat-shared";
 
 export type WorkerRecord = {
   tabId: number;

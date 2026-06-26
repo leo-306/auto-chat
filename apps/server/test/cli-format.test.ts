@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildGeminiOutputPrompt } from "@wechat-topic/shared";
-import type { Job } from "@wechat-topic/shared";
+import { buildGeminiOutputPrompt } from "auto-chat-shared";
+import type { Job } from "auto-chat-shared";
 import {
   defaultSkillInstallDirs,
   formatAddResult,

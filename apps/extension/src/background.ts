@@ -1,5 +1,5 @@
-import type { AppConfig, ArtifactRequest, ClaimJobRequest, DispatchState, Job, JobPlatform, UpdateStatusRequest } from "@wechat-topic/shared";
-import { DEFAULT_CONFIG } from "@wechat-topic/shared";
+import type { AppConfig, ArtifactRequest, ClaimJobRequest, DispatchState, Job, JobPlatform, UpdateStatusRequest } from "auto-chat-shared";
+import { DEFAULT_CONFIG } from "auto-chat-shared";
 import type { DebugInspectMessage, DebugInspectResult, JobProgressMessage, PopupState, StartJobMessage, WorkerRecord } from "./types.js";
 
 const SERVER_URL = "http://127.0.0.1:17321";

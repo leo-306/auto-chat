@@ -1,5 +1,5 @@
 {
-  "name": "@wechat-topic/shared",
+  "name": "auto-chat-shared",
   "version": "0.1.0",
   "private": true,
   "type": "module",

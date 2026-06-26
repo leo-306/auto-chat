@@ -1,5 +1,5 @@
-import { buildGeminiOutputPrompt, findLatestJobConversationScope } from "@wechat-topic/shared";
-import type { AppConfig, ConversationTurnRole, Job } from "@wechat-topic/shared";
+import { buildGeminiOutputPrompt, findLatestJobConversationScope } from "auto-chat-shared";
+import type { AppConfig, ConversationTurnRole, Job } from "auto-chat-shared";
 import { findGeminiSendControl, isGeminiSendDisabled } from "./gemini.js";
 import { hasGeneratingText } from "./inspect.js";
 import { submitPromptWithFallback } from "./submit.js";

@@ -1,4 +1,4 @@
-import type { JobPlatform } from "@wechat-topic/shared";
+import type { JobPlatform } from "auto-chat-shared";
 import type { PlatformState, PopupState } from "./types.js";
 
 const server = document.querySelector("#server")!;
