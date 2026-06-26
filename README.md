@@ -161,6 +161,15 @@ auto-chat dispatch --platform <gpt|gemini> <jobId>
 
 这样插件会领取指定任务，避免同平台更早排队的任务被误触发。
 
+插件调度最大并发数默认是 1。需要同时处理多个任务时，可以查看或设置并发数：
+
+```bash
+auto-chat concurrency
+auto-chat concurrency 3
+```
+
+并发数范围是 1 到 8，设置后会写入本地服务配置，插件下一轮调度会按新值领取任务。
+
 ## 第一个任务(命令式调用)
 
 创建 GPT 文本任务：
