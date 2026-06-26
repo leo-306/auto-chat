@@ -65,6 +65,13 @@ curl -X POST http://127.0.0.1:17321/dispatch
 
 dispatch 不会开启自动执行，只会让插件在下一次后台 tick 时强制 claim 一轮。推荐 agent 同时传 `--platform` 和 `<jobId>`，避免同平台旧队列任务先被领取。只传 `--platform` 时，插件会领取该平台最早的 queued 任务；不传 `--platform` 时会唤醒所有平台。
 
+插件调度最大并发数默认是 1，可用 CLI 查看或设置：
+
+```bash
+auto-chat concurrency
+auto-chat concurrency 3
+```
+
 HTTP 也支持指定平台和任务：
 
 ```bash

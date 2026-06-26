@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import open from "open";
 import { JobPlatformSchema } from "@wechat-topic/shared";
-import type { Job, JobPlatform, JobStatus } from "@wechat-topic/shared";
+import type { AppConfig, Job, JobPlatform, JobStatus } from "@wechat-topic/shared";
 import { workspaceRoot } from "./paths.js";
 
 const baseUrl = process.env.JOB_SERVER_URL ?? "http://127.0.0.1:17321";
@@ -62,6 +62,15 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
 
   if (command === "status") {
     await printServerStatus();
+    return;
+  }
+
+  if (command === "concurrency") {
+    const value = positionalArgs(args)[0];
+    const config = value
+      ? await request<AppConfig>("/config", { method: "PATCH", body: { maxConcurrency: parseMaxConcurrencyArg(value) } })
+      : await request<AppConfig>("/config");
+    print(options.json ? JSON.stringify(config, null, 2) : formatConcurrencyResult(config));
     return;
   }
 
@@ -563,6 +572,18 @@ export function formatReloadResult(job: Job): string {
   ].join("\n");
 }
 
+export function parseMaxConcurrencyArg(value: string): number {
+  const concurrency = Number(value);
+  if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 8) {
+    throw new Error("最大并发数必须是 1 到 8 的整数");
+  }
+  return concurrency;
+}
+
+export function formatConcurrencyResult(config: Pick<AppConfig, "maxConcurrency">): string {
+  return `插件调度最大并发数: ${config.maxConcurrency}`;
+}
+
 function formatProgress(job: Job): string {
   if (job.mode === "text") return job.textOutputFile ? "text ready" : "waiting text";
   return `${job.outputFiles.length}/${job.expectedImageCount} images`;
@@ -662,6 +683,7 @@ Usage:
   auto-chat show <jobId> [--json]
   auto-chat listen [jobId] [--json]
   auto-chat dispatch [--platform gpt|gemini] [jobId] [--json]
+  auto-chat concurrency [1-8] [--json]
   auto-chat doctor <jobId>
   auto-chat retry <jobId>
   auto-chat reload <jobId>

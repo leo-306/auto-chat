@@ -63,10 +63,13 @@ auto-chat show <jobId>
 auto-chat doctor <jobId>
 auto-chat dispatch --platform gpt <jobId>
 auto-chat dispatch --platform gemini <jobId>
+auto-chat concurrency 3
 auto-chat listen <jobId>
 ```
 
 Use `auto-chat listen <jobId> --json` when raw SSE event shape matters. Prefer passing both `--platform` and `<jobId>` to `dispatch`; this asks the extension to claim that specific queued job and avoids older queued tasks on the same platform being picked first. Omitting `<jobId>` claims the oldest queued task for the selected platform. Omitting `--platform` wakes all platforms.
+
+Use `auto-chat concurrency` to inspect the current plugin scheduler max concurrency, and `auto-chat concurrency <1-8>` to update it. The default is 1.
 
 Text output lives at `data/jobs/<jobId>/outputs/output-01.txt`. Image output lives under `data/jobs/<jobId>/outputs/`; use `image_order` events to confirm image order.
 

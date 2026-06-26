@@ -142,6 +142,9 @@ auto-chat dispatch --platform gemini
 auto-chat dispatch --platform gpt <jobId>
 auto-chat dispatch --platform gemini <jobId>
 
+auto-chat concurrency
+auto-chat concurrency 3
+
 auto-chat listen [jobId]
 auto-chat listen [jobId] --json
 auto-chat doctor <jobId>

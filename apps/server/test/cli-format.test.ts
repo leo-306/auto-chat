@@ -4,12 +4,14 @@ import type { Job } from "@wechat-topic/shared";
 import {
   defaultSkillInstallDirs,
   formatAddResult,
+  formatConcurrencyResult,
   formatDoctor,
   formatExtensionInstallInstructions,
   formatJobSummary,
   formatListRow,
   formatReloadResult,
   normalizeCommand,
+  parseMaxConcurrencyArg,
   positionalArgs,
   shouldStopListeningForPayload
 } from "../src/cli.js";
@@ -173,6 +175,13 @@ describe("CLI formatting", () => {
     expect(positionalArgs(["--platform", "gemini", "img_1", "--json"])).toEqual(["img_1"]);
     expect(positionalArgs(["--file", "examples/job.json", "--platform", "gpt"])).toEqual([]);
     expect(positionalArgs(["examples/job.json", "--platform", "gpt"])).toEqual(["examples/job.json"]);
+  });
+
+  it("parses and formats max concurrency settings", () => {
+    expect(parseMaxConcurrencyArg("3")).toBe(3);
+    expect(() => parseMaxConcurrencyArg("0")).toThrow("最大并发数必须是 1 到 8 的整数");
+    expect(() => parseMaxConcurrencyArg("1.5")).toThrow("最大并发数必须是 1 到 8 的整数");
+    expect(formatConcurrencyResult({ maxConcurrency: 3 })).toBe("插件调度最大并发数: 3");
   });
 
   it("builds stable Gemini per-image prompts", () => {
