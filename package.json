@@ -10,6 +10,7 @@
     "apps/extension/dist",
     "auto-chat-extension.zip",
     "packages/shared/dist",
+    "packages/shared/package.json",
     "skills/auto-chat",
     "docs/agent-integration.md",
     "examples",
@@ -24,6 +25,14 @@
     "packages/*",
     "apps/*"
   ],
+  "dependencies": {
+    "@fastify/cors": "^11.0.1",
+    "@wechat-topic/shared": "file:packages/shared",
+    "fastify": "^5.8.5",
+    "open": "^10.1.0",
+    "sql.js": "^1.12.0",
+    "zod": "^3.25.0"
+  },
   "scripts": {
     "build": "npm run build -w @wechat-topic/shared && npm run build -w @wechat-topic/extension && npm run build -w @wechat-topic/server",
     "check": "npm run build -w @wechat-topic/shared && npm run check --workspaces --if-present",
