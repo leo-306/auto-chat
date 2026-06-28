@@ -32,6 +32,10 @@ Agent / CLI / 脚本
 
 auto-chat 不托管 GPT/Gemini 账号，不保存登录凭据，也不绕过平台登录或权限机制。浏览器页面仍然使用你自己的登录态。
 
+插件 popup 控制面板：
+
+![插件 popup](docs/插件.png)
+
 ## 快速开始
 
 安装 CLI：
@@ -56,6 +60,8 @@ auto-chat init
 4. 点击 Load unpacked，选择解压后的目录。
 
 任务列表页面：`http://127.0.0.1:17321/`
+
+![任务列表](docs/任务列表.png)
 
 后续服务管理：
 
@@ -82,10 +88,12 @@ auto-chat init
 然后在 Codex 中直接发起任务请求，例如：
 
 ```text
-帮我用 Gemini 生成一张赛博朋克风格的猫咪头像，完成后把图片文件路径发给我。
+使用 auto-chat 帮我用 Gemini 生成一张赛博朋克风格的猫咪头像，完成后把图片文件路径发给我。
 ```
 
 Codex 应通过 auto-chat 的本地 CLI、SSE 和输出文件完成任务。
+
+![Gemini 任务执行](docs/Gemini%20任务执行.png)
 
 ### Claude Code 示例
 
@@ -100,8 +108,14 @@ auto-chat init
 Claude Code 侧可以直接给这样的请求：
 
 ```text
-帮我用 ChatGPT 生成一张白色极简风的咖啡店室内效果图，完成后告诉我图片保存在哪里。
+使用 auto-chat 帮我用 ChatGPT 生成一张白色极简风的咖啡店室内效果图，完成后告诉我图片保存在哪里。
 ```
+
+Claude Code 调用示例（Gemini 生图任务全流程）：
+
+![Claude Code 调用 1](docs/claude%20调用%201.png)
+
+![Claude Code 调用 2](docs/claude%20调用%202.png)
 
 ### 其他 Agent / 脚本
 
