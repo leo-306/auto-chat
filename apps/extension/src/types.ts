@@ -1,4 +1,5 @@
 import type { AppConfig, Job, JobPlatform, JobStatus } from "auto-chat-shared";
+import type { EmptyAssistantRecoveryMode } from "./recovery.js";
 
 export type WorkerRecord = {
   tabId: number;
@@ -13,6 +14,7 @@ export type StartJobMessage = {
   type: "START_JOB";
   job: Job;
   config: AppConfig;
+  recoveryMode?: EmptyAssistantRecoveryMode;
 };
 
 export type JobProgressMessage = {
@@ -24,6 +26,7 @@ export type JobProgressMessage = {
   images?: Array<{ index: number; sourceId: string; dataUrl: string; contentType: string }>;
   imageOrderComplete?: boolean;
   text?: string;
+  recoveryMode?: EmptyAssistantRecoveryMode;
 };
 
 export type PlatformState = {

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   selectEmptyAssistantRecovery,
+  shouldMonitorWithoutSubmit,
   waitForEmptyAssistantRecovery
 } from "../src/recovery.js";
 
@@ -117,5 +118,36 @@ describe("GPT empty assistant recovery", () => {
       currentUrl: () => "https://gemini.google.com/app/example"
     })).resolves.toBeNull();
     expect(inspect).not.toHaveBeenCalled();
+  });
+
+  it("monitors without submitting after a changed-URL recovery", () => {
+    expect(shouldMonitorWithoutSubmit({
+      recoveryMode: "monitor_only",
+      reloadOnly: false,
+      hasExistingAssistant: false
+    })).toBe(true);
+  });
+
+  it("resubmits after an unchanged-URL recovery even if an assistant exists", () => {
+    expect(shouldMonitorWithoutSubmit({
+      recoveryMode: "resubmit",
+      reloadOnly: false,
+      hasExistingAssistant: true
+    })).toBe(false);
+  });
+
+  it("preserves existing reload-only and existing-assistant behavior", () => {
+    expect(shouldMonitorWithoutSubmit({
+      reloadOnly: true,
+      hasExistingAssistant: false
+    })).toBe(true);
+    expect(shouldMonitorWithoutSubmit({
+      reloadOnly: false,
+      hasExistingAssistant: true
+    })).toBe(true);
+    expect(shouldMonitorWithoutSubmit({
+      reloadOnly: false,
+      hasExistingAssistant: false
+    })).toBe(false);
   });
 });

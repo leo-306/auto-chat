@@ -45,6 +45,16 @@ export async function waitForEmptyAssistantRecovery(options: {
   });
 }
 
+export function shouldMonitorWithoutSubmit(input: {
+  recoveryMode?: EmptyAssistantRecoveryMode;
+  reloadOnly: boolean;
+  hasExistingAssistant: boolean;
+}): boolean {
+  if (input.recoveryMode === "monitor_only") return true;
+  if (input.recoveryMode === "resubmit") return false;
+  return input.reloadOnly || input.hasExistingAssistant;
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }

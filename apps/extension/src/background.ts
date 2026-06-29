@@ -1,5 +1,6 @@
 import type { AppConfig, ArtifactRequest, ClaimJobRequest, DispatchState, Job, JobPlatform, UpdateStatusRequest } from "auto-chat-shared";
 import { DEFAULT_CONFIG } from "auto-chat-shared";
+import type { EmptyAssistantRecoveryMode } from "./recovery.js";
 import type { DebugInspectMessage, DebugInspectResult, JobProgressMessage, PopupState, StartJobMessage, WorkerRecord } from "./types.js";
 
 const SERVER_URL = "http://127.0.0.1:17321";
@@ -189,8 +190,12 @@ async function launchJob(job: Job): Promise<void> {
   await sendStartMessage(tab.id, job);
 }
 
-async function sendStartMessage(tabId: number, job: Job): Promise<void> {
-  const message: StartJobMessage = { type: "START_JOB", job, config };
+async function sendStartMessage(
+  tabId: number,
+  job: Job,
+  recoveryMode?: EmptyAssistantRecoveryMode
+): Promise<void> {
+  const message: StartJobMessage = { type: "START_JOB", job, config, recoveryMode };
   for (let attempt = 0; attempt < 20; attempt += 1) {
     try {
       await chrome.tabs.sendMessage(tabId, message);
@@ -234,7 +239,7 @@ async function handleProgress(message: JobProgressMessage, tabId?: number): Prom
     await chrome.tabs.reload(tabId);
     await waitForTabComplete(tabId);
     const job = await api<Job>(`/jobs/${worker.jobId}`);
-    await sendStartMessage(tabId, job);
+    await sendStartMessage(tabId, job, message.recoveryMode);
     return;
   }
 

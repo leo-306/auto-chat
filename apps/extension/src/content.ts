@@ -2,6 +2,8 @@ import { buildGeminiOutputPrompt, findLatestJobConversationScope } from "auto-ch
 import type { AppConfig, ConversationTurnRole, Job } from "auto-chat-shared";
 import { findGeminiSendControl, isGeminiSendDisabled } from "./gemini.js";
 import { hasGeneratingText } from "./inspect.js";
+import { shouldMonitorWithoutSubmit, waitForEmptyAssistantRecovery } from "./recovery.js";
+import type { EmptyAssistantRecoveryMode } from "./recovery.js";
 import { submitPromptWithFallback } from "./submit.js";
 import type { DebugInspectMessage, DebugInspectResult, JobProgressMessage, StartJobMessage } from "./types.js";
 
@@ -19,7 +21,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   const typed = message as StartJobMessage | DebugInspectMessage;
   if (typed.type === "START_JOB") {
     const start = typed;
-    void startJob(start.job, start.config)
+    void startJob(start.job, start.config, start.recoveryMode)
       .then(() => sendResponse({ ok: true }))
       .catch(async error => {
         await report(start.job.id, "needs_manual", String(error));
@@ -36,41 +38,85 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return false;
 });
 
-async function startJob(job: Job, nextConfig: AppConfig): Promise<void> {
+async function startJob(
+  job: Job,
+  nextConfig: AppConfig,
+  recoveryMode?: EmptyAssistantRecoveryMode
+): Promise<void> {
   activeJob = job;
   config = nextConfig;
   monitorAbort?.abort();
-  monitorAbort = new AbortController();
-
-  if (isReloadOnly(job)) {
-    await report(job.id, "waiting_generation");
-    void monitorJob(job, nextConfig, monitorAbort.signal);
-    return;
-  }
+  const controller = new AbortController();
+  monitorAbort = controller;
 
   const existing = findJobAssistant(job.id);
-  if (existing) {
-    void monitorJob(job, nextConfig, monitorAbort.signal);
+  if (shouldMonitorWithoutSubmit({
+    recoveryMode,
+    reloadOnly: isReloadOnly(job),
+    hasExistingAssistant: Boolean(existing)
+  })) {
+    if (recoveryMode === "monitor_only" || isReloadOnly(job)) {
+      await report(job.id, "waiting_generation");
+    }
+    void monitorJob(job, nextConfig, controller.signal);
     return;
   }
 
   if (job.platform === "gemini" && job.mode === "image") {
-    void runGeminiImageJob(job, nextConfig, monitorAbort.signal);
+    void runGeminiImageJob(job, nextConfig, controller.signal);
     return;
   }
 
   await report(job.id, "waiting_chat_ready");
   await waitForComposer();
+  let beforeSendUrl: string | null = null;
   if (job.platform === "gpt") {
     await report(job.id, "uploading");
     await uploadSources(job);
     await report(job.id, "sending_prompt");
+    beforeSendUrl = location.href;
     await fillPromptAndSendGpt(job);
   } else {
     await fillPromptPasteSourcesAndSendGemini(job, job.prompt);
   }
   await report(job.id, "waiting_generation");
-  void monitorJob(job, nextConfig, monitorAbort.signal);
+  void monitorJob(job, nextConfig, controller.signal).finally(() => controller.abort());
+  if (beforeSendUrl) void recoverEmptyGptAssistant(job, beforeSendUrl, controller);
+}
+
+async function recoverEmptyGptAssistant(
+  job: Job,
+  beforeSendUrl: string,
+  controller: AbortController
+): Promise<void> {
+  try {
+    const recoveryMode = await waitForEmptyAssistantRecovery({
+      platform: job.platform,
+      beforeSendUrl,
+      signal: controller.signal,
+      inspect: async () => {
+        const state = await inspectJob(job.id);
+        return {
+          assistantExists: state.assistantExists,
+          assistantText: state.assistantText,
+          imageCount: state.loadedImages.length
+        };
+      },
+      currentUrl: () => location.href
+    });
+    if (!recoveryMode || controller.signal.aborted) return;
+
+    controller.abort();
+    await sendProgress({
+      type: "JOB_PROGRESS",
+      jobId: job.id,
+      status: "stalled",
+      recoveryMode,
+      errorMessage: "GPT assistant remained empty 3 seconds after prompt submission."
+    });
+  } catch (error) {
+    if (!controller.signal.aborted) await report(job.id, "failed_retryable", String(error));
+  }
 }
 
 async function runGeminiImageJob(job: Job, appConfig: AppConfig, signal: AbortSignal): Promise<void> {
@@ -249,6 +295,7 @@ async function monitorJob(job: Job, appConfig: AppConfig, signal: AbortSignal): 
 }
 
 async function inspectJob(jobId: string): Promise<{
+  assistantExists: boolean;
   hasError: boolean;
   errorText: string;
   isInterrupted: boolean;
@@ -269,6 +316,7 @@ async function inspectJob(jobId: string): Promise<{
     const hasError = ERROR_TEXT_PATTERN.test(jobText);
     const isInterrupted = INTERRUPTED_TEXT_PATTERN.test(jobText);
     return {
+      assistantExists: false,
       hasError,
       errorText: hasError ? jobText.slice(0, 500) : "",
       isInterrupted,
@@ -292,6 +340,7 @@ async function inspectJob(jobId: string): Promise<{
   const assistantImages = findGeneratedImagesInOrder(assistant);
   const loadedImages = uniqueImages([...assistantImages, ...scopedImages]);
   return {
+    assistantExists: true,
     hasError,
     errorText: hasError ? text.slice(0, 500) : "",
     isInterrupted,
@@ -332,7 +381,7 @@ async function debugInspect(jobId?: string): Promise<DebugInspectResult> {
     jobId: resolvedJobId,
     pageJobId,
     url: location.href,
-    hasJobAssistant: Boolean(findJobAssistant(resolvedJobId)),
+    hasJobAssistant: state.assistantExists,
     hasError: state.hasError,
     isInterrupted: state.isInterrupted,
     isGenerating: state.isGenerating,
