@@ -1,5 +1,21 @@
 # auto-chat
 
+<div align="center">
+
+## GPT/Gemini 浏览器自动化工具
+
+**零 API Key，零凭据，本地运行——用你自己的 ChatGPT/Gemini 页面自动化任务。**
+
+[![npm](https://img.shields.io/npm/v/auto-chat-cli?color=blue&label=npm)](https://www.npmjs.com/package/auto-chat-cli)
+[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![platform](https://img.shields.io/badge/platform-GPT%20%2B%20Gemini-purple)](https://github.com/leo-306/auto-chat)
+
+[English](README.en.md) · [Agent 集成协议](docs/agent-integration.md) · [Skill 文档](skills/auto-chat/SKILL.md)
+
+</div>
+
+---
+
 auto-chat 是一个本地 GPT/Gemini 浏览器自动化工具。它用本地服务管理任务队列和文件，用 Chrome 插件接管你自己已登录的 ChatGPT 或 Gemini 页面，再通过 CLI、SSE 和本地文件把结果交还给 Agent 或脚本。
 
 它适合这些场景：
@@ -83,7 +99,7 @@ auto-chat start
 auto-chat stop
 ```
 
-插件默认暂停，不会自动领取队列。可以在 popup 里点击“执行一次调度”，也可以用 CLI 触发。
+插件默认暂停，不会自动领取队列。可以在 popup 里点击"执行一次调度"，也可以用 CLI 触发。
 
 ## Agent 集成
 
