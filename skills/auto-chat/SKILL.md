@@ -79,6 +79,24 @@ GPT and Gemini text jobs both support optional `sourceImages`; set `mode: "text"
 
 For text outputs, the extension uses the platform copy action where available. If the clipboard still contains an old command beginning with `auto-chat`, treat it as stale automation text and keep waiting for a real copied response before marking the job failed.
 
+## Persistent Tabs and Follow-up Jobs
+
+Set `persistTab: true` to keep the browser tab open after a job finishes. Set `parentJobId` on a follow-up job to reuse the parent's existing tab (or fall back to its `conversationUrl` if the tab is closed). Both GPT and Gemini support this.
+
+Example flow:
+
+```bash
+# Step 1: run parent job with tab kept open
+auto-chat add examples/persist-tab-job.json --replace
+auto-chat dispatch --platform gpt persist_test_001 && auto-chat listen persist_test_001
+
+# Step 2: run follow-up job in same conversation thread
+auto-chat add examples/followup-job.json --replace
+auto-chat dispatch --platform gpt followup_test_001 && auto-chat listen followup_test_001
+```
+
+The follow-up job sends into the existing conversation — the model retains prior context. Do not close the parent tab between steps if you want guaranteed tab reuse.
+
 ## Chrome Extension
 
 After extension or shared protocol changes:

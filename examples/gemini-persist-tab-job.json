@@ -1,0 +1,8 @@
+{
+  "id": "gemini_persist_001",
+  "platform": "gemini",
+  "mode": "text",
+  "prompt": "请用一句话介绍一下太阳系。",
+  "sourceImages": [],
+  "persistTab": true
+}

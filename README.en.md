@@ -42,6 +42,8 @@ Use cases:
 - **Agent-friendly**: `auto-chat dispatch/listen/doctor/open` — Agents never need to touch browser DOM directly.
 - **Targeted dispatch**: `auto-chat dispatch --platform gemini <jobId>` prevents older queued jobs from being picked up by mistake.
 - **Observable, diagnosable, retryable**: SSE pushes real-time status; use `doctor`, `retry`, or `open` on failure.
+- **Persistent tabs**: Set `persistTab: true` on a job to keep the browser tab open after completion, ready for follow-up.
+- **Multi-turn conversations**: Set `parentJobId` on a new job to reuse the parent job's existing tab and append to the same conversation thread. Works on both GPT and Gemini.
 - **Stable Gemini image input**: Reference images are pasted directly into the Gemini input box; the extension waits for the send button to become active before submitting.
 - **Reliable text collection**: Text is collected via the page's copy-response button; stale `auto-chat`-prefixed clipboard content is ignored.
 
@@ -281,6 +283,38 @@ Text is collected via the page's copy-response button. If the clipboard content 
 ```
 
 Both GPT and Gemini support `sourceImages`. For Gemini, the extension pastes images directly into the input box (no file picker) and waits for the send button to become active before submitting.
+
+### Persistent tabs and follow-up conversations
+
+By default the extension closes the tab when a job finishes. To continue in the same conversation thread:
+
+1. Set `persistTab: true` on the parent job — the tab stays open after completion.
+2. Set `parentJobId` on the follow-up job — the extension reuses the parent's open tab. If the tab is gone it falls back to the parent's recorded `conversationUrl`.
+
+```json
+{
+  "id": "parent_001",
+  "platform": "gpt",
+  "mode": "text",
+  "prompt": "Describe the solar system in one sentence.",
+  "sourceImages": [],
+  "persistTab": true
+}
+```
+
+```json
+{
+  "id": "followup_001",
+  "platform": "gpt",
+  "mode": "text",
+  "prompt": "You just described the solar system. Now describe the Milky Way in one sentence.",
+  "sourceImages": [],
+  "parentJobId": "parent_001",
+  "persistTab": true
+}
+```
+
+Works on both GPT and Gemini. The follow-up job sends into the existing conversation — the model retains the prior context.
 
 ### Image task
 

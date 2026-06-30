@@ -1,0 +1,9 @@
+{
+  "id": "gemini_followup_001",
+  "platform": "gemini",
+  "mode": "text",
+  "prompt": "刚才你提到太阳系，请再用一句话介绍一下银河系。",
+  "sourceImages": [],
+  "parentJobId": "gemini_persist_001",
+  "persistTab": true
+}
