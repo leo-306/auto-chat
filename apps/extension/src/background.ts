@@ -237,6 +237,10 @@ async function handleProgress(message: JobProgressMessage, tabId?: number): Prom
     return;
   }
 
+  if (message.status === "waiting_generation" && worker.platform === "gemini") {
+    try { await chrome.tabs.update(tabId, { active: true }); } catch { /* tab gone */ }
+  }
+
   if (message.status === "stalled") {
     if (worker.refreshCount >= config.maxRefreshPerJob) {
       await postStatus(worker.jobId, {
