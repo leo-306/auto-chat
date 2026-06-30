@@ -591,6 +591,7 @@ async function collectTextResponse(jobId: string, fallbackText: string): Promise
     }
   }
 
+  if (fallbackText.trim()) return fallbackText;
   throw new Error(copyButton ? "Copy response produced empty clipboard text." : "Copy response button was not found.");
 }
 
@@ -608,14 +609,11 @@ async function readClipboardText(): Promise<string | null> {
 
 function findCopyResponseButton(assistant: HTMLElement): HTMLButtonElement | null {
   const buttons = [...assistant.querySelectorAll<HTMLButtonElement>("button")];
-  return buttons.find(button => {
+  return buttons.find(button =>
+    button.getAttribute("data-testid") === "copy-turn-action-button"
+  ) ?? buttons.find(button => {
     const label = `${button.innerText} ${button.ariaLabel ?? ""} ${button.title ?? ""}`;
-    return isVisible(button) &&
-      button.getAttribute("data-testid") === "copy-turn-action-button" &&
-      /copy response/i.test(label);
-  }) ?? buttons.find(button => {
-    const label = `${button.innerText} ${button.ariaLabel ?? ""} ${button.title ?? ""}`;
-    return isVisible(button) && /copy response|copy/i.test(label) && !/copy image|copy prompt/i.test(label);
+    return /copy response/i.test(label) && !/copy image|copy prompt/i.test(label);
   }) ?? null;
 }
 
