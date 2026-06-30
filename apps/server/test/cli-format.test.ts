@@ -35,6 +35,8 @@ const baseJob: Job = {
   outputFiles: ["/tmp/data/jobs/job_1/outputs/output-01.png", "/tmp/data/jobs/job_1/outputs/output-02.png"],
   textOutputFile: null,
   screenshotFiles: [],
+  persistTab: false,
+  parentJobId: null,
   createdAt: "2026-06-21T00:00:00.000Z",
   updatedAt: "2026-06-21T00:01:00.000Z"
 };
