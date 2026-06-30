@@ -174,20 +174,40 @@ async function claimJob(platform: JobPlatform, jobId?: string | null): Promise<J
 }
 
 async function launchJob(job: Job): Promise<void> {
-  const tab = await chrome.tabs.create({ url: job.conversationUrl ?? urlForPlatform(job.platform), active: false });
-  if (!tab.id) throw new Error("Chrome did not return a tab id");
+  let tabId: number;
+  let needsLoad = true;
+
+  if (job.parentJobId) {
+    const parentJob = await api<Job>(`/jobs/${job.parentJobId}`);
+    const parentTabId = parentJob.tabId;
+    const parentTabAlive = parentTabId !== null && await isTabAlive(parentTabId);
+    if (parentTabAlive && parentTabId !== null) {
+      tabId = parentTabId;
+      needsLoad = false;
+    } else {
+      const url = parentJob.conversationUrl ?? urlForPlatform(job.platform);
+      const tab = await chrome.tabs.create({ url, active: false });
+      if (!tab.id) throw new Error("Chrome did not return a tab id");
+      tabId = tab.id;
+    }
+  } else {
+    const tab = await chrome.tabs.create({ url: job.conversationUrl ?? urlForPlatform(job.platform), active: false });
+    if (!tab.id) throw new Error("Chrome did not return a tab id");
+    tabId = tab.id;
+  }
+
   const worker: WorkerRecord = {
-    tabId: tab.id,
+    tabId,
     jobId: job.id,
     platform: job.platform,
     startedAt: Date.now(),
     lastStateAt: Date.now(),
     refreshCount: job.refreshCount
   };
-  workers.set(tab.id, worker);
-  await postStatus(job.id, { status: "opening_tab", tabId: tab.id, workerId });
-  await waitForTabComplete(tab.id);
-  await sendStartMessage(tab.id, job);
+  workers.set(tabId, worker);
+  await postStatus(job.id, { status: "opening_tab", tabId, workerId });
+  if (needsLoad) await waitForTabComplete(tabId);
+  await sendStartMessage(tabId, job);
 }
 
 async function sendStartMessage(
@@ -284,11 +304,13 @@ async function handleProgress(message: JobProgressMessage, tabId?: number): Prom
         workerId
       });
       workers.delete(tabId);
-      try {
-        await chrome.tabs.remove(tabId);
-      } catch {
-        // The job is already saved and marked done. Tab cleanup failures should not
-        // overwrite the terminal job status.
+      if (!job.persistTab && !job.parentJobId) {
+        try {
+          await chrome.tabs.remove(tabId);
+        } catch {
+          // The job is already saved and marked done. Tab cleanup failures should not
+          // overwrite the terminal job status.
+        }
       }
     } catch (error) {
       await postStatus(message.jobId, {
@@ -469,4 +491,13 @@ function textToBase64(text: string): string {
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary);
+}
+
+async function isTabAlive(tabId: number): Promise<boolean> {
+  try {
+    await chrome.tabs.get(tabId);
+    return true;
+  } catch {
+    return false;
+  }
 }

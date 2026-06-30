@@ -35,6 +35,8 @@ type JobRow = {
   output_files: string;
   text_output_file: string | null;
   screenshot_files: string;
+  persist_tab: number;
+  parent_job_id: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -89,8 +91,9 @@ export class JobStore {
       `insert into jobs (
         id, platform, mode, status, prompt, expected_image_count, source_images, metadata,
         conversation_url, tab_id, attempt, refresh_count, error_message,
-        worker_id, output_files, text_output_file, screenshot_files, created_at, updated_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, null, null, 0, 0, null, null, ?, null, ?, ?, ?)`,
+        worker_id, output_files, text_output_file, screenshot_files,
+        persist_tab, parent_job_id, created_at, updated_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, null, null, 0, 0, null, null, ?, null, ?, ?, ?, ?, ?)`,
       [
         id,
         platform,
@@ -102,6 +105,8 @@ export class JobStore {
         JSON.stringify(metadata),
         JSON.stringify([]),
         JSON.stringify([]),
+        input.persistTab ? 1 : 0,
+        input.parentJobId ?? null,
         now,
         now
       ]
@@ -338,6 +343,8 @@ export class JobStore {
     this.addColumnIfMissing("jobs", "mode", "text not null default 'image'");
     this.addColumnIfMissing("jobs", "platform", "text not null default 'gpt'");
     this.addColumnIfMissing("jobs", "text_output_file", "text");
+    this.addColumnIfMissing("jobs", "persist_tab", "integer not null default 0");
+    this.addColumnIfMissing("jobs", "parent_job_id", "text");
   }
 
   private loadConfig(): void {
@@ -445,6 +452,8 @@ function rowToJob(row: JobRow): Job {
     outputFiles: JSON.parse(row.output_files),
     textOutputFile: row.text_output_file,
     screenshotFiles: JSON.parse(row.screenshot_files),
+    persistTab: (row.persist_tab ?? 0) !== 0,
+    parentJobId: row.parent_job_id ?? null,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
