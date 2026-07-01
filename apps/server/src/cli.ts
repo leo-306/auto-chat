@@ -494,7 +494,7 @@ async function watch(jobId: string): Promise<void> {
     }
     if (job.status !== "failed_retryable" && terminalStatuses.has(job.status)) break;
     if (job.status === "failed_retryable") {
-      const config = await request<AppConfig>("/config");
+      const config = await request<AppConfig>("/config").catch(() => undefined);
       if (!willAutoRetry(job, config)) break;
     }
     await sleep(5000);
