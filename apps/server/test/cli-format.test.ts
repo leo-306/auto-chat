@@ -115,6 +115,35 @@ describe("CLI formatting", () => {
     }, "job_1")).toBe(false);
   });
 
+  it("keeps listening on failed_retryable when auto-retry will still fire for this job", () => {
+    expect(shouldStopListeningForPayload({
+      jobId: "job_1",
+      job: { ...baseJob, status: "failed_retryable", attempt: 0 }
+    }, "job_1", { autoRetry: true, maxRetries: 2 })).toBe(false);
+
+    expect(shouldStopListeningForPayload({
+      jobId: "job_1",
+      job: { ...baseJob, status: "failed_retryable", attempt: 1 }
+    }, "job_1", { autoRetry: true, maxRetries: 2 })).toBe(false);
+  });
+
+  it("stops listening on failed_retryable once auto-retry is exhausted or disabled", () => {
+    expect(shouldStopListeningForPayload({
+      jobId: "job_1",
+      job: { ...baseJob, status: "failed_retryable", attempt: 2 }
+    }, "job_1", { autoRetry: true, maxRetries: 2 })).toBe(true);
+
+    expect(shouldStopListeningForPayload({
+      jobId: "job_1",
+      job: { ...baseJob, status: "failed_retryable", attempt: 0 }
+    }, "job_1", { autoRetry: false, maxRetries: undefined })).toBe(true);
+
+    expect(shouldStopListeningForPayload({
+      jobId: "job_1",
+      job: { ...baseJob, status: "failed_retryable", attempt: 0 }
+    }, "job_1")).toBe(true);
+  });
+
   it("uses global agent skill directories for init installs", () => {
     expect(defaultSkillInstallDirs("/Users/alice")).toEqual([
       "/Users/alice/.codex/skills",

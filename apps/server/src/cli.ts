@@ -492,7 +492,11 @@ async function watch(jobId: string): Promise<void> {
       print(line);
       last = line;
     }
-    if (terminalStatuses.has(job.status)) break;
+    if (job.status !== "failed_retryable" && terminalStatuses.has(job.status)) break;
+    if (job.status === "failed_retryable") {
+      const config = await request<AppConfig>("/config");
+      if (!willAutoRetry(job, config)) break;
+    }
     await sleep(5000);
   }
 }
@@ -502,7 +506,11 @@ async function listen(jobId: string | undefined, options: CliOptions): Promise<v
     try {
       const job = await request<Job>(`/jobs/${jobId}`);
       print(`[${time()}] ${job.id} ${formatStatus(job.status, job.platform)} ${formatProgress(job)}`);
-      if (terminalStatuses.has(job.status)) return;
+      if (job.status !== "failed_retryable" && terminalStatuses.has(job.status)) return;
+      if (job.status === "failed_retryable") {
+        const config = await request<AppConfig>("/config").catch(() => undefined);
+        if (!willAutoRetry(job, config)) return;
+      }
     } catch (error) {
       print(`[${time()}] 初始状态不可用：${String(error)}`);
     }
@@ -516,6 +524,7 @@ async function listen(jobId: string | undefined, options: CliOptions): Promise<v
     }
     throw new Error(`${response.status} ${text}`);
   }
+  const config = await request<AppConfig>("/config").catch(() => undefined);
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -527,7 +536,7 @@ async function listen(jobId: string | undefined, options: CliOptions): Promise<v
     while (index >= 0) {
       const chunk = buffer.slice(0, index);
       buffer = buffer.slice(index + 2);
-      if (printSseChunk(chunk, jobId, options)) {
+      if (printSseChunk(chunk, jobId, options, config)) {
         await reader.cancel();
         return;
       }
@@ -536,13 +545,13 @@ async function listen(jobId: string | undefined, options: CliOptions): Promise<v
   }
 }
 
-function printSseChunk(chunk: string, jobId: string | undefined, options: CliOptions): boolean {
+function printSseChunk(chunk: string, jobId: string | undefined, options: CliOptions, config?: Pick<AppConfig, "autoRetry" | "maxRetries">): boolean {
   const dataLine = chunk.split("\n").find(line => line.startsWith("data: "));
   if (!dataLine) return false;
   const payload = JSON.parse(dataLine.slice(6));
   if (options.json) {
     if (!payload.ok && (!jobId || payload.jobId === jobId)) print(JSON.stringify(payload));
-    return shouldStopListeningForPayload(payload, jobId);
+    return shouldStopListeningForPayload(payload, jobId, config);
   }
   if (payload.ok) {
     print(`[${time()}] 已连接事件流：${baseUrl}/events`);
@@ -550,12 +559,21 @@ function printSseChunk(chunk: string, jobId: string | undefined, options: CliOpt
   }
   if (jobId && payload.jobId !== jobId) return false;
   print(formatSseEvent(payload));
-  return shouldStopListeningForPayload(payload, jobId);
+  return shouldStopListeningForPayload(payload, jobId, config);
 }
 
-export function shouldStopListeningForPayload(payload: { jobId?: string; job?: Pick<Job, "status"> | null }, jobId: string | undefined): boolean {
+export function shouldStopListeningForPayload(
+  payload: { jobId?: string; job?: Pick<Job, "status" | "attempt"> | null },
+  jobId: string | undefined,
+  config?: Pick<AppConfig, "autoRetry" | "maxRetries">
+): boolean {
   if (!jobId || payload.jobId !== jobId || !payload.job) return false;
+  if (payload.job.status === "failed_retryable" && willAutoRetry(payload.job, config)) return false;
   return terminalStatuses.has(payload.job.status);
+}
+
+function willAutoRetry(job: Pick<Job, "attempt">, config?: Pick<AppConfig, "autoRetry" | "maxRetries">): boolean {
+  return Boolean(config?.autoRetry && config.maxRetries !== undefined && job.attempt < config.maxRetries);
 }
 
 function formatSseEvent(payload: any): string {
