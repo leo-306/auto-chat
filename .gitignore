@@ -12,3 +12,4 @@ yarn-debug.log*
 yarn-error.log*
 *.tsbuildinfo
 .DS_Store
+docs/social/
