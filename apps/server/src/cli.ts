@@ -74,6 +74,15 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     return;
   }
 
+  if (command === "autoretry") {
+    const value = positionalArgs(args)[0];
+    const config = value
+      ? await request<AppConfig>("/config", { method: "PATCH", body: parseAutoRetryArg(value) })
+      : await request<AppConfig>("/config");
+    print(options.json ? JSON.stringify(config, null, 2) : formatAutoRetryResult(config));
+    return;
+  }
+
   if (command === "add") {
     const file = positionalArgs(args)[0] ?? readFlag(args, "--file");
     if (!file) throw new Error("缺少任务文件。用法：auto-chat add examples/job.json");
@@ -597,6 +606,20 @@ export function formatConcurrencyResult(config: Pick<AppConfig, "maxConcurrency"
   return `插件调度最大并发数: ${config.maxConcurrency}`;
 }
 
+export function parseAutoRetryArg(value: string): { autoRetry: boolean; maxRetries?: number } {
+  const maxRetries = Number(value);
+  if (!Number.isInteger(maxRetries) || maxRetries < 0 || maxRetries > 10) {
+    throw new Error("自动重试次数必须是 0 到 10 的整数（0 表示关闭）");
+  }
+  return maxRetries === 0 ? { autoRetry: false } : { autoRetry: true, maxRetries };
+}
+
+export function formatAutoRetryResult(config: Pick<AppConfig, "autoRetry" | "maxRetries">): string {
+  return config.autoRetry
+    ? `自动重试: 开启（最多重试 ${config.maxRetries} 次）`
+    : "自动重试: 关闭";
+}
+
 function formatProgress(job: Job): string {
   if (job.mode === "text") return job.textOutputFile ? "text ready" : "waiting text";
   return `${job.outputFiles.length}/${job.expectedImageCount} images`;
@@ -697,6 +720,7 @@ Usage:
   auto-chat listen [jobId] [--json]
   auto-chat dispatch [--platform gpt|gemini] [jobId] [--json]
   auto-chat concurrency [1-8] [--json]
+  auto-chat autoretry [0-10] [--json]
   auto-chat doctor <jobId>
   auto-chat retry <jobId>
   auto-chat reload <jobId>

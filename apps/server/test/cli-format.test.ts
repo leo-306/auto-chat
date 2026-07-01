@@ -4,6 +4,7 @@ import type { Job } from "auto-chat-shared";
 import {
   defaultSkillInstallDirs,
   formatAddResult,
+  formatAutoRetryResult,
   formatConcurrencyResult,
   formatDoctor,
   formatExtensionInstallInstructions,
@@ -12,6 +13,7 @@ import {
   formatReloadResult,
   formatSkillInstallResults,
   normalizeCommand,
+  parseAutoRetryArg,
   parseMaxConcurrencyArg,
   positionalArgs,
   shouldStopListeningForPayload
@@ -220,6 +222,18 @@ describe("CLI formatting", () => {
     expect(() => parseMaxConcurrencyArg("0")).toThrow("最大并发数必须是 1 到 8 的整数");
     expect(() => parseMaxConcurrencyArg("1.5")).toThrow("最大并发数必须是 1 到 8 的整数");
     expect(formatConcurrencyResult({ maxConcurrency: 3 })).toBe("插件调度最大并发数: 3");
+  });
+
+  it("parses and formats auto-retry settings", () => {
+    expect(parseAutoRetryArg("0")).toEqual({ autoRetry: false });
+    expect(parseAutoRetryArg("2")).toEqual({ autoRetry: true, maxRetries: 2 });
+    expect(parseAutoRetryArg("10")).toEqual({ autoRetry: true, maxRetries: 10 });
+    expect(() => parseAutoRetryArg("11")).toThrow("自动重试次数必须是 0 到 10 的整数（0 表示关闭）");
+    expect(() => parseAutoRetryArg("-1")).toThrow("自动重试次数必须是 0 到 10 的整数（0 表示关闭）");
+    expect(() => parseAutoRetryArg("1.5")).toThrow("自动重试次数必须是 0 到 10 的整数（0 表示关闭）");
+
+    expect(formatAutoRetryResult({ autoRetry: false, maxRetries: undefined })).toBe("自动重试: 关闭");
+    expect(formatAutoRetryResult({ autoRetry: true, maxRetries: 3 })).toBe("自动重试: 开启（最多重试 3 次）");
   });
 
   it("builds stable Gemini per-image prompts", () => {
