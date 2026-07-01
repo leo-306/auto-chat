@@ -286,4 +286,68 @@ describe("JobStore", () => {
     expect(updated.maxRetries).toBe(3);
     store.close();
   });
+
+  it("does not auto-retry when autoRetry is disabled", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+    store.createJob({ id: "no_auto_retry", prompt: "hello", sourceImages: [], metadata: {} });
+
+    const result = store.updateStatus("no_auto_retry", {
+      status: "failed_retryable",
+      errorMessage: "boom"
+    });
+
+    expect(result.status).toBe("failed_retryable");
+    expect(result.attempt).toBe(0);
+    store.close();
+  });
+
+  it("auto-retries failed_retryable jobs up to maxRetries, then stops", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+    store.updateConfig({ autoRetry: true, maxRetries: 2 });
+    store.createJob({ id: "auto_retry_job", platform: "gpt", prompt: "hello", sourceImages: [], metadata: {} });
+
+    const afterFirstFailure = store.updateStatus("auto_retry_job", {
+      status: "failed_retryable",
+      errorMessage: "first failure"
+    });
+    expect(afterFirstFailure.status).toBe("queued");
+    expect(afterFirstFailure.attempt).toBe(1);
+    expect(afterFirstFailure.tabId).toBeNull();
+    expect(afterFirstFailure.errorMessage).toBeNull();
+
+    const afterSecondFailure = store.updateStatus("auto_retry_job", {
+      status: "failed_retryable",
+      errorMessage: "second failure"
+    });
+    expect(afterSecondFailure.status).toBe("queued");
+    expect(afterSecondFailure.attempt).toBe(2);
+
+    const afterThirdFailure = store.updateStatus("auto_retry_job", {
+      status: "failed_retryable",
+      errorMessage: "third failure"
+    });
+    expect(afterThirdFailure.status).toBe("failed_retryable");
+    expect(afterThirdFailure.attempt).toBe(2);
+    expect(afterThirdFailure.errorMessage).toBe("third failure");
+
+    store.close();
+  });
+
+  it("requests dispatch for the retried job's platform when auto-retrying", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+    store.updateConfig({ autoRetry: true, maxRetries: 1 });
+    store.createJob({ id: "auto_retry_dispatch", platform: "gemini", prompt: "hello", sourceImages: [], metadata: {} });
+
+    const dispatchBefore = store.getDispatch();
+    store.updateStatus("auto_retry_dispatch", { status: "failed_retryable" });
+    const dispatchAfter = store.getDispatch();
+
+    expect(dispatchAfter.id).toBe(dispatchBefore.id + 1);
+    expect(dispatchAfter.platform).toBe("gemini");
+    expect(dispatchAfter.jobId).toBe("auto_retry_dispatch");
+    store.close();
+  });
 });

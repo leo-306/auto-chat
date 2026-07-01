@@ -185,6 +185,16 @@ export class JobStore {
     this.appendEvent(id, { type: "status", payload: input });
     this.writeMeta(id);
     this.persist();
+
+    if (input.status === "failed_retryable" && this.config.autoRetry && this.config.maxRetries !== undefined) {
+      const failedJob = this.mustGet(id);
+      if (failedJob.attempt < this.config.maxRetries) {
+        const retried = this.retryJob(id);
+        this.requestDispatch(retried.platform, retried.id);
+        return retried;
+      }
+    }
+
     return this.mustGet(id);
   }
 
