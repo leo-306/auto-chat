@@ -5,6 +5,7 @@ import {
   AppConfig,
   ArtifactRequest,
   ClaimJobRequest,
+  ConfigSchema,
   CreateJobRequest,
   DEFAULT_CONFIG,
   DispatchState,
@@ -299,7 +300,8 @@ export class JobStore {
   }
 
   updateConfig(patch: Partial<AppConfig>): AppConfig {
-    this.config = { ...this.config, ...patch };
+    const merged = ConfigSchema.parse({ ...this.config, ...patch });
+    this.config = merged;
     this.run("insert or replace into config (key, value) values ('app', ?)", [
       JSON.stringify(this.config)
     ]);

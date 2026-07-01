@@ -266,4 +266,24 @@ describe("JobStore", () => {
     expect(() => store.reloadJob("new_job")).toThrow("no recorded conversation URL");
     store.close();
   });
+
+  it("rejects updateConfig when autoRetry is enabled without maxRetries", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+
+    expect(() => store.updateConfig({ autoRetry: true })).toThrow();
+
+    store.close();
+  });
+
+  it("allows updateConfig to enable autoRetry with maxRetries in one call", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+
+    const updated = store.updateConfig({ autoRetry: true, maxRetries: 3 });
+
+    expect(updated.autoRetry).toBe(true);
+    expect(updated.maxRetries).toBe(3);
+    store.close();
+  });
 });

@@ -53,9 +53,13 @@ export async function buildServer(store: JobStore, events = new EventHub()): Pro
 
   app.get("/config", async () => store.getConfig());
 
-  app.patch("/config", async (request) => {
-    const patch = ConfigSchema.partial().parse(request.body);
-    return store.updateConfig(patch);
+  app.patch("/config", async (request, reply) => {
+    const patch = ConfigSchema.innerType().partial().parse(request.body);
+    try {
+      return store.updateConfig(patch);
+    } catch (error) {
+      return reply.code(400).send({ error: String(error) });
+    }
   });
 
   app.get("/dispatch", async () => store.getDispatch());

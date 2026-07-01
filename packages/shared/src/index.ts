@@ -35,7 +35,17 @@ export const ConfigSchema = z.object({
   expectedImageCount: z.number().int().min(1).max(12).default(4),
   chatgptUrl: z.string().url().default("https://chatgpt.com/"),
   geminiUrl: z.string().url().default("https://gemini.google.com/app"),
-  webhookUrls: z.array(z.string().url()).default([])
+  webhookUrls: z.array(z.string().url()).default([]),
+  autoRetry: z.boolean().default(false),
+  maxRetries: z.number().int().min(1).max(10).optional()
+}).superRefine((value, ctx) => {
+  if (value.autoRetry && value.maxRetries === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["maxRetries"],
+      message: "maxRetries is required when autoRetry is enabled."
+    });
+  }
 });
 
 export type AppConfig = z.infer<typeof ConfigSchema>;
@@ -48,7 +58,8 @@ export const DEFAULT_CONFIG: AppConfig = {
   expectedImageCount: 4,
   chatgptUrl: "https://chatgpt.com/",
   geminiUrl: "https://gemini.google.com/app",
-  webhookUrls: []
+  webhookUrls: [],
+  autoRetry: false
 };
 
 export const CreateJobSchema = z.object({
