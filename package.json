@@ -1,6 +1,6 @@
 {
   "name": "auto-chat-cli",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "Local GPT/Gemini browser automation CLI for queued image and text jobs.",
   "license": "MIT",
   "type": "module",

@@ -447,10 +447,21 @@ function findJobScopeRetryButton(jobId: string): HTMLButtonElement | null {
   const buttons = [...document.querySelectorAll<HTMLButtonElement>("button")].filter(button =>
     isAfter(button, scope.user) && (!scope.nextUser || isBefore(button, scope.nextUser))
   );
-  return buttons.find(button => {
+  const byLabel = buttons.find(button => {
     const label = `${button.innerText} ${button.ariaLabel ?? ""} ${button.title ?? ""}`;
     return isVisible(button) && /retry|try again|重试/i.test(label);
-  }) ?? null;
+  });
+  if (byLabel) return byLabel;
+
+  // ChatGPT's guardrail-refusal turn reuses the "Switch model" button slot (no
+  // matching aria-label) to render the retry icon, so fall back to position:
+  // the button right after "Copy response"/"Share" inside the actions group.
+  const actionsGroup = buttons.find(button => button.getAttribute("aria-label") === "Share")
+    ?.closest('[aria-label="Response actions"]');
+  if (!actionsGroup) return null;
+  const groupButtons = [...actionsGroup.querySelectorAll<HTMLButtonElement>("button")].filter(isVisible);
+  const shareIndex = groupButtons.findIndex(button => button.getAttribute("aria-label") === "Share");
+  return shareIndex >= 0 ? groupButtons[shareIndex + 1] ?? null : null;
 }
 
 function findJobConversationScope(jobId: string): { user: HTMLElement; assistant: HTMLElement | null; nextUser: HTMLElement | null } | null {
