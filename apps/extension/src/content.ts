@@ -222,6 +222,7 @@ async function monitorJob(job: Job, appConfig: AppConfig, signal: AbortSignal): 
   let lastSignature = "";
   let lastChangedAt = Date.now();
   let maybeDoneAt = 0;
+  let retriedInPage = false;
 
   try {
     while (!signal.aborted) {
@@ -233,6 +234,17 @@ async function monitorJob(job: Job, appConfig: AppConfig, signal: AbortSignal): 
       }
 
       if (state.hasError) {
+        if (job.platform === "gpt" && !retriedInPage) {
+          retriedInPage = true;
+          const retryButton = findJobScopeRetryButton(job.id);
+          if (retryButton) {
+            retryButton.click();
+            lastChangedAt = Date.now();
+            maybeDoneAt = 0;
+            await sleep(MONITOR_INTERVAL_MS);
+            continue;
+          }
+        }
         await report(job.id, "failed_retryable", state.errorText);
         return;
       }
@@ -426,6 +438,19 @@ function findJobScopeText(jobId: string): string {
   );
 
   return scopedTurns.map(node => node.innerText || "").join("\n");
+}
+
+function findJobScopeRetryButton(jobId: string): HTMLButtonElement | null {
+  const scope = findJobConversationScope(jobId);
+  if (!scope) return null;
+
+  const buttons = [...document.querySelectorAll<HTMLButtonElement>("button")].filter(button =>
+    isAfter(button, scope.user) && (!scope.nextUser || isBefore(button, scope.nextUser))
+  );
+  return buttons.find(button => {
+    const label = `${button.innerText} ${button.ariaLabel ?? ""} ${button.title ?? ""}`;
+    return isVisible(button) && /retry|try again|重试/i.test(label);
+  }) ?? null;
 }
 
 function findJobConversationScope(jobId: string): { user: HTMLElement; assistant: HTMLElement | null; nextUser: HTMLElement | null } | null {
