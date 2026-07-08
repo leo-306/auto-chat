@@ -202,7 +202,8 @@ async function launchJob(job: Job): Promise<void> {
     platform: job.platform,
     startedAt: Date.now(),
     lastStateAt: Date.now(),
-    refreshCount: job.refreshCount
+    refreshCount: job.refreshCount,
+    rateLimitRefreshCount: 0
   };
   workers.set(tabId, worker);
   await postStatus(job.id, { status: "opening_tab", tabId, workerId });
@@ -239,6 +240,27 @@ async function handleProgress(message: JobProgressMessage, tabId?: number): Prom
 
   if (message.status === "waiting_generation" && worker.platform === "gemini") {
     try { await chrome.tabs.update(tabId, { active: true }); } catch { /* tab gone */ }
+  }
+
+  if (message.status === "rate_limited") {
+    if (worker.rateLimitRefreshCount >= config.maxRefreshPerJob) {
+      await postStatus(worker.jobId, {
+        status: "needs_manual",
+        tabId,
+        errorMessage: `ChatGPT is still rate-limiting this conversation after ${worker.rateLimitRefreshCount} refresh attempt(s) ("Too many requests" modal keeps reappearing). The prompt was already sent and ChatGPT may still be generating a reply — please check the tab manually.`,
+        refreshCount: worker.refreshCount,
+        workerId
+      });
+      workers.delete(tabId);
+      return;
+    }
+    worker.rateLimitRefreshCount += 1;
+    await postStatus(worker.jobId, { status: "refreshing", tabId, refreshCount: worker.refreshCount, workerId });
+    await chrome.tabs.reload(tabId);
+    await waitForTabComplete(tabId);
+    const job = await api<Job>(`/jobs/${worker.jobId}`);
+    await sendStartMessage(tabId, job, "monitor_only");
+    return;
   }
 
   if (message.status === "stalled") {

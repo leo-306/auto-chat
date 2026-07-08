@@ -8,6 +8,7 @@ export type WorkerRecord = {
   startedAt: number;
   lastStateAt: number;
   refreshCount: number;
+  rateLimitRefreshCount: number;
 };
 
 export type StartJobMessage = {
@@ -20,7 +21,7 @@ export type StartJobMessage = {
 export type JobProgressMessage = {
   type: "JOB_PROGRESS";
   jobId: string;
-  status: JobStatus | "maybe_done";
+  status: JobStatus | "maybe_done" | "rate_limited";
   signature?: string;
   errorMessage?: string;
   images?: Array<{ index: number; sourceId: string; dataUrl: string; contentType: string }>;

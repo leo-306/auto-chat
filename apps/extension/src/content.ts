@@ -226,6 +226,11 @@ async function monitorJob(job: Job, appConfig: AppConfig, signal: AbortSignal): 
 
   try {
     while (!signal.aborted) {
+      if (job.platform === "gpt" && dismissRateLimitModal()) {
+        await report(job.id, "rate_limited");
+        return;
+      }
+
       const state = await inspectJob(job.id);
       if (state.signature !== lastSignature) {
         lastSignature = state.signature;
@@ -438,6 +443,16 @@ function findJobScopeText(jobId: string): string {
   );
 
   return scopedTurns.map(node => node.innerText || "").join("\n");
+}
+
+function dismissRateLimitModal(): boolean {
+  const modal = document.getElementById("modal-conversation-history-rate-limit");
+  if (!modal || !isVisible(modal)) return false;
+
+  const dismissButton = [...modal.querySelectorAll<HTMLButtonElement>("button")]
+    .find(button => isVisible(button) && /got it/i.test(button.innerText));
+  dismissButton?.click();
+  return true;
 }
 
 function findJobScopeRetryButton(jobId: string): HTMLButtonElement | null {
