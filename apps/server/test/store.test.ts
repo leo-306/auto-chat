@@ -241,6 +241,62 @@ describe("JobStore", () => {
     store.close();
   });
 
+  it("inherits the nearest recorded conversation URL for child jobs", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+    store.createJob({ id: "parent", prompt: "parent", sourceImages: [], metadata: {} });
+    store.updateStatus("parent", {
+      status: "done",
+      conversationUrl: "https://chatgpt.com/c/parent"
+    });
+
+    const child = store.createJob({
+      id: "child",
+      parentJobId: "parent",
+      prompt: "child",
+      sourceImages: [],
+      metadata: {}
+    });
+    const grandchild = store.createJob({
+      id: "grandchild",
+      parentJobId: "child",
+      prompt: "grandchild",
+      sourceImages: [],
+      metadata: {}
+    });
+
+    expect(child.conversationUrl).toBe("https://chatgpt.com/c/parent");
+    expect(grandchild.conversationUrl).toBe("https://chatgpt.com/c/parent");
+    expect(fs.readFileSync(path.join(tmp, "data/jobs/child/conversation.url"), "utf8"))
+      .toBe("https://chatgpt.com/c/parent");
+    store.close();
+  });
+
+  it("reloads a legacy child through the nearest parent conversation URL", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+    store.createJob({ id: "legacy_parent", prompt: "parent", sourceImages: [], metadata: {} });
+    store.createJob({
+      id: "legacy_child",
+      parentJobId: "legacy_parent",
+      prompt: "child",
+      sourceImages: [],
+      metadata: {}
+    });
+    store.updateStatus("legacy_parent", {
+      status: "done",
+      conversationUrl: "https://chatgpt.com/c/legacy-parent"
+    });
+    store.updateStatus("legacy_child", { status: "needs_manual" });
+
+    const reloaded = store.reloadJob("legacy_child");
+
+    expect(reloaded.status).toBe("queued");
+    expect(reloaded.conversationUrl).toBe("https://chatgpt.com/c/legacy-parent");
+    expect(reloaded.metadata.autoChatReloadOnly).toBe(true);
+    store.close();
+  });
+
   it("clears reload-only mode when retrying a job for regeneration", async () => {
     const store = new JobStore(tmp);
     await store.init();

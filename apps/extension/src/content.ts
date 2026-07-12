@@ -1,7 +1,7 @@
 import { buildGeminiOutputPrompt, findLatestJobConversationScope } from "auto-chat-shared";
 import type { AppConfig, ConversationTurnRole, Job } from "auto-chat-shared";
 import { findGeminiSendControl, isGeminiSendDisabled } from "./gemini.js";
-import { hasGeneratingText } from "./inspect.js";
+import { hasGeneratingText, isGenerationStopControl } from "./inspect.js";
 import { shouldMonitorWithoutSubmit, waitForEmptyAssistantRecovery } from "./recovery.js";
 import type { EmptyAssistantRecoveryMode } from "./recovery.js";
 import { submitPromptWithFallback } from "./submit.js";
@@ -49,6 +49,7 @@ async function startJob(
   const controller = new AbortController();
   monitorAbort = controller;
 
+  if (isReloadOnly(job)) await waitForReloadConversation(job.id);
   const existing = findJobAssistant(job.id);
   if (shouldMonitorWithoutSubmit({
     recoveryMode,
@@ -162,6 +163,19 @@ function isReloadOnly(job: Job): boolean {
   return job.metadata.autoChatReloadOnly === true;
 }
 
+async function waitForReloadConversation(jobId: string): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const turn = findJobUserTurn(jobId);
+    if (turn) {
+      turn.scrollIntoView({ block: "center" });
+      await sleep(500);
+      return;
+    }
+    window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "auto" });
+    await sleep(500);
+  }
+}
+
 async function waitForGeminiSingleImage(
   job: Job,
   appConfig: AppConfig,
@@ -183,7 +197,9 @@ async function waitForGeminiSingleImage(
     if (state.hasError) throw new Error(state.errorText || "Gemini returned an error.");
     if (state.isInterrupted) throw new Error(state.interruptedText || "Gemini response was interrupted.");
     if (Date.now() - startedAt > appConfig.hardTimeoutMs) throw new Error("Job exceeded hard timeout.");
-    if (Date.now() - lastChangedAt > appConfig.stallTimeoutMs) throw new Error("No visible progress before stall timeout.");
+    if (!state.isGenerating && Date.now() - lastChangedAt > appConfig.stallTimeoutMs) {
+      throw new Error("No visible progress before stall timeout.");
+    }
 
     if (state.loadedImages.length >= 1 && !state.isGenerating) {
       if (!maybeDoneAt) {
@@ -264,7 +280,7 @@ async function monitorJob(job: Job, appConfig: AppConfig, signal: AbortSignal): 
         return;
       }
 
-      if (Date.now() - lastChangedAt > appConfig.stallTimeoutMs) {
+      if (!state.isGenerating && Date.now() - lastChangedAt > appConfig.stallTimeoutMs) {
         await report(job.id, "stalled", "No visible progress before stall timeout.");
         return;
       }
@@ -338,7 +354,7 @@ async function inspectJob(jobId: string): Promise<{
       errorText: hasError ? jobText.slice(0, 500) : "",
       isInterrupted,
       interruptedText: isInterrupted ? jobText.slice(0, 500) : "",
-      isGenerating: hasGeneratingText(text),
+      isGenerating: hasGeneratingText(text) || hasActiveGenerationControl(),
       assistantText: "",
       loadedImages: scopedImages,
       scopedImages,
@@ -353,7 +369,8 @@ async function inspectJob(jobId: string): Promise<{
   const isInterrupted = INTERRUPTED_TEXT_PATTERN.test(`${text}\n${jobText}`);
   const isGenerating =
     hasGeneratingText(text) ||
-    Boolean(assistant.querySelector('[aria-busy="true"], [data-testid*="loading"], .animate-pulse'));
+    Boolean(assistant.querySelector('[aria-busy="true"], [data-testid*="loading"], .animate-pulse')) ||
+    hasActiveGenerationControl();
   const assistantImages = findGeneratedImagesInOrder(assistant);
   const loadedImages = uniqueImages([...assistantImages, ...scopedImages]);
   return {
@@ -904,6 +921,13 @@ function findSendButton(): HTMLButtonElement | null {
       !/stop|microphone|麦克风/i.test(label) &&
       testId !== "stop-button";
   }) ?? null;
+}
+
+function hasActiveGenerationControl(): boolean {
+  return [...document.querySelectorAll<HTMLButtonElement>("button")].some(button => {
+    const label = `${button.innerText} ${button.ariaLabel ?? ""} ${button.title ?? ""}`;
+    return isVisible(button) && isGenerationStopControl(button.getAttribute("data-testid"), label);
+  });
 }
 
 function findUploadMenuButton(): HTMLButtonElement | null {

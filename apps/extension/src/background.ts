@@ -176,22 +176,32 @@ async function claimJob(platform: JobPlatform, jobId?: string | null): Promise<J
 async function launchJob(job: Job): Promise<void> {
   let tabId: number;
   let needsLoad = true;
+  let conversationUrl = job.conversationUrl;
+  const reloadOnly = job.metadata.autoChatReloadOnly === true;
 
   if (job.parentJobId) {
     const parentJob = await api<Job>(`/jobs/${job.parentJobId}`);
     const parentTabId = parentJob.tabId;
-    const parentTabAlive = parentTabId !== null && await isTabAlive(parentTabId);
-    if (parentTabAlive && parentTabId !== null) {
-      tabId = parentTabId;
+    const parentTab = parentTabId === null ? null : await getTab(parentTabId);
+    if (parentTab?.id) {
+      tabId = parentTab.id;
       needsLoad = false;
+      if (reloadOnly) await chrome.tabs.update(tabId, { active: true });
+      conversationUrl = parentTab.url && isConversationUrl(job.platform, parentTab.url)
+        ? parentTab.url
+        : await findRecordedConversationUrl(parentJob);
     } else {
-      const url = parentJob.conversationUrl ?? urlForPlatform(job.platform);
-      const tab = await chrome.tabs.create({ url, active: false });
+      conversationUrl = await findRecordedConversationUrl(parentJob);
+      const url = conversationUrl ?? urlForPlatform(job.platform);
+      const tab = await chrome.tabs.create({ url, active: reloadOnly });
       if (!tab.id) throw new Error("Chrome did not return a tab id");
       tabId = tab.id;
     }
   } else {
-    const tab = await chrome.tabs.create({ url: job.conversationUrl ?? urlForPlatform(job.platform), active: false });
+    const tab = await chrome.tabs.create({
+      url: job.conversationUrl ?? urlForPlatform(job.platform),
+      active: reloadOnly
+    });
     if (!tab.id) throw new Error("Chrome did not return a tab id");
     tabId = tab.id;
   }
@@ -206,7 +216,12 @@ async function launchJob(job: Job): Promise<void> {
     rateLimitRefreshCount: 0
   };
   workers.set(tabId, worker);
-  await postStatus(job.id, { status: "opening_tab", tabId, workerId });
+  await postStatus(job.id, {
+    status: "opening_tab",
+    tabId,
+    ...(conversationUrl ? { conversationUrl } : {}),
+    workerId
+  });
   if (needsLoad) await waitForTabComplete(tabId);
   await sendStartMessage(tabId, job);
 }
@@ -285,7 +300,7 @@ async function handleProgress(message: JobProgressMessage, tabId?: number): Prom
     await chrome.tabs.reload(tabId);
     await waitForTabComplete(tabId);
     const job = await api<Job>(`/jobs/${worker.jobId}`);
-    await sendStartMessage(tabId, job, message.recoveryMode);
+    await sendStartMessage(tabId, job, message.recoveryMode ?? "monitor_only");
     return;
   }
 
@@ -519,11 +534,23 @@ function textToBase64(text: string): string {
   return btoa(binary);
 }
 
-async function isTabAlive(tabId: number): Promise<boolean> {
+async function getTab(tabId: number): Promise<chrome.tabs.Tab | null> {
   try {
-    await chrome.tabs.get(tabId);
-    return true;
+    return await chrome.tabs.get(tabId);
   } catch {
-    return false;
+    return null;
   }
+}
+
+async function findRecordedConversationUrl(job: Job): Promise<string | null> {
+  const visited = new Set<string>();
+  let current: Job | null = job;
+  while (current && !visited.has(current.id)) {
+    visited.add(current.id);
+    if (current.conversationUrl) return current.conversationUrl;
+    current = current.parentJobId
+      ? await api<Job>(`/jobs/${current.parentJobId}`)
+      : null;
+  }
+  return null;
 }

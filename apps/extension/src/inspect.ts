@@ -4,3 +4,7 @@ const NOT_GENERATING_TEXT_PATTERN = /Stopped thinking/i;
 export function hasGeneratingText(text: string): boolean {
   return GENERATING_TEXT_PATTERN.test(text) && !NOT_GENERATING_TEXT_PATTERN.test(text);
 }
+
+export function isGenerationStopControl(testId: string | null, label: string): boolean {
+  return testId === "stop-button" || /stop generating|停止生成/i.test(label);
+}

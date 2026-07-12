@@ -82,6 +82,7 @@ export class JobStore {
     const sourceImages = this.normalizeSourceImages(id, input.sourceImages ?? []);
     const platform = input.platform ?? "gpt";
     const mode = input.mode ?? "image";
+    const conversationUrl = this.findConversationUrl(input.parentJobId ?? null);
     const metadata = {
       ...(input.metadata ?? {}),
       ...(input.prompts ? { geminiPrompts: input.prompts } : {})
@@ -94,7 +95,7 @@ export class JobStore {
         conversation_url, tab_id, attempt, refresh_count, error_message,
         worker_id, output_files, text_output_file, screenshot_files,
         persist_tab, parent_job_id, created_at, updated_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, null, null, 0, 0, null, null, ?, null, ?, ?, ?, ?, ?)`,
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, null, 0, 0, null, null, ?, null, ?, ?, ?, ?, ?)`,
       [
         id,
         platform,
@@ -104,6 +105,7 @@ export class JobStore {
         expectedImageCount,
         JSON.stringify(sourceImages),
         JSON.stringify(metadata),
+        conversationUrl,
         JSON.stringify([]),
         JSON.stringify([]),
         input.persistTab ? 1 : 0,
@@ -112,6 +114,7 @@ export class JobStore {
         now
       ]
     );
+    if (conversationUrl) fs.writeFileSync(this.paths.jobFile(id, "conversation.url"), conversationUrl);
     this.writeMeta(id);
     this.appendEvent(id, { type: "job_created", payload: { expectedImageCount, platform } });
     this.persist();
@@ -216,18 +219,21 @@ export class JobStore {
 
   reloadJob(id: string): Job {
     const existing = this.mustGet(id);
-    if (!existing.conversationUrl) {
+    const conversationUrl = existing.conversationUrl ?? this.findConversationUrl(existing.parentJobId);
+    if (!conversationUrl) {
       throw new Error(`Job has no recorded conversation URL: ${id}`);
     }
     const now = new Date().toISOString();
     const metadata = { ...existing.metadata, autoChatReloadOnly: true };
     this.run(
-      `update jobs set status = 'queued', tab_id = null, worker_id = null, error_message = null,
+      `update jobs set status = 'queued', tab_id = null, conversation_url = ?, worker_id = null, error_message = null,
        metadata = ?,
        refresh_count = 0, attempt = ?, updated_at = ? where id = ?`,
-      [JSON.stringify(metadata), existing.attempt + 1, now, id]
+      [conversationUrl, JSON.stringify(metadata), existing.attempt + 1, now, id]
     );
-    this.appendEvent(id, { type: "job_reload", payload: { attempt: existing.attempt + 1, conversationUrl: existing.conversationUrl } });
+    fs.writeFileSync(this.paths.jobFile(id, "conversation.url"), conversationUrl);
+    this.appendEvent(id, { type: "job_reload", payload: { attempt: existing.attempt + 1, conversationUrl } });
+    this.writeMeta(id);
     this.persist();
     return this.mustGet(id);
   }
@@ -422,6 +428,19 @@ export class JobStore {
     const job = this.getJob(id);
     if (!job) throw new Error(`Job not found: ${id}`);
     return job;
+  }
+
+  private findConversationUrl(jobId: string | null): string | null {
+    const visited = new Set<string>();
+    let currentId = jobId;
+    while (currentId && !visited.has(currentId)) {
+      visited.add(currentId);
+      const job = this.getJob(currentId);
+      if (!job) return null;
+      if (job.conversationUrl) return job.conversationUrl;
+      currentId = job.parentJobId;
+    }
+    return null;
   }
 
   private query<T>(sql: string, params: SqlValue[] = []): T[] {
