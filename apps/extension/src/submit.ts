@@ -20,7 +20,7 @@ export async function submitPromptWithFallback(options: SubmissionOptions): Prom
 
     const form = readyButton.closest("form") ?? composer.closest("form");
     if (form) {
-      form.requestSubmit(readyButton);
+      safeRequestSubmit(form, readyButton);
       if (await waitForSubmitted(isSubmitted, sleep, 4, 250)) return true;
     }
   }
@@ -62,4 +62,17 @@ async function waitForSubmitted(
 
 function isDisabled(button: HTMLButtonElement): boolean {
   return button.disabled || button.getAttribute("aria-disabled") === "true";
+}
+
+function safeRequestSubmit(form: HTMLFormElement, submitter: HTMLButtonElement): void {
+  try {
+    if (form.contains(submitter)) {
+      form.requestSubmit(submitter);
+      return;
+    }
+    form.requestSubmit();
+  } catch {
+    // ChatGPT occasionally returns a button that is visually associated with the composer
+    // but is not owned by the same form. Fall through to the keyboard-submit fallback.
+  }
 }

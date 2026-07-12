@@ -112,7 +112,7 @@ async function recoverEmptyGptAssistant(
       jobId: job.id,
       status: "stalled",
       recoveryMode,
-      errorMessage: "GPT assistant remained empty 3 seconds after prompt submission."
+      errorMessage: "GPT assistant remained empty 15 seconds after prompt submission."
     });
   } catch (error) {
     if (!controller.signal.aborted) await report(job.id, "failed_retryable", String(error));

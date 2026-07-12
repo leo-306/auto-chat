@@ -10,7 +10,7 @@ describe("GPT empty assistant recovery", () => {
     vi.useRealTimers();
   });
 
-  it("checks exactly once 3 seconds after submission", async () => {
+  it("checks exactly once 15 seconds after submission", async () => {
     vi.useFakeTimers();
     const inspect = vi.fn(async () => ({
       assistantExists: false,
@@ -28,13 +28,13 @@ describe("GPT empty assistant recovery", () => {
     });
 
     expect(inspect).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(2999);
+    await vi.advanceTimersByTimeAsync(14_999);
     expect(inspect).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
     expect(await pending).toBe("monitor_only");
     expect(inspect).toHaveBeenCalledTimes(1);
 
-    await vi.advanceTimersByTimeAsync(3000);
+    await vi.advanceTimersByTimeAsync(15_000);
     expect(inspect).toHaveBeenCalledTimes(1);
   });
 
@@ -55,7 +55,7 @@ describe("GPT empty assistant recovery", () => {
     });
 
     controller.abort();
-    await vi.advanceTimersByTimeAsync(3000);
+    await vi.advanceTimersByTimeAsync(15_000);
 
     expect(await pending).toBeNull();
     expect(inspect).not.toHaveBeenCalled();

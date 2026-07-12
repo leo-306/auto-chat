@@ -1,6 +1,6 @@
 import type { JobPlatform } from "auto-chat-shared";
 
-export const GPT_EMPTY_ASSISTANT_CHECK_DELAY_MS = 3000;
+export const GPT_EMPTY_ASSISTANT_CHECK_DELAY_MS = 15_000;
 
 export type EmptyAssistantRecoveryMode = "monitor_only" | "resubmit";
 
