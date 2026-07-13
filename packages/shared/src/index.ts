@@ -29,7 +29,7 @@ export type JobPlatform = z.infer<typeof JobPlatformSchema>;
 
 export const ConfigSchema = z.object({
   maxConcurrency: z.number().int().min(1).max(8).default(1),
-  stallTimeoutMs: z.number().int().min(30_000).default(120_000),
+  stallTimeoutMs: z.number().int().min(30_000).default(300_000),
   hardTimeoutMs: z.number().int().min(60_000).default(900_000),
   maxRefreshPerJob: z.number().int().min(0).max(10).default(2),
   expectedImageCount: z.number().int().min(1).max(12).default(4),
@@ -52,7 +52,7 @@ export type AppConfig = z.infer<typeof ConfigSchema>;
 
 export const DEFAULT_CONFIG: AppConfig = {
   maxConcurrency: 1,
-  stallTimeoutMs: 120_000,
+  stallTimeoutMs: 300_000,
   hardTimeoutMs: 900_000,
   maxRefreshPerJob: 2,
   expectedImageCount: 4,

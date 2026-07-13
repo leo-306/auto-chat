@@ -8,6 +8,11 @@ describe("ConfigSchema", () => {
     expect(parsed.maxRetries).toBeUndefined();
   });
 
+  it("defaults the stall timeout to five minutes", () => {
+    expect(ConfigSchema.parse({}).stallTimeoutMs).toBe(300_000);
+    expect(DEFAULT_CONFIG.stallTimeoutMs).toBe(300_000);
+  });
+
   it("requires maxRetries when autoRetry is enabled", () => {
     expect(() => ConfigSchema.parse({ autoRetry: true })).toThrow();
   });

@@ -385,7 +385,7 @@ stalled / refreshing
 
 - ChatGPT 页面出现 `Something went wrong` / `Retry`。
 - Gemini 图片粘贴后发送按钮长期保持禁用，说明图片上传未完成或页面未接受粘贴。
-- 生成状态超过 2 分钟无变化。
+- 生成状态超过默认的 5 分钟无变化。
 - 总等待超过 15 分钟。
 - 插件找不到输入框、上传控件或生成图片 DOM。
 - Tab 被人工关闭。
