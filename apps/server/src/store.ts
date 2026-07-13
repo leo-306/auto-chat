@@ -74,6 +74,7 @@ export class JobStore {
     if (this.getJob(id)) {
       throw new DuplicateJobError(id);
     }
+    this.validateParentJob(id, input.parentJobId);
     const now = new Date().toISOString();
     fs.mkdirSync(path.join(this.paths.jobDir(id), "source"), { recursive: true });
     fs.mkdirSync(path.join(this.paths.jobDir(id), "outputs"), { recursive: true });
@@ -131,6 +132,7 @@ export class JobStore {
   }
 
   replaceJob(input: CreateJobRequest): Job {
+    this.validateParentJob(input.id ?? null, input.parentJobId);
     if (input.id) this.deleteJob(input.id);
     return this.createJob(input);
   }
@@ -430,6 +432,16 @@ export class JobStore {
     return job;
   }
 
+  private validateParentJob(id: string | null, parentJobId: string | undefined): void {
+    if (!parentJobId) return;
+    if (id && parentJobId === id) {
+      throw new InvalidParentJobError(parentJobId, "self_reference");
+    }
+    if (!this.getJob(parentJobId)) {
+      throw new InvalidParentJobError(parentJobId, "not_found");
+    }
+  }
+
   private findConversationUrl(jobId: string | null): string | null {
     const visited = new Set<string>();
     let currentId = jobId;
@@ -503,5 +515,17 @@ export class DuplicateJobError extends Error {
   constructor(public readonly jobId: string) {
     super(`Job already exists: ${jobId}`);
     this.name = "DuplicateJobError";
+  }
+}
+
+export class InvalidParentJobError extends Error {
+  constructor(
+    public readonly parentJobId: string,
+    public readonly reason: "not_found" | "self_reference"
+  ) {
+    super(reason === "not_found"
+      ? `Parent job not found: ${parentJobId}`
+      : `A job cannot use itself as parent: ${parentJobId}`);
+    this.name = "InvalidParentJobError";
   }
 }

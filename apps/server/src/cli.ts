@@ -151,7 +151,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       request<Job>(`/jobs/${id}`),
       request<AppConfig>("/config").catch(() => undefined)
     ]);
-    print(options.json ? JSON.stringify(job, null, 2) : formatDoctor(job, config));
+    const parentJob = options.json ? undefined : await inspectParentJob(job);
+    print(options.json ? JSON.stringify(job, null, 2) : formatDoctor(job, config, parentJob));
     return;
   }
 
@@ -225,9 +226,16 @@ export function formatJobSummary(job: Job): string {
   return lines.join("\n");
 }
 
-export function formatDoctor(job: Job, config?: Pick<AppConfig, "autoRetry" | "maxRetries">): string {
-  const lines = [doctorHeadline(job), formatJobSummary(job)];
-  const guidance = formatActionableGuidance(job, config);
+export function formatDoctor(
+  job: Job,
+  config?: DiagnosticConfig,
+  parentJob?: Job | null
+): string {
+  const headline = job.parentJobId && parentJob === null
+    ? "INVALID"
+    : isJobUpdateStale(job, config) ? "STALE" : doctorHeadline(job);
+  const lines = [headline, formatJobSummary(job)];
+  const guidance = formatActionableGuidance(job, config, parentJob);
   lines.push(guidance || `下一步: auto-chat listen ${job.id}`);
 
   return lines.join("\n");
@@ -247,6 +255,16 @@ async function request<T>(apiPath: string, options: { method?: string; body?: un
     throw new Error(`${response.status} ${text}`);
   }
   return response.json() as Promise<T>;
+}
+
+async function inspectParentJob(job: Job): Promise<Job | null | undefined> {
+  if (!job.parentJobId) return undefined;
+  try {
+    return await request<Job>(`/jobs/${job.parentJobId}`);
+  } catch (error) {
+    if (String(error).includes("404")) return null;
+    throw error;
+  }
 }
 
 async function startServer(): Promise<void> {
@@ -497,13 +515,15 @@ async function listen(jobId: string | undefined, options: CliOptions): Promise<v
   if (jobId) {
     try {
       const job = await request<Job>(`/jobs/${jobId}`);
+      const parentJob = await inspectParentJob(job);
       if (options.json) {
-        print(JSON.stringify({ type: "job_snapshot", jobId: job.id, job }));
+        print(JSON.stringify({ type: "job_snapshot", jobId: job.id, job, parentJob: job.parentJobId ? parentJob : undefined }));
       } else {
-        print(formatListenContext(job, config));
-        const guidance = formatActionableGuidance(job, config);
+        print(formatListenContext(job, config, parentJob));
+        const guidance = formatActionableGuidance(job, config, parentJob);
         if (guidance) print(guidance);
       }
+      if (job.parentJobId && parentJob === null) return;
       if (job.status !== "failed_retryable" && terminalStatuses.has(job.status)) return;
       if (job.status === "failed_retryable") {
         if (!willAutoRetry(job, config)) return;
@@ -526,20 +546,38 @@ async function listen(jobId: string | undefined, options: CliOptions): Promise<v
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) return;
-    buffer += decoder.decode(value, { stream: true });
-    let index = buffer.indexOf("\n\n");
-    while (index >= 0) {
-      const chunk = buffer.slice(0, index);
-      buffer = buffer.slice(index + 2);
-      if (printSseChunk(chunk, jobId, options, config)) {
-        await reader.cancel();
-        return;
+  const heartbeat = jobId && !options.json
+    ? setInterval(() => {
+      void printListenHeartbeat(jobId);
+    }, 60_000)
+    : undefined;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) return;
+      buffer += decoder.decode(value, { stream: true });
+      let index = buffer.indexOf("\n\n");
+      while (index >= 0) {
+        const chunk = buffer.slice(0, index);
+        buffer = buffer.slice(index + 2);
+        if (printSseChunk(chunk, jobId, options, config)) {
+          await reader.cancel();
+          return;
+        }
+        index = buffer.indexOf("\n\n");
       }
-      index = buffer.indexOf("\n\n");
     }
+  } finally {
+    if (heartbeat) clearInterval(heartbeat);
+  }
+}
+
+async function printListenHeartbeat(jobId: string): Promise<void> {
+  try {
+    const job = await request<Job>(`/jobs/${jobId}`);
+    print(`[${time()}] 仍在监听: ${job.id} | ${formatStatus(job.status, job.platform)} | 最近更新 ${formatElapsed(job.updatedAt)}前`);
+  } catch (error) {
+    print(`[${time()}] 监听状态读取失败: ${String(error)}`);
   }
 }
 
@@ -597,7 +635,7 @@ export function formatSseEvent(
   return `${prefix} ${payload.type}`;
 }
 
-export function formatListenContext(job: Job, config?: AppConfig): string {
+export function formatListenContext(job: Job, config?: AppConfig, parentJob?: Job | null): string {
   const reloadOnly = job.metadata.autoChatReloadOnly === true;
   const serverSource = process.env.JOB_SERVER_URL ? "环境变量" : "默认值";
   const lines = [
@@ -606,9 +644,15 @@ export function formatListenContext(job: Job, config?: AppConfig): string {
     `  数据目录=${dataDir}`,
     `任务上下文: ${job.id} | ${formatPlatform(job.platform)} | ${formatMode(job.mode)} | ${formatStatus(job.status, job.platform)}`,
     `  执行策略=${reloadOnly ? "仅重新加载并监控已有对话，不发送提示词" : "正常提交提示词并监控结果"}`,
-    `  对话复用=${job.parentJobId ? `父任务 ${job.parentJobId}` : "独立对话"}，保留标签页=${job.persistTab ? "是" : "否"}，尝试=${job.attempt}，已刷新=${job.refreshCount}`
+    `  对话复用=${job.parentJobId ? `父任务 ${job.parentJobId}` : "独立对话"}，保留标签页=${job.persistTab ? "是" : "否"}，尝试=${job.attempt}，已刷新=${job.refreshCount}`,
+    `  最近更新=${job.updatedAt}（${formatElapsed(job.updatedAt)}前）`
   ];
   if (job.conversationUrl) lines.push(`  对话地址=${job.conversationUrl}`);
+  if (job.parentJobId) {
+    lines.push(parentJob === null
+      ? `  父任务校验=不存在（${job.parentJobId}），当前任务无法复用会话`
+      : `  父任务校验=${parentJob ? "存在" : "未检查"}`);
+  }
   if (config) {
     lines.push(
       `运行配置: 最大并发=${config.maxConcurrency}，停滞超时=${formatDuration(config.stallTimeoutMs)}，硬超时=${formatDuration(config.hardTimeoutMs)}，最多刷新=${config.maxRefreshPerJob} 次`,
@@ -623,8 +667,15 @@ export function formatListenContext(job: Job, config?: AppConfig): string {
 
 export function formatActionableGuidance(
   job: Job,
-  config?: Pick<AppConfig, "autoRetry" | "maxRetries">
+  config?: DiagnosticConfig,
+  parentJob?: Job | null
 ): string {
+  if (job.parentJobId && parentJob === null) {
+    return [
+      `  诊断: 父任务 ${job.parentJobId} 不存在，无法解析要复用的会话。`,
+      `  处理: 删除任务 ${job.id}，使用有效的 parentJobId 重新创建；或移除 parentJobId 创建独立会话。`
+    ].join("\n");
+  }
   const diagnosis = diagnoseJobError(job.errorMessage);
   if (job.status === "queued") {
     return `下一步: auto-chat dispatch --platform ${job.platform} ${job.id}`;
@@ -661,7 +712,21 @@ export function formatActionableGuidance(
       ? "  下一步: 读取 outputs，并用 events.jsonl 中的 image_order 确认图片顺序。"
       : "  下一步: 读取 outputs/output-01.txt。";
   }
+  if (isJobUpdateStale(job, config)) {
+    return [
+      `  诊断: 任务已超过 ${formatDuration(config!.stallTimeoutMs!)}没有状态更新，插件或页面监控可能未继续上报。`,
+      `  下一步: auto-chat listen ${job.id}；若仍无事件，请检查插件是否启用以及目标标签页是否仍存在。`
+    ].join("\n");
+  }
   return "";
+}
+
+type DiagnosticConfig = Pick<AppConfig, "autoRetry" | "maxRetries"> & Partial<Pick<AppConfig, "stallTimeoutMs">>;
+
+function isJobUpdateStale(job: Job, config?: DiagnosticConfig): boolean {
+  if (!config?.stallTimeoutMs || terminalStatuses.has(job.status) || job.status === "queued") return false;
+  const updatedAt = Date.parse(job.updatedAt);
+  return Number.isFinite(updatedAt) && Date.now() - updatedAt > config.stallTimeoutMs;
 }
 
 function statusDescription(status: JobStatus): string {
@@ -704,6 +769,13 @@ function isMissingSubmittedTurnError(errorMessage: string | null): boolean {
 
 function formatDuration(ms: number): string {
   return ms % 60_000 === 0 ? `${ms / 60_000} 分钟` : `${Math.round(ms / 1000)} 秒`;
+}
+
+function formatElapsed(value: string): string {
+  const elapsed = Math.max(0, Date.now() - Date.parse(value));
+  if (elapsed < 60_000) return `${Math.max(1, Math.round(elapsed / 1000))} 秒`;
+  if (elapsed < 3_600_000) return `${Math.round(elapsed / 60_000)} 分钟`;
+  return `${Math.round(elapsed / 3_600_000)} 小时`;
 }
 
 export function formatAddResult(job: Job): string {

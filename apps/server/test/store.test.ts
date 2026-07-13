@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { DuplicateJobError, JobStore } from "../src/store.js";
+import { DuplicateJobError, InvalidParentJobError, JobStore } from "../src/store.js";
 
 let tmp = "";
 let originalCwd = "";
@@ -269,6 +269,31 @@ describe("JobStore", () => {
     expect(grandchild.conversationUrl).toBe("https://chatgpt.com/c/parent");
     expect(fs.readFileSync(path.join(tmp, "data/jobs/child/conversation.url"), "utf8"))
       .toBe("https://chatgpt.com/c/parent");
+    store.close();
+  });
+
+  it("rejects missing parent jobs before creating or replacing a task", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+
+    expect(() => store.createJob({
+      id: "orphan",
+      parentJobId: "missing_parent",
+      prompt: "child",
+      sourceImages: [],
+      metadata: {}
+    })).toThrowError(InvalidParentJobError);
+    expect(store.getJob("orphan")).toBeNull();
+
+    store.createJob({ id: "existing", prompt: "keep me", sourceImages: [], metadata: {} });
+    expect(() => store.replaceJob({
+      id: "existing",
+      parentJobId: "missing_parent",
+      prompt: "replacement",
+      sourceImages: [],
+      metadata: {}
+    })).toThrowError("Parent job not found: missing_parent");
+    expect(store.getJob("existing")?.prompt).toContain("keep me");
     store.close();
   });
 

@@ -219,6 +219,32 @@ describe("CLI formatting", () => {
       .toContain("下一步: auto-chat retry job_1");
   });
 
+  it("diagnoses legacy tasks whose parent job is missing", () => {
+    const orphan = {
+      ...baseJob,
+      status: "queued" as const,
+      conversationUrl: null,
+      parentJobId: "missing_parent"
+    };
+
+    expect(formatDoctor(orphan, undefined, null)).toContain("INVALID");
+    expect(formatDoctor(orphan, undefined, null)).toContain("父任务 missing_parent 不存在");
+    expect(formatListenContext(orphan, undefined, null)).toContain("父任务校验=不存在");
+    expect(formatActionableGuidance(orphan, undefined, null)).toContain("使用有效的 parentJobId 重新创建");
+  });
+
+  it("reports stale running tasks instead of only saying they are running", () => {
+    const stale = {
+      ...baseJob,
+      status: "waiting_generation" as const,
+      updatedAt: "2026-01-01T00:00:00.000Z"
+    };
+    const config = { autoRetry: false, maxRetries: 1, stallTimeoutMs: 120_000 };
+
+    expect(formatDoctor(stale, config)).toContain("STALE");
+    expect(formatDoctor(stale, config)).toContain("没有状态更新");
+  });
+
   it("formats platform-specific running statuses", () => {
     expect(formatJobSummary({ ...baseJob, platform: "gemini", status: "opening_tab" }))
       .toContain("状态: 打开 Gemini 标签页");

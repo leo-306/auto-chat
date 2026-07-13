@@ -36,6 +36,8 @@ describe("job assets API", () => {
     expect(response.body).toContain('id="legend-dialog"');
     expect(response.body).toContain("指标释义");
     expect(response.body).toContain("data-retry");
+    expect(response.body).toContain("data-copy-id");
+    expect(response.body).toContain("已复制任务 ID");
     await app.close();
     store.close();
   });
@@ -60,6 +62,34 @@ describe("job assets API", () => {
 
     expect(dispatchResponse.statusCode).toBe(200);
     expect(dispatchResponse.json()).toMatchObject({ platform: "gpt", jobId: "job_retry" });
+    await app.close();
+    store.close();
+  });
+
+  it("rejects a task whose parent job does not exist", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+    const app = await buildServer(store);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/jobs",
+      payload: {
+        id: "orphan",
+        parentJobId: "missing_parent",
+        prompt: "child",
+        sourceImages: [],
+        metadata: {}
+      }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      error: "parent_job_not_found",
+      parentJobId: "missing_parent",
+      message: "父任务不存在: missing_parent"
+    });
+    expect(store.getJob("orphan")).toBeNull();
     await app.close();
     store.close();
   });

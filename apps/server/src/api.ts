@@ -9,7 +9,7 @@ import {
   JobPlatformSchema,
   UpdateStatusSchema
 } from "auto-chat-shared";
-import { DuplicateJobError, JobStore } from "./store.js";
+import { DuplicateJobError, InvalidParentJobError, JobStore } from "./store.js";
 import { publicDir } from "./paths.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -32,7 +32,13 @@ export async function buildServer(store: JobStore, events = new EventHub()): Pro
     const unsubscribe = events.subscribe(event => {
       raw.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
     });
-    request.raw.on("close", unsubscribe);
+    const keepalive = setInterval(() => {
+      raw.write(`: keepalive ${new Date().toISOString()}\n\n`);
+    }, 15_000);
+    request.raw.on("close", () => {
+      clearInterval(keepalive);
+      unsubscribe();
+    });
     return reply;
   });
 
@@ -84,6 +90,16 @@ export async function buildServer(store: JobStore, events = new EventHub()): Pro
           message: `Job already exists: ${error.jobId}`,
           jobId: error.jobId,
           hint: "Use auto-chat retry <jobId>, auto-chat add <file> --replace, or auto-chat add <file> --auto-id."
+        });
+      }
+      if (error instanceof InvalidParentJobError) {
+        return reply.code(400).send({
+          error: error.reason === "not_found" ? "parent_job_not_found" : "invalid_parent_job",
+          message: error.reason === "not_found"
+            ? `父任务不存在: ${error.parentJobId}`
+            : `任务不能把自己设为父任务: ${error.parentJobId}`,
+          parentJobId: error.parentJobId,
+          hint: "请使用 auto-chat show <parentJobId> 确认父任务存在，或移除 parentJobId 创建独立会话。"
         });
       }
       throw error;

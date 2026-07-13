@@ -72,10 +72,10 @@
       .notice.error { color: var(--danger); }
       .table-scroll { overflow-x: auto; }
       table { width: 100%; min-width: 1320px; table-layout: fixed; border-collapse: separate; border-spacing: 0; }
-      .col-id { width: 11%; }
+      .col-id { width: 13%; }
       .col-platform { width: 7%; }
       .col-status { width: 10%; }
-      .col-config { width: 29%; }
+      .col-config { width: 27%; }
       .col-output { width: 8%; }
       .col-tab { width: 9%; }
       .col-updated { width: 8%; }
@@ -86,7 +86,11 @@
       tbody tr { transition: background 120ms ease; }
       tbody tr:hover { background: #fafbff; }
       tbody tr:last-child td { border-bottom: 0; }
-      .job-id { max-width: 220px; color: #1e293b; font: 650 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+      .job-id-cell { display: flex; align-items: flex-start; gap: 7px; min-width: 0; }
+      .job-id { min-width: 0; max-width: 220px; flex: 1; color: #1e293b; font: 650 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+      .copy-id-button { flex: none; border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px; background: var(--surface-soft); color: var(--muted); cursor: pointer; font-size: 10px; font-weight: 700; white-space: nowrap; }
+      .copy-id-button:hover { border-color: #a5b4fc; background: var(--primary-soft); color: #4338ca; }
+      .copy-id-button:disabled { cursor: default; opacity: 0.7; }
       .platform { font-weight: 700; }
       .mode { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; }
       .status { display: inline-flex; align-items: center; border-radius: 999px; padding: 4px 9px; background: #f1f5f9; color: #475569; font: 650 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
@@ -409,7 +413,12 @@
 
       function renderJobCells(job) {
         return `
-          <td><div class="job-id">${escapeHtml(job.id)}</div></td>
+          <td>
+            <div class="job-id-cell">
+              <div class="job-id">${escapeHtml(job.id)}</div>
+              <button class="copy-id-button" type="button" data-copy-id="${escapeAttribute(job.id)}" aria-label="复制任务 ID ${escapeAttribute(job.id)}">复制</button>
+            </div>
+          </td>
           <td>
             <span class="platform">${escapeHtml(platformLabel(job.platform))}</span>
             <span class="mode">${escapeHtml(job.mode)}</span>
@@ -436,6 +445,11 @@
       }
 
       document.querySelector('#jobs').addEventListener('click', async event => {
+        const copyButton = event.target.closest('button[data-copy-id]');
+        if (copyButton) {
+          await copyJobId(copyButton.dataset.copyId, copyButton);
+          return;
+        }
         const retryButton = event.target.closest('button[data-retry]');
         if (retryButton) {
           await retryAndDispatch(retryButton.dataset.retry, retryButton.dataset.platform);
@@ -459,6 +473,41 @@
           await refresh();
         }
       });
+
+      async function copyJobId(id, button) {
+        button.disabled = true;
+        try {
+          try {
+            if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable');
+            await navigator.clipboard.writeText(id);
+          } catch {
+            copyTextFallback(id);
+          }
+          button.textContent = '已复制';
+          setNotice(`已复制任务 ID：${id}`);
+        } catch (error) {
+          setNotice(`复制失败：${error}`, true);
+        } finally {
+          setTimeout(() => {
+            if (!button.isConnected) return;
+            button.textContent = '复制';
+            button.disabled = false;
+          }, 1200);
+        }
+      }
+
+      function copyTextFallback(value) {
+        const textarea = document.createElement('textarea');
+        textarea.value = value;
+        textarea.setAttribute('readonly', '');
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        const copied = document.execCommand('copy');
+        textarea.remove();
+        if (!copied) throw new Error('浏览器拒绝了剪贴板写入');
+      }
 
       async function retryAndDispatch(id, platform) {
         retryingIds.add(id);
