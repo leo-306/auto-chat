@@ -29,6 +29,8 @@ describe("job assets API", () => {
     expect(response.body).toContain("任务配置释义");
     expect(response.body).toContain("autoChatReloadOnly");
     expect(response.body).toContain("标签页");
+    expect(response.body).toContain("jobRenderSignatures");
+    expect(response.body).toContain("data-job-id");
     await app.close();
     store.close();
   });

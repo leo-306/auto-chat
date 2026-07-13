@@ -63,7 +63,16 @@
       .notice { min-height: 18px; margin: 0; color: var(--muted); font-size: 12px; text-align: right; }
       .notice.error { color: var(--danger); }
       .table-scroll { overflow-x: auto; }
-      table { width: 100%; min-width: 1320px; border-collapse: separate; border-spacing: 0; }
+      table { width: 100%; min-width: 1320px; table-layout: fixed; border-collapse: separate; border-spacing: 0; }
+      .col-id { width: 11%; }
+      .col-platform { width: 7%; }
+      .col-status { width: 10%; }
+      .col-config { width: 29%; }
+      .col-output { width: 8%; }
+      .col-tab { width: 9%; }
+      .col-updated { width: 8%; }
+      .col-error { width: 12%; }
+      .col-action { width: 76px; }
       th, td { padding: 14px 16px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; font-size: 13px; }
       th { position: sticky; top: 0; z-index: 1; background: var(--surface-soft); color: #64748b; font-size: 11px; font-weight: 750; letter-spacing: 0.055em; text-transform: uppercase; }
       tbody tr { transition: background 120ms ease; }
@@ -83,15 +92,15 @@
       details { font-size: 12px; }
       summary { width: fit-content; color: var(--primary); cursor: pointer; font-weight: 650; }
       summary:hover { text-decoration: underline; }
-      .json { width: 440px; max-height: 340px; margin: 8px 0 0; padding: 12px; overflow: auto; border: 1px solid var(--border); border-radius: 9px; background: #0f172a; color: #dbeafe; font: 11px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
-      .outputs { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; max-width: 240px; }
+      .json { width: 440px; max-width: 100%; max-height: 340px; margin: 8px 0 0; padding: 12px; overflow: auto; border: 1px solid var(--border); border-radius: 9px; background: #0f172a; color: #dbeafe; font: 11px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+      .outputs { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; max-width: 130px; }
       .output-link { display: inline-flex; align-items: center; gap: 5px; font-weight: 650; }
-      .preview { width: 220px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+      .preview { width: 120px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
       .tab-link { display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border: 1px solid #c7d2fe; border-radius: 7px; background: var(--primary-soft); font-size: 12px; font-weight: 700; white-space: nowrap; }
       .empty-value { color: #94a3b8; }
       time { display: block; color: #475569; font-size: 12px; line-height: 1.45; white-space: nowrap; font-variant-numeric: tabular-nums; }
       .error-message { display: block; max-width: 250px; color: var(--danger); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
-      .danger { border: 1px solid #fecdd3; border-radius: 7px; padding: 6px 10px; background: #fff7f7; color: var(--danger); cursor: pointer; font-size: 12px; font-weight: 650; }
+      .danger { border: 1px solid #fecdd3; border-radius: 7px; padding: 6px 10px; background: #fff7f7; color: var(--danger); cursor: pointer; font-size: 12px; font-weight: 650; white-space: nowrap; }
       .danger:hover { border-color: #fda4af; background: var(--danger-soft); }
       .danger:disabled { cursor: not-allowed; opacity: 0.55; }
       .empty-row { padding: 42px 16px; color: var(--muted); text-align: center; }
@@ -150,6 +159,17 @@
         </div>
         <div class="table-scroll">
           <table>
+            <colgroup>
+              <col class="col-id" />
+              <col class="col-platform" />
+              <col class="col-status" />
+              <col class="col-config" />
+              <col class="col-output" />
+              <col class="col-tab" />
+              <col class="col-updated" />
+              <col class="col-error" />
+              <col class="col-action" />
+            </colgroup>
             <thead>
               <tr>
                 <th>ID</th>
@@ -202,6 +222,7 @@
         ['autoChatReloadOnly', '仅重新加载并监控已有对话，不再次发送提示词。']
       ];
       let deletingId = null;
+      const jobRenderSignatures = new Map();
 
       renderJobConfigLegend();
       refresh();
@@ -267,28 +288,58 @@
         const target = document.querySelector('#jobs');
         if (!jobs.length) {
           target.innerHTML = '<tr><td class="empty-row" colspan="9">暂无任务</td></tr>';
+          jobRenderSignatures.clear();
           return;
         }
-        target.innerHTML = jobs.map(job => `
-          <tr>
-            <td><div class="job-id">${escapeHtml(job.id)}</div></td>
-            <td>
-              <span class="platform">${escapeHtml(platformLabel(job.platform))}</span>
-              <span class="mode">${escapeHtml(job.mode)}</span>
-            </td>
-            <td><span class="status ${statusClass(job.status)}">${escapeHtml(job.status)}</span></td>
-            <td>${formatJobConfig(job)}</td>
-            <td>${formatOutputs(job)}</td>
-            <td>${formatConversationLink(job)}</td>
-            <td>${formatDate(job.updatedAt)}</td>
-            <td>${job.errorMessage ? `<span class="error-message">${escapeHtml(job.errorMessage)}</span>` : '<span class="empty-value">—</span>'}</td>
-            <td>
-              <button class="danger" data-delete="${escapeAttribute(job.id)}" ${deletingId === job.id ? 'disabled' : ''}>
-                ${deletingId === job.id ? '删除中…' : '删除'}
-              </button>
-            </td>
-          </tr>
-        `).join('');
+        target.querySelector('.empty-row')?.closest('tr')?.remove();
+        const existingRows = new Map(
+          Array.from(target.querySelectorAll('tr[data-job-id]')).map(row => [row.dataset.jobId, row])
+        );
+        const visibleIds = new Set();
+
+        for (const job of jobs) {
+          visibleIds.add(job.id);
+          const signature = JSON.stringify([job, deletingId === job.id]);
+          let row = existingRows.get(job.id);
+          if (!row) {
+            row = document.createElement('tr');
+            row.dataset.jobId = job.id;
+          }
+          if (jobRenderSignatures.get(job.id) !== signature) {
+            const wasConfigOpen = row.querySelector('details')?.open === true;
+            row.innerHTML = renderJobCells(job);
+            if (wasConfigOpen) row.querySelector('details').open = true;
+            jobRenderSignatures.set(job.id, signature);
+          }
+          target.appendChild(row);
+        }
+
+        for (const [id, row] of existingRows) {
+          if (visibleIds.has(id)) continue;
+          row.remove();
+          jobRenderSignatures.delete(id);
+        }
+      }
+
+      function renderJobCells(job) {
+        return `
+          <td><div class="job-id">${escapeHtml(job.id)}</div></td>
+          <td>
+            <span class="platform">${escapeHtml(platformLabel(job.platform))}</span>
+            <span class="mode">${escapeHtml(job.mode)}</span>
+          </td>
+          <td><span class="status ${statusClass(job.status)}">${escapeHtml(job.status)}</span></td>
+          <td>${formatJobConfig(job)}</td>
+          <td>${formatOutputs(job)}</td>
+          <td>${formatConversationLink(job)}</td>
+          <td>${formatDate(job.updatedAt)}</td>
+          <td>${job.errorMessage ? `<span class="error-message">${escapeHtml(job.errorMessage)}</span>` : '<span class="empty-value">—</span>'}</td>
+          <td>
+            <button class="danger" data-delete="${escapeAttribute(job.id)}" ${deletingId === job.id ? 'disabled' : ''}>
+              ${deletingId === job.id ? '删除中…' : '删除'}
+            </button>
+          </td>
+        `;
       }
 
       document.querySelector('#jobs').addEventListener('click', async event => {
@@ -426,7 +477,8 @@
             const file = job.textOutputFile || job.outputFiles[0];
             const name = outputName(file);
             const target = document.querySelector(`[data-text-output="${cssEscape(job.id)}"][data-output-name="${cssEscape(name)}"]`);
-            if (!target) return;
+            if (!target || target.dataset.previewReady === 'true') return;
+            target.dataset.previewReady = 'true';
             try {
               const response = await fetch(assetUrl(job.id, name));
               const text = response.ok ? await response.text() : '';
