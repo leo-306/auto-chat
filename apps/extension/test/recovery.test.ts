@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   selectEmptyAssistantRecovery,
+  shouldCheckEmptyAssistantRecovery,
   shouldMonitorWithoutSubmit,
   shouldRetryReloadWithoutJobTurn,
   waitForEmptyAssistantRecovery
@@ -22,10 +23,8 @@ describe("GPT empty assistant recovery", () => {
 
     const pending = waitForEmptyAssistantRecovery({
       platform: "gpt",
-      beforeSendUrl: "https://chatgpt.com/",
       signal: controller.signal,
-      inspect,
-      currentUrl: () => "https://chatgpt.com/c/example"
+      inspect
     });
 
     expect(inspect).not.toHaveBeenCalled();
@@ -49,10 +48,8 @@ describe("GPT empty assistant recovery", () => {
     const controller = new AbortController();
     const pending = waitForEmptyAssistantRecovery({
       platform: "gpt",
-      beforeSendUrl: "https://chatgpt.com/",
       signal: controller.signal,
-      inspect,
-      currentUrl: () => "https://chatgpt.com/c/example"
+      inspect
     });
 
     controller.abort();
@@ -62,33 +59,27 @@ describe("GPT empty assistant recovery", () => {
     expect(inspect).not.toHaveBeenCalled();
   });
 
-  it("uses monitor-only recovery when the assistant is missing and the URL changed", () => {
+  it("uses monitor-only recovery when the assistant is missing", () => {
     expect(selectEmptyAssistantRecovery({
       platform: "gpt",
-      beforeSendUrl: "https://chatgpt.com/",
-      currentUrl: "https://chatgpt.com/c/example",
       assistantExists: false,
       assistantText: "",
       imageCount: 1
     })).toBe("monitor_only");
   });
 
-  it("uses resubmit recovery when an existing assistant is empty and the URL did not change", () => {
+  it("never resubmits merely because an existing assistant is empty", () => {
     expect(selectEmptyAssistantRecovery({
       platform: "gpt",
-      beforeSendUrl: "https://chatgpt.com/",
-      currentUrl: "https://chatgpt.com/",
       assistantExists: true,
       assistantText: "",
       imageCount: 0
-    })).toBe("resubmit");
+    })).toBe("monitor_only");
   });
 
   it("does not recover when the assistant has text or an image", () => {
     const base = {
       platform: "gpt" as const,
-      beforeSendUrl: "https://chatgpt.com/",
-      currentUrl: "https://chatgpt.com/c/example",
       assistantExists: true
     };
 
@@ -113,15 +104,13 @@ describe("GPT empty assistant recovery", () => {
 
     await expect(waitForEmptyAssistantRecovery({
       platform: "gemini",
-      beforeSendUrl: "https://gemini.google.com/app",
       signal: new AbortController().signal,
-      inspect,
-      currentUrl: () => "https://gemini.google.com/app/example"
+      inspect
     })).resolves.toBeNull();
     expect(inspect).not.toHaveBeenCalled();
   });
 
-  it("monitors without submitting after a changed-URL recovery", () => {
+  it("monitors without submitting after empty-assistant recovery", () => {
     expect(shouldMonitorWithoutSubmit({
       recoveryMode: "monitor_only",
       reloadOnly: false,
@@ -129,12 +118,11 @@ describe("GPT empty assistant recovery", () => {
     })).toBe(true);
   });
 
-  it("resubmits after an unchanged-URL recovery even if an assistant exists", () => {
-    expect(shouldMonitorWithoutSubmit({
-      recoveryMode: "resubmit",
-      reloadOnly: false,
-      hasExistingAssistant: true
-    })).toBe(false);
+  it("only runs the 15-second empty-assistant check for GPT text jobs", () => {
+    expect(shouldCheckEmptyAssistantRecovery("gpt", "text")).toBe(true);
+    expect(shouldCheckEmptyAssistantRecovery("gpt", "image")).toBe(false);
+    expect(shouldCheckEmptyAssistantRecovery("gemini", "text")).toBe(false);
+    expect(shouldCheckEmptyAssistantRecovery("gemini", "image")).toBe(false);
   });
 
   it("preserves existing reload-only and existing-assistant behavior", () => {

@@ -3,7 +3,7 @@ import type { AppConfig, ConversationTurnRole, Job } from "auto-chat-shared";
 import { findGeminiSendControl, isGeminiSendDisabled } from "./gemini.js";
 import { hasGeneratingText, isGenerationStopControl } from "./inspect.js";
 import { selectMonitorStallRecovery } from "./monitor.js";
-import { shouldMonitorWithoutSubmit, shouldRetryReloadWithoutJobTurn, waitForEmptyAssistantRecovery } from "./recovery.js";
+import { shouldCheckEmptyAssistantRecovery, shouldMonitorWithoutSubmit, shouldRetryReloadWithoutJobTurn, waitForEmptyAssistantRecovery } from "./recovery.js";
 import type { EmptyAssistantRecoveryMode } from "./recovery.js";
 import { waitForStableReadiness } from "./readiness.js";
 import { submitPromptWithFallback } from "./submit.js";
@@ -85,30 +85,28 @@ async function startJob(
   await report(job.id, "waiting_chat_ready");
   await waitForComposer();
   await waitForConversationPageReady(job);
-  let beforeSendUrl: string | null = null;
   if (job.platform === "gpt") {
     await report(job.id, "uploading");
     await uploadSources(job);
     await report(job.id, "sending_prompt");
-    beforeSendUrl = location.href;
     await fillPromptAndSendGpt(job);
   } else {
     await fillPromptPasteSourcesAndSendGemini(job, job.prompt);
   }
   await report(job.id, "waiting_generation");
   void monitorJob(job, nextConfig, controller.signal).finally(() => controller.abort());
-  if (beforeSendUrl) void recoverEmptyGptAssistant(job, beforeSendUrl, controller);
+  if (shouldCheckEmptyAssistantRecovery(job.platform, job.mode)) {
+    void recoverEmptyGptAssistant(job, controller);
+  }
 }
 
 async function recoverEmptyGptAssistant(
   job: Job,
-  beforeSendUrl: string,
   controller: AbortController
 ): Promise<void> {
   try {
     const recoveryMode = await waitForEmptyAssistantRecovery({
       platform: job.platform,
-      beforeSendUrl,
       signal: controller.signal,
       inspect: async () => {
         const state = await inspectJob(job.id);
@@ -117,8 +115,7 @@ async function recoverEmptyGptAssistant(
           assistantText: state.assistantText,
           imageCount: state.loadedImages.length
         };
-      },
-      currentUrl: () => location.href
+      }
     });
     if (!recoveryMode || controller.signal.aborted) return;
 
