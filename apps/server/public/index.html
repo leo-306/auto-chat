@@ -80,7 +80,7 @@
       .col-tab { width: 9%; }
       .col-updated { width: 8%; }
       .col-error { width: 12%; }
-      .col-action { width: 76px; }
+      .col-action { width: 140px; }
       th, td { padding: 14px 16px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; font-size: 13px; }
       th { position: sticky; top: 0; z-index: 1; background: var(--surface-soft); color: #64748b; font-size: 11px; font-weight: 750; letter-spacing: 0.055em; text-transform: uppercase; }
       tbody tr { transition: background 120ms ease; }
@@ -111,6 +111,10 @@
       .danger { border: 1px solid #fecdd3; border-radius: 7px; padding: 6px 10px; background: #fff7f7; color: var(--danger); cursor: pointer; font-size: 12px; font-weight: 650; white-space: nowrap; }
       .danger:hover { border-color: #fda4af; background: var(--danger-soft); }
       .danger:disabled { cursor: not-allowed; opacity: 0.55; }
+      .row-actions { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+      .retry-button { border: 1px solid #c7d2fe; border-radius: 7px; padding: 6px 10px; background: var(--primary-soft); color: #4338ca; cursor: pointer; font-size: 12px; font-weight: 700; white-space: nowrap; }
+      .retry-button:hover { border-color: #a5b4fc; background: #e0e7ff; }
+      .retry-button:disabled { cursor: not-allowed; opacity: 0.55; }
       .empty-row { padding: 42px 16px; color: var(--muted); text-align: center; }
 
       dialog { width: min(820px, calc(100vw - 32px)); max-height: min(760px, calc(100vh - 48px)); padding: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); color: var(--text); box-shadow: 0 24px 70px rgba(15, 23, 42, 0.25); }
@@ -273,6 +277,7 @@
         ['需处理', '状态为 failed_retryable、failed_final 或 needs_manual 的任务数量。']
       ];
       let deletingId = null;
+      const retryingIds = new Set();
       const jobRenderSignatures = new Map();
 
       renderJobConfigLegend();
@@ -380,7 +385,7 @@
 
         for (const job of jobs) {
           visibleIds.add(job.id);
-          const signature = JSON.stringify([job, deletingId === job.id]);
+          const signature = JSON.stringify([job, deletingId === job.id, retryingIds.has(job.id)]);
           let row = existingRows.get(job.id);
           if (!row) {
             row = document.createElement('tr');
@@ -416,14 +421,26 @@
           <td>${formatDate(job.updatedAt)}</td>
           <td>${job.errorMessage ? `<span class="error-message">${escapeHtml(job.errorMessage)}</span>` : '<span class="empty-value">—</span>'}</td>
           <td>
-            <button class="danger" data-delete="${escapeAttribute(job.id)}" ${deletingId === job.id ? 'disabled' : ''}>
-              ${deletingId === job.id ? '删除中…' : '删除'}
-            </button>
+            <div class="row-actions">
+              ${FAILED_STATUSES.has(job.status) ? `
+                <button class="retry-button" data-retry="${escapeAttribute(job.id)}" data-platform="${escapeAttribute(job.platform)}" ${retryingIds.has(job.id) ? 'disabled' : ''}>
+                  ${retryingIds.has(job.id) ? '触发中…' : '重试'}
+                </button>
+              ` : ''}
+              <button class="danger" data-delete="${escapeAttribute(job.id)}" ${deletingId === job.id || retryingIds.has(job.id) ? 'disabled' : ''}>
+                ${deletingId === job.id ? '删除中…' : '删除'}
+              </button>
+            </div>
           </td>
         `;
       }
 
       document.querySelector('#jobs').addEventListener('click', async event => {
+        const retryButton = event.target.closest('button[data-retry]');
+        if (retryButton) {
+          await retryAndDispatch(retryButton.dataset.retry, retryButton.dataset.platform);
+          return;
+        }
         const button = event.target.closest('button[data-delete]');
         if (!button) return;
         const id = button.dataset.delete;
@@ -442,6 +459,30 @@
           await refresh();
         }
       });
+
+      async function retryAndDispatch(id, platform) {
+        retryingIds.add(id);
+        setNotice(`正在重新触发 ${id}…`);
+        await refresh();
+        let requeued = false;
+        try {
+          const retryResponse = await fetch(`/jobs/${encodeURIComponent(id)}/retry`, { method: 'POST' });
+          if (!retryResponse.ok) throw new Error(`${retryResponse.status} ${await retryResponse.text()}`);
+          requeued = true;
+          const dispatchResponse = await fetch('/dispatch', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ platform, jobId: id })
+          });
+          if (!dispatchResponse.ok) throw new Error(`${dispatchResponse.status} ${await dispatchResponse.text()}`);
+          setNotice(`已重新触发 ${id}`);
+        } catch (error) {
+          setNotice(requeued ? `任务已重新入队，但触发调度失败：${error}` : `重新触发失败：${error}`, true);
+        } finally {
+          retryingIds.delete(id);
+          await refresh();
+        }
+      }
 
       function formatJobConfig(job) {
         const metadata = job.metadata && typeof job.metadata === 'object' ? job.metadata : {};

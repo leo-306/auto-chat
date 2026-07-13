@@ -35,6 +35,31 @@ describe("job assets API", () => {
     expect(response.body).toContain('data-tab-panel="config"');
     expect(response.body).toContain('id="legend-dialog"');
     expect(response.body).toContain("指标释义");
+    expect(response.body).toContain("data-retry");
+    await app.close();
+    store.close();
+  });
+
+  it("requeues and dispatches a failed job for manual retriggering", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+    store.createJob({ id: "job_retry", platform: "gpt", prompt: "hello", sourceImages: [], metadata: {} });
+    store.markManual("job_retry", "manual intervention required");
+    const app = await buildServer(store);
+
+    const retryResponse = await app.inject({ method: "POST", url: "/jobs/job_retry/retry" });
+
+    expect(retryResponse.statusCode).toBe(200);
+    expect(retryResponse.json()).toMatchObject({ id: "job_retry", status: "queued", attempt: 1 });
+
+    const dispatchResponse = await app.inject({
+      method: "POST",
+      url: "/dispatch",
+      payload: { platform: "gpt", jobId: "job_retry" }
+    });
+
+    expect(dispatchResponse.statusCode).toBe(200);
+    expect(dispatchResponse.json()).toMatchObject({ platform: "gpt", jobId: "job_retry" });
     await app.close();
     store.close();
   });
