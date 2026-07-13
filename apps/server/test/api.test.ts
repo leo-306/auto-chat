@@ -16,6 +16,23 @@ afterEach(() => {
 });
 
 describe("job assets API", () => {
+  it("serves the jobs dashboard with job and global configuration sections", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+    const app = await buildServer(store);
+
+    const response = await app.inject("/");
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["content-type"]).toContain("text/html");
+    expect(response.body).toContain("当前系统全局配置");
+    expect(response.body).toContain("任务配置释义");
+    expect(response.body).toContain("autoChatReloadOnly");
+    expect(response.body).toContain("标签页");
+    await app.close();
+    store.close();
+  });
+
   it("serves text assets as UTF-8", async () => {
     const store = new JobStore(tmp);
     await store.init();
