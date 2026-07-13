@@ -4,6 +4,7 @@ import { findGeminiSendControl, isGeminiSendDisabled } from "./gemini.js";
 import { hasGeneratingText, isGenerationStopControl } from "./inspect.js";
 import { shouldMonitorWithoutSubmit, shouldRetryReloadWithoutJobTurn, waitForEmptyAssistantRecovery } from "./recovery.js";
 import type { EmptyAssistantRecoveryMode } from "./recovery.js";
+import { waitForStableReadiness } from "./readiness.js";
 import { submitPromptWithFallback } from "./submit.js";
 import type { DebugInspectMessage, DebugInspectResult, JobProgressMessage, StartJobMessage } from "./types.js";
 
@@ -82,6 +83,7 @@ async function startJob(
 
   await report(job.id, "waiting_chat_ready");
   await waitForComposer();
+  await waitForConversationPageReady(job);
   let beforeSendUrl: string | null = null;
   if (job.platform === "gpt") {
     await report(job.id, "uploading");
@@ -146,6 +148,7 @@ async function runGeminiImageJob(job: Job, appConfig: AppConfig, signal: AbortSi
         : job.prompt;
       await report(job.id, "waiting_chat_ready");
       await waitForComposer();
+      await waitForConversationPageReady(job, outputIndex === 1 && hasRecordedConversation(job));
       await fillPromptPasteSourcesAndSendGemini(job, prompt);
       await report(job.id, "waiting_generation");
 
@@ -762,6 +765,32 @@ async function waitForComposer(): Promise<void> {
     await sleep(500);
   }
   throw new Error(`${activeJob?.platform === "gemini" ? "Gemini" : "ChatGPT"} composer was not found.`);
+}
+
+async function waitForConversationPageReady(
+  job: Job,
+  requireConversationContent = hasRecordedConversation(job)
+): Promise<void> {
+  await waitForStableReadiness({
+    inspect: () => {
+      const composer = findComposer();
+      return document.readyState === "complete" &&
+        Boolean(composer && isComposerInteractive(composer)) &&
+        (!requireConversationContent || findConversationTurns().length > 0);
+    },
+    sleep
+  });
+}
+
+function hasRecordedConversation(job: Job): boolean {
+  return Boolean(job.conversationUrl || job.parentJobId);
+}
+
+function isComposerInteractive(composer: HTMLElement | HTMLTextAreaElement): boolean {
+  if (!composer.isConnected || !isVisible(composer)) return false;
+  if (composer.getAttribute("aria-disabled") === "true" || composer.getAttribute("aria-busy") === "true") return false;
+  if (composer instanceof HTMLTextAreaElement) return !composer.disabled && !composer.readOnly;
+  return composer.getAttribute("contenteditable") !== "false";
 }
 
 async function uploadSources(job: Job): Promise<void> {
