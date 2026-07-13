@@ -178,6 +178,7 @@ async function launchJob(job: Job): Promise<void> {
   let needsLoad = true;
   let conversationUrl = job.conversationUrl;
   const reloadOnly = job.metadata.autoChatReloadOnly === true;
+  const activateTab = job.platform === "gpt" || job.mode === "image" || reloadOnly;
 
   if (job.parentJobId) {
     const parentJob = await api<Job>(`/jobs/${job.parentJobId}`);
@@ -186,21 +187,21 @@ async function launchJob(job: Job): Promise<void> {
     if (parentTab?.id) {
       tabId = parentTab.id;
       needsLoad = false;
-      if (reloadOnly) await chrome.tabs.update(tabId, { active: true });
+      if (activateTab) await chrome.tabs.update(tabId, { active: true });
       conversationUrl = parentTab.url && isConversationUrl(job.platform, parentTab.url)
         ? parentTab.url
         : await findRecordedConversationUrl(parentJob);
     } else {
       conversationUrl = await findRecordedConversationUrl(parentJob);
       const url = conversationUrl ?? urlForPlatform(job.platform);
-      const tab = await chrome.tabs.create({ url, active: reloadOnly });
+      const tab = await chrome.tabs.create({ url, active: activateTab });
       if (!tab.id) throw new Error("Chrome did not return a tab id");
       tabId = tab.id;
     }
   } else {
     const tab = await chrome.tabs.create({
       url: job.conversationUrl ?? urlForPlatform(job.platform),
-      active: reloadOnly
+      active: activateTab
     });
     if (!tab.id) throw new Error("Chrome did not return a tab id");
     tabId = tab.id;
