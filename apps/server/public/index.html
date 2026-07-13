@@ -40,12 +40,17 @@
       .live-pill { display: inline-flex; align-items: center; gap: 8px; flex: none; padding: 8px 12px; border: 1px solid #bbf7d0; border-radius: 999px; background: #f0fdf4; color: #166534; font-size: 13px; font-weight: 650; }
       .live-dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.12); }
 
+      .tabs { display: inline-flex; gap: 4px; margin-bottom: 18px; padding: 4px; border: 1px solid var(--border); border-radius: 11px; background: #e9edf5; }
+      .tab-button { border: 0; border-radius: 8px; padding: 8px 15px; background: transparent; color: var(--muted); cursor: pointer; font-size: 13px; font-weight: 700; }
+      .tab-button:hover { color: var(--text); }
+      .tab-button[aria-selected="true"] { background: var(--surface); color: var(--primary); box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12); }
+      .tab-panel[hidden] { display: none; }
+
       .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
       .stat { padding: 16px 18px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03); }
       .stat-label { color: var(--muted); font-size: 12px; font-weight: 650; }
       .stat-value { margin-top: 5px; font-size: 25px; line-height: 1; font-weight: 750; font-variant-numeric: tabular-nums; }
 
-      .top-grid { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.6fr); gap: 16px; margin-bottom: 20px; }
       .panel { border: 1px solid var(--border); border-radius: 16px; background: var(--surface); box-shadow: var(--shadow); overflow: hidden; }
       .panel-heading { padding: 17px 20px 14px; border-bottom: 1px solid var(--border); }
       .panel-heading h2 { margin: 0; font-size: 15px; letter-spacing: -0.01em; }
@@ -60,6 +65,9 @@
       .table-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 20px; border-bottom: 1px solid var(--border); }
       .table-toolbar h2 { margin: 0; font-size: 17px; }
       .table-toolbar p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+      .toolbar-actions { display: flex; align-items: center; gap: 12px; }
+      .secondary-button { border: 1px solid var(--border-strong); border-radius: 8px; padding: 7px 11px; background: var(--surface); color: #334155; cursor: pointer; font-size: 12px; font-weight: 700; white-space: nowrap; }
+      .secondary-button:hover { border-color: #a5b4fc; background: var(--primary-soft); color: #4338ca; }
       .notice { min-height: 18px; margin: 0; color: var(--muted); font-size: 12px; text-align: right; }
       .notice.error { color: var(--danger); }
       .table-scroll { overflow-x: auto; }
@@ -105,9 +113,21 @@
       .danger:disabled { cursor: not-allowed; opacity: 0.55; }
       .empty-row { padding: 42px 16px; color: var(--muted); text-align: center; }
 
+      dialog { width: min(820px, calc(100vw - 32px)); max-height: min(760px, calc(100vh - 48px)); padding: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); color: var(--text); box-shadow: 0 24px 70px rgba(15, 23, 42, 0.25); }
+      dialog::backdrop { background: rgba(15, 23, 42, 0.48); backdrop-filter: blur(2px); }
+      .dialog-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 20px 22px 16px; border-bottom: 1px solid var(--border); }
+      .dialog-header h2 { margin: 0; font-size: 18px; }
+      .dialog-header p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
+      .dialog-close { width: 32px; height: 32px; flex: none; border: 0; border-radius: 8px; background: var(--surface-soft); color: var(--muted); cursor: pointer; font-size: 20px; line-height: 1; }
+      .dialog-close:hover { background: #e2e8f0; color: var(--text); }
+      .dialog-content { max-height: calc(100vh - 150px); padding: 18px 22px 24px; overflow-y: auto; }
+      .legend-section + .legend-section { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--border); }
+      .legend-section h3 { margin: 0 0 4px; font-size: 14px; }
+      .legend-section > p { margin: 0 0 8px; color: var(--muted); font-size: 12px; }
+      .dialog-content .definition-grid { padding: 4px 0 0; }
+
       @media (max-width: 980px) {
         .page { padding: 24px 16px 36px; }
-        .top-grid { grid-template-columns: 1fr; }
         .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       }
       @media (max-width: 560px) {
@@ -115,6 +135,7 @@
         .live-pill { margin-top: 16px; }
         .definition-grid { grid-template-columns: 1fr; }
         .table-toolbar { align-items: flex-start; flex-direction: column; }
+        .toolbar-actions { width: 100%; justify-content: space-between; }
         .notice { text-align: left; }
       }
     </style>
@@ -129,9 +150,58 @@
         <span class="live-pill"><span class="live-dot"></span>每 3 秒自动刷新</span>
       </header>
 
-      <section id="stats" class="stats" aria-label="任务概览"></section>
+      <nav class="tabs" role="tablist" aria-label="管理页面">
+        <button id="jobs-tab" class="tab-button" type="button" role="tab" aria-selected="true" aria-controls="jobs-panel" data-tab="jobs">任务列表</button>
+        <button id="config-tab" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="config-panel" data-tab="config">全局配置</button>
+      </nav>
 
-      <section class="top-grid">
+      <section id="jobs-panel" class="tab-panel" role="tabpanel" aria-labelledby="jobs-tab" data-tab-panel="jobs">
+        <section id="stats" class="stats" aria-label="任务概览"></section>
+
+        <section class="panel table-panel">
+          <div class="table-toolbar">
+            <div>
+              <h2>任务列表</h2>
+              <p>按创建时间倒序排列</p>
+            </div>
+            <div class="toolbar-actions">
+              <p id="notice" class="notice" role="status"></p>
+              <button id="open-legend" class="secondary-button" type="button">指标释义</button>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <colgroup>
+                <col class="col-id" />
+                <col class="col-platform" />
+                <col class="col-status" />
+                <col class="col-config" />
+                <col class="col-output" />
+                <col class="col-tab" />
+                <col class="col-updated" />
+                <col class="col-error" />
+                <col class="col-action" />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>平台 / 类型</th>
+                  <th>状态</th>
+                  <th>任务配置</th>
+                  <th>输出</th>
+                  <th>标签页</th>
+                  <th>更新时间</th>
+                  <th>错误</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="jobs"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section id="config-panel" class="tab-panel" role="tabpanel" aria-labelledby="config-tab" data-tab-panel="config" hidden>
         <article class="panel">
           <div class="panel-heading">
             <h2>当前系统全局配置</h2>
@@ -139,54 +209,29 @@
           </div>
           <dl id="global-config" class="definition-grid"></dl>
         </article>
-
-        <article class="panel">
-          <div class="panel-heading">
-            <h2>任务配置释义</h2>
-            <p>表格“任务配置”列会展示以下全部字段；点击后可查看该任务的完整 JSON。</p>
-          </div>
-          <dl id="job-config-legend" class="definition-grid"></dl>
-        </article>
       </section>
 
-      <section class="panel table-panel">
-        <div class="table-toolbar">
+      <dialog id="legend-dialog" aria-labelledby="legend-title">
+        <div class="dialog-header">
           <div>
-            <h2>任务列表</h2>
-            <p>按创建时间倒序排列</p>
+            <h2 id="legend-title">任务指标与配置释义</h2>
+            <p>说明任务概览统计口径与任务 JSON 配置字段。</p>
           </div>
-          <p id="notice" class="notice" role="status"></p>
+          <button id="close-legend" class="dialog-close" type="button" aria-label="关闭">×</button>
         </div>
-        <div class="table-scroll">
-          <table>
-            <colgroup>
-              <col class="col-id" />
-              <col class="col-platform" />
-              <col class="col-status" />
-              <col class="col-config" />
-              <col class="col-output" />
-              <col class="col-tab" />
-              <col class="col-updated" />
-              <col class="col-error" />
-              <col class="col-action" />
-            </colgroup>
-            <thead>
-              <tr>
-                <th>ID</th>
-                <th>平台 / 类型</th>
-                <th>状态</th>
-                <th>任务配置</th>
-                <th>输出</th>
-                <th>标签页</th>
-                <th>更新时间</th>
-                <th>错误</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody id="jobs"></tbody>
-          </table>
+        <div class="dialog-content">
+          <section class="legend-section">
+            <h3>任务概览指标</h3>
+            <p>页面顶部四项统计的计算口径。</p>
+            <dl id="stat-legend" class="definition-grid"></dl>
+          </section>
+          <section class="legend-section">
+            <h3>任务配置字段</h3>
+            <p>“任务配置”列展开后显示的完整 JSON 字段。</p>
+            <dl id="job-config-legend" class="definition-grid"></dl>
+          </section>
         </div>
-      </section>
+      </dialog>
     </main>
 
     <script>
@@ -221,10 +266,17 @@
         ['parentJobId', '复用对话时所关联的父任务 ID。'],
         ['autoChatReloadOnly', '仅重新加载并监控已有对话，不再次发送提示词。']
       ];
+      const STAT_DEFINITIONS = [
+        ['任务总数', '当前系统中保存的全部任务数量。'],
+        ['排队中', '状态为 queued、等待插件领取的任务数量。'],
+        ['执行中', '已经领取且处于打开页面、发送、生成或采集阶段的任务数量。'],
+        ['需处理', '状态为 failed_retryable、failed_final 或 needs_manual 的任务数量。']
+      ];
       let deletingId = null;
       const jobRenderSignatures = new Map();
 
       renderJobConfigLegend();
+      bindPageControls();
       refresh();
       setInterval(refresh, 3000);
 
@@ -276,12 +328,41 @@
       }
 
       function renderJobConfigLegend() {
+        document.querySelector('#stat-legend').innerHTML = STAT_DEFINITIONS.map(([key, description]) => `
+          <div class="definition">
+            <dt>${escapeHtml(key)}</dt>
+            <dd>${escapeHtml(description)}</dd>
+          </div>
+        `).join('');
         document.querySelector('#job-config-legend').innerHTML = JOB_CONFIG_DEFINITIONS.map(([key, description]) => `
           <div class="definition">
             <dt>${escapeHtml(key)}</dt>
             <dd>${escapeHtml(description)}</dd>
           </div>
         `).join('');
+      }
+
+      function bindPageControls() {
+        document.querySelector('[role="tablist"]').addEventListener('click', event => {
+          const button = event.target.closest('button[role="tab"]');
+          if (button) activateTab(button.dataset.tab);
+        });
+
+        const dialog = document.querySelector('#legend-dialog');
+        document.querySelector('#open-legend').addEventListener('click', () => dialog.showModal());
+        document.querySelector('#close-legend').addEventListener('click', () => dialog.close());
+        dialog.addEventListener('click', event => {
+          if (event.target === dialog) dialog.close();
+        });
+      }
+
+      function activateTab(name) {
+        document.querySelectorAll('button[role="tab"]').forEach(button => {
+          button.setAttribute('aria-selected', String(button.dataset.tab === name));
+        });
+        document.querySelectorAll('[data-tab-panel]').forEach(panel => {
+          panel.hidden = panel.dataset.tabPanel !== name;
+        });
       }
 
       function renderJobs(jobs) {
