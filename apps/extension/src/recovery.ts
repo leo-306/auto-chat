@@ -55,6 +55,13 @@ export function shouldMonitorWithoutSubmit(input: {
   return input.reloadOnly || input.hasExistingAssistant;
 }
 
+export function shouldRetryReloadWithoutJobTurn(input: {
+  reloadOnly: boolean;
+  hasJobUserTurn: boolean;
+}): boolean {
+  return input.reloadOnly && !input.hasJobUserTurn;
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }

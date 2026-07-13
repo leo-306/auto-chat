@@ -147,8 +147,11 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (command === "doctor") {
     const id = positionalArgs(args)[0];
     if (!id) throw new Error("缺少任务 id。用法：auto-chat doctor <jobId>");
-    const job = await request<Job>(`/jobs/${id}`);
-    print(options.json ? JSON.stringify(job, null, 2) : formatDoctor(job));
+    const [job, config] = await Promise.all([
+      request<Job>(`/jobs/${id}`),
+      request<AppConfig>("/config").catch(() => undefined)
+    ]);
+    print(options.json ? JSON.stringify(job, null, 2) : formatDoctor(job, config));
     return;
   }
 
@@ -222,22 +225,10 @@ export function formatJobSummary(job: Job): string {
   return lines.join("\n");
 }
 
-export function formatDoctor(job: Job): string {
+export function formatDoctor(job: Job, config?: Pick<AppConfig, "autoRetry" | "maxRetries">): string {
   const lines = [doctorHeadline(job), formatJobSummary(job)];
-
-  if (job.status === "done") {
-    lines.push(job.mode === "text"
-      ? `下一步: 读取 ${displayPath(job.textOutputFile ?? job.outputFiles[0] ?? "")}`
-      : "下一步: 使用输出图片；如需确认顺序，查看 events.jsonl 中的 image_order。");
-  } else if (job.status === "failed_retryable") {
-    lines.push(`下一步: auto-chat retry ${job.id}`);
-  } else if (job.status === "needs_manual" || job.status === "failed_final") {
-    lines.push(`下一步: auto-chat open ${job.id}`);
-  } else if (job.status === "stalled" || job.status === "refreshing") {
-    lines.push(`下一步: auto-chat listen ${job.id}`);
-  } else {
-    lines.push(`下一步: auto-chat listen ${job.id}`);
-  }
+  const guidance = formatActionableGuidance(job, config);
+  lines.push(guidance || `下一步: auto-chat listen ${job.id}`);
 
   return lines.join("\n");
 }
@@ -502,16 +493,23 @@ async function watch(jobId: string): Promise<void> {
 }
 
 async function listen(jobId: string | undefined, options: CliOptions): Promise<void> {
-  if (jobId && !options.json) {
+  let config = await request<AppConfig>("/config").catch(() => undefined);
+  if (jobId) {
     try {
       const job = await request<Job>(`/jobs/${jobId}`);
-      print(`[${time()}] ${job.id} ${formatStatus(job.status, job.platform)} ${formatProgress(job)}`);
+      if (options.json) {
+        print(JSON.stringify({ type: "job_snapshot", jobId: job.id, job }));
+      } else {
+        print(formatListenContext(job, config));
+        const guidance = formatActionableGuidance(job, config);
+        if (guidance) print(guidance);
+      }
       if (job.status !== "failed_retryable" && terminalStatuses.has(job.status)) return;
       if (job.status === "failed_retryable") {
-        const config = await request<AppConfig>("/config").catch(() => undefined);
         if (!willAutoRetry(job, config)) return;
       }
     } catch (error) {
+      if (options.json) throw error;
       print(`[${time()}] 初始状态不可用：${String(error)}`);
     }
   }
@@ -524,7 +522,7 @@ async function listen(jobId: string | undefined, options: CliOptions): Promise<v
     }
     throw new Error(`${response.status} ${text}`);
   }
-  const config = await request<AppConfig>("/config").catch(() => undefined);
+  config ??= await request<AppConfig>("/config").catch(() => undefined);
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -558,7 +556,7 @@ function printSseChunk(chunk: string, jobId: string | undefined, options: CliOpt
     return false;
   }
   if (jobId && payload.jobId !== jobId) return false;
-  print(formatSseEvent(payload));
+  print(formatSseEvent(payload, config));
   return shouldStopListeningForPayload(payload, jobId, config);
 }
 
@@ -576,7 +574,10 @@ function willAutoRetry(job: Pick<Job, "attempt">, config?: Pick<AppConfig, "auto
   return Boolean(config?.autoRetry && config.maxRetries !== undefined && job.attempt < config.maxRetries);
 }
 
-function formatSseEvent(payload: any): string {
+export function formatSseEvent(
+  payload: any,
+  config?: Pick<AppConfig, "autoRetry" | "maxRetries">
+): string {
   const job = payload.job as Job | null;
   const event = payload.event as { type?: string; payload?: Record<string, unknown> } | undefined;
   const prefix = `[${time(payload.at)}] ${payload.jobId}`;
@@ -586,9 +587,123 @@ function formatSseEvent(payload: any): string {
   if (event?.type === "image_order") return `${prefix} 已记录图片顺序`;
   if (event?.type === "text_output") return `${prefix} 已复制文本响应`;
   if (event?.type === "job_retry") return `${prefix} 已重新入队`;
-  if (event?.type === "job_reload") return `${prefix} 已重新加载对话`;
-  if (job) return `${prefix} ${formatStatus(job.status, job.platform)} ${formatProgress(job)} ${job.errorMessage ?? ""}`.trim();
+  if (event?.type === "job_reload") return `${prefix} 已重新加载对话（仅检查已有对话，不会重新发送提示词）`;
+  if (job) {
+    const statusLine = `${prefix} ${formatStatus(job.status, job.platform)} ${formatProgress(job)}${job.errorMessage ? ` 错误: ${job.errorMessage}` : ""}`;
+    const description = statusDescription(job.status);
+    const guidance = formatActionableGuidance(job, config);
+    return [statusLine, description ? `  说明: ${description}` : "", guidance].filter(Boolean).join("\n");
+  }
   return `${prefix} ${payload.type}`;
+}
+
+export function formatListenContext(job: Job, config?: AppConfig): string {
+  const reloadOnly = job.metadata.autoChatReloadOnly === true;
+  const serverSource = process.env.JOB_SERVER_URL ? "环境变量" : "默认值";
+  const lines = [
+    "监听环境:",
+    `  JOB_SERVER_URL=${baseUrl}（${serverSource}）`,
+    `  数据目录=${dataDir}`,
+    `任务上下文: ${job.id} | ${formatPlatform(job.platform)} | ${formatMode(job.mode)} | ${formatStatus(job.status, job.platform)}`,
+    `  执行策略=${reloadOnly ? "仅重新加载并监控已有对话，不发送提示词" : "正常提交提示词并监控结果"}`,
+    `  对话复用=${job.parentJobId ? `父任务 ${job.parentJobId}` : "独立对话"}，保留标签页=${job.persistTab ? "是" : "否"}，尝试=${job.attempt}，已刷新=${job.refreshCount}`
+  ];
+  if (job.conversationUrl) lines.push(`  对话地址=${job.conversationUrl}`);
+  if (config) {
+    lines.push(
+      `运行配置: 最大并发=${config.maxConcurrency}，停滞超时=${formatDuration(config.stallTimeoutMs)}，硬超时=${formatDuration(config.hardTimeoutMs)}，最多刷新=${config.maxRefreshPerJob} 次`,
+      `  自动重试=${config.autoRetry ? `开启，最多 ${config.maxRetries} 次` : "关闭"}`
+    );
+  } else {
+    lines.push("运行配置: 读取失败，后续仍会监听任务事件");
+  }
+  lines.push("  调度说明=dispatch 只唤醒一次插件调度，只有 queued 状态的任务可被领取");
+  return lines.join("\n");
+}
+
+export function formatActionableGuidance(
+  job: Job,
+  config?: Pick<AppConfig, "autoRetry" | "maxRetries">
+): string {
+  const diagnosis = diagnoseJobError(job.errorMessage);
+  if (job.status === "queued") {
+    return `下一步: auto-chat dispatch --platform ${job.platform} ${job.id}`;
+  }
+  if (job.status === "failed_retryable") {
+    if (willAutoRetry(job, config)) {
+      return [diagnosis ? `  诊断: ${diagnosis}` : "", "  处理: 自动重试已开启，任务将重新入队；listen 会继续等待。"].filter(Boolean).join("\n");
+    }
+    return [
+      diagnosis ? `  诊断: ${diagnosis}` : "  诊断: 当前错误允许安全地重新提交任务。",
+      `  下一步: auto-chat retry ${job.id} && auto-chat dispatch --platform ${job.platform} ${job.id} && auto-chat listen ${job.id}`
+    ].join("\n");
+  }
+  if (job.status === "needs_manual" || job.status === "failed_final") {
+    const retryInsteadOfReload = isMissingSubmittedTurnError(job.errorMessage);
+    const reloadExhausted = job.metadata.autoChatReloadOnly === true && /maximum refresh attempts/i.test(job.errorMessage ?? "");
+    if (reloadExhausted) {
+      return [
+        diagnosis ? `  诊断: ${diagnosis}` : "  诊断: reload-only 监控已耗尽刷新次数。",
+        `  检查: auto-chat open ${job.id}，确认页面中是否存在 JOB_ID: ${job.id} 的用户消息。`,
+        `  未找到该消息: auto-chat retry ${job.id} && auto-chat dispatch --platform ${job.platform} ${job.id} && auto-chat listen ${job.id}`,
+        "  已找到该消息: 不要再次 reload 或 dispatch，保留页面并人工确认生成状态。"
+      ].join("\n");
+    }
+    return [
+      diagnosis ? `  诊断: ${diagnosis}` : "  诊断: 自动恢复已停止，需要检查实际页面状态。",
+      retryInsteadOfReload
+        ? `  下一步: auto-chat retry ${job.id} && auto-chat dispatch --platform ${job.platform} ${job.id} && auto-chat listen ${job.id}`
+        : `  下一步: auto-chat doctor ${job.id}；需要查看页面时运行 auto-chat open ${job.id}`
+    ].join("\n");
+  }
+  if (job.status === "done") {
+    return job.mode === "image"
+      ? "  下一步: 读取 outputs，并用 events.jsonl 中的 image_order 确认图片顺序。"
+      : "  下一步: 读取 outputs/output-01.txt。";
+  }
+  return "";
+}
+
+function statusDescription(status: JobStatus): string {
+  const descriptions: Partial<Record<JobStatus, string>> = {
+    queued: "任务正在队列中，尚未被插件领取。",
+    opening_tab: "插件已领取任务，正在打开或复用目标对话标签页。",
+    waiting_chat_ready: "正在等待页面输入框可用。",
+    uploading: "正在把参考图片交给页面。",
+    waiting_upload_ready: "图片仍在上传，发送按钮尚未就绪。",
+    sending_prompt: "正在发送提示词，并确认包含当前 JOB_ID 的用户消息已经出现。",
+    waiting_generation: "提示词已确认提交，正在等待文本或图片结果。",
+    stalled: "页面在停滞超时内没有可见进展，插件将按配置尝试刷新恢复。",
+    refreshing: "插件正在刷新原标签页并继续监控，不会重复提交已确认发送的提示词。",
+    collecting_outputs: "生成已结束，正在确认输出范围和顺序。",
+    downloading: "正在保存最终产物。",
+    failed_retryable: "本次执行失败，但可以重新入队并安全重试。",
+    failed_final: "任务已停止自动处理。",
+    needs_manual: "自动恢复已停止。",
+    done: "任务完成，输出文件已经落盘。"
+  };
+  return descriptions[status] ?? "";
+}
+
+function diagnoseJobError(errorMessage: string | null): string {
+  if (!errorMessage) return "";
+  if (isMissingSubmittedTurnError(errorMessage)) {
+    return "没有检测到当前 JOB_ID 的用户消息，原提示词可能未提交；不要使用 reload，因为 reload 只监控已有请求。";
+  }
+  if (/maximum refresh attempts/i.test(errorMessage)) {
+    return "页面连续停滞并已达到最大刷新次数，继续 dispatch 不会重新提交当前终态任务。";
+  }
+  if (/Tab was closed/i.test(errorMessage)) return "任务完成前标签页被关闭。";
+  if (/hard timeout/i.test(errorMessage)) return "任务超过硬超时限制。";
+  return errorMessage;
+}
+
+function isMissingSubmittedTurnError(errorMessage: string | null): boolean {
+  return Boolean(errorMessage && /no submitted .* user turn|could not find the submitted user turn/i.test(errorMessage));
+}
+
+function formatDuration(ms: number): string {
+  return ms % 60_000 === 0 ? `${ms / 60_000} 分钟` : `${Math.round(ms / 1000)} 秒`;
 }
 
 export function formatAddResult(job: Job): string {

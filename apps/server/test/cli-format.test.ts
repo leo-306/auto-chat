@@ -5,12 +5,15 @@ import {
   defaultSkillInstallDirs,
   formatAddResult,
   formatAutoRetryResult,
+  formatActionableGuidance,
   formatConcurrencyResult,
   formatDoctor,
   formatExtensionInstallInstructions,
   formatJobSummary,
+  formatListenContext,
   formatListRow,
   formatReloadResult,
+  formatSseEvent,
   formatSkillInstallResults,
   normalizeCommand,
   parseAutoRetryArg,
@@ -238,6 +241,79 @@ describe("CLI formatting", () => {
     expect(formatReloadResult(baseJob)).toContain(
       "下一步: auto-chat dispatch --platform gpt job_1 && auto-chat listen job_1"
     );
+  });
+
+  it("prints listen runtime context and explains reload-only behavior", () => {
+    const output = formatListenContext({
+      ...baseJob,
+      status: "queued",
+      metadata: { autoChatReloadOnly: true },
+      parentJobId: "parent_1",
+      persistTab: true,
+      attempt: 2,
+      refreshCount: 1
+    }, {
+      maxConcurrency: 2,
+      stallTimeoutMs: 120_000,
+      hardTimeoutMs: 900_000,
+      maxRefreshPerJob: 2,
+      expectedImageCount: 4,
+      chatgptUrl: "https://chatgpt.com/",
+      geminiUrl: "https://gemini.google.com/app",
+      webhookUrls: [],
+      autoRetry: false
+    });
+
+    expect(output).toContain("监听环境:");
+    expect(output).toContain("JOB_SERVER_URL=");
+    expect(output).toContain("执行策略=仅重新加载并监控已有对话，不发送提示词");
+    expect(output).toContain("父任务 parent_1");
+    expect(output).toContain("停滞超时=2 分钟");
+    expect(output).toContain("dispatch 只唤醒一次插件调度");
+  });
+
+  it("guides missing submitted turns to retry instead of reload", () => {
+    const failed = {
+      ...baseJob,
+      status: "failed_retryable" as const,
+      errorMessage: "Error: Prompt was filled but no submitted ChatGPT user turn appeared."
+    };
+    const guidance = formatActionableGuidance(failed, { autoRetry: false });
+
+    expect(guidance).toContain("原提示词可能未提交");
+    expect(guidance).toContain("不要使用 reload");
+    expect(guidance).toContain("auto-chat retry job_1 && auto-chat dispatch --platform gpt job_1 && auto-chat listen job_1");
+  });
+
+  it("guides exhausted reload-only monitoring by checking the JOB_ID turn first", () => {
+    const guidance = formatActionableGuidance({
+      ...baseJob,
+      status: "needs_manual",
+      metadata: { autoChatReloadOnly: true },
+      errorMessage: "Job stalled after maximum refresh attempts."
+    });
+
+    expect(guidance).toContain("auto-chat open job_1");
+    expect(guidance).toContain("JOB_ID: job_1");
+    expect(guidance).toContain("未找到该消息: auto-chat retry job_1");
+    expect(guidance).toContain("已找到该消息: 不要再次 reload 或 dispatch");
+  });
+
+  it("adds state descriptions and terminal guidance to SSE events", () => {
+    const output = formatSseEvent({
+      at: "2026-06-21T00:01:00.000Z",
+      jobId: "job_1",
+      job: {
+        ...baseJob,
+        status: "failed_retryable",
+        errorMessage: "Prompt was filled but no submitted ChatGPT user turn appeared."
+      },
+      event: { type: "status", payload: {} }
+    }, { autoRetry: false });
+
+    expect(output).toContain("可重试失败");
+    expect(output).toContain("本次执行失败，但可以重新入队并安全重试");
+    expect(output).toContain("下一步: auto-chat retry job_1");
   });
 
   it("reads positional args without treating option values as job ids", () => {

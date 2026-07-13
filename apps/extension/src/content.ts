@@ -2,7 +2,7 @@ import { buildGeminiOutputPrompt, findLatestJobConversationScope } from "auto-ch
 import type { AppConfig, ConversationTurnRole, Job } from "auto-chat-shared";
 import { findGeminiSendControl, isGeminiSendDisabled } from "./gemini.js";
 import { hasGeneratingText, isGenerationStopControl } from "./inspect.js";
-import { shouldMonitorWithoutSubmit, waitForEmptyAssistantRecovery } from "./recovery.js";
+import { shouldMonitorWithoutSubmit, shouldRetryReloadWithoutJobTurn, waitForEmptyAssistantRecovery } from "./recovery.js";
 import type { EmptyAssistantRecoveryMode } from "./recovery.js";
 import { submitPromptWithFallback } from "./submit.js";
 import type { DebugInspectMessage, DebugInspectResult, JobProgressMessage, StartJobMessage } from "./types.js";
@@ -17,6 +17,8 @@ const TEXT_DONE_STABLE_MS = 1000;
 const IMAGE_DONE_STABLE_MS = 2000;
 const GEMINI_SINGLE_IMAGE_DONE_STABLE_MS = 2000;
 
+class RetryableJobError extends Error {}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   const typed = message as StartJobMessage | DebugInspectMessage;
   if (typed.type === "START_JOB") {
@@ -24,7 +26,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     void startJob(start.job, start.config, start.recoveryMode)
       .then(() => sendResponse({ ok: true }))
       .catch(async error => {
-        await report(start.job.id, "needs_manual", String(error));
+        await report(start.job.id, error instanceof RetryableJobError ? "failed_retryable" : "needs_manual", String(error));
         sendResponse({ ok: false, error: String(error) });
       });
     return true;
@@ -49,7 +51,17 @@ async function startJob(
   const controller = new AbortController();
   monitorAbort = controller;
 
-  if (isReloadOnly(job)) await waitForReloadConversation(job.id);
+  if (isReloadOnly(job)) {
+    const hasJobUserTurn = await waitForReloadConversation(job.id);
+    if (shouldRetryReloadWithoutJobTurn({ reloadOnly: true, hasJobUserTurn })) {
+      await report(
+        job.id,
+        "failed_retryable",
+        `Reload-only recovery could not find the submitted user turn for JOB_ID ${job.id}. The prompt may not have been submitted. Run auto-chat retry ${job.id}; do not use auto-chat reload for this failure.`
+      );
+      return;
+    }
+  }
   const existing = findJobAssistant(job.id);
   if (shouldMonitorWithoutSubmit({
     recoveryMode,
@@ -163,17 +175,18 @@ function isReloadOnly(job: Job): boolean {
   return job.metadata.autoChatReloadOnly === true;
 }
 
-async function waitForReloadConversation(jobId: string): Promise<void> {
+async function waitForReloadConversation(jobId: string): Promise<boolean> {
   for (let attempt = 0; attempt < 20; attempt += 1) {
     const turn = findJobUserTurn(jobId);
     if (turn) {
       turn.scrollIntoView({ block: "center" });
       await sleep(500);
-      return;
+      return true;
     }
     window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "auto" });
     await sleep(500);
   }
+  return false;
 }
 
 async function waitForGeminiSingleImage(
@@ -797,7 +810,7 @@ async function fillPromptAndSendGpt(job: Job): Promise<void> {
     sleep
   })) return;
 
-  throw new Error(`Prompt was filled but no submitted ${activeJob?.platform === "gemini" ? "Gemini" : "ChatGPT"} user turn appeared.`);
+  throw new RetryableJobError(`Prompt was filled but no submitted ${activeJob?.platform === "gemini" ? "Gemini" : "ChatGPT"} user turn appeared.`);
 }
 
 async function fillPromptAndSendOriginal(prompt: string): Promise<void> {
@@ -823,10 +836,10 @@ async function fillPromptPasteSourcesAndSendGemini(job: Job, prompt: string): Pr
 
   if (await submitGeminiPromptWithFallback(job, composer, prompt)) return;
   if (job.sourceImages.length > 0) {
-    throw new Error("Gemini send control was not ready after image upload.");
+    throw new RetryableJobError("Gemini send control was not ready after image upload.");
   }
 
-  throw new Error(`Prompt was filled but no submitted Gemini user turn appeared.`);
+  throw new RetryableJobError(`Prompt was filled but no submitted Gemini user turn appeared.`);
 }
 
 async function submitGeminiPromptWithFallback(

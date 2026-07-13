@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   selectEmptyAssistantRecovery,
   shouldMonitorWithoutSubmit,
+  shouldRetryReloadWithoutJobTurn,
   waitForEmptyAssistantRecovery
 } from "../src/recovery.js";
 
@@ -148,6 +149,21 @@ describe("GPT empty assistant recovery", () => {
     expect(shouldMonitorWithoutSubmit({
       reloadOnly: false,
       hasExistingAssistant: false
+    })).toBe(false);
+  });
+
+  it("retries reload-only recovery when the job user turn is missing", () => {
+    expect(shouldRetryReloadWithoutJobTurn({
+      reloadOnly: true,
+      hasJobUserTurn: false
+    })).toBe(true);
+    expect(shouldRetryReloadWithoutJobTurn({
+      reloadOnly: true,
+      hasJobUserTurn: true
+    })).toBe(false);
+    expect(shouldRetryReloadWithoutJobTurn({
+      reloadOnly: false,
+      hasJobUserTurn: false
     })).toBe(false);
   });
 });

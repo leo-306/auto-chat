@@ -236,6 +236,26 @@ CLI：
 auto-chat listen <jobId>
 ```
 
+非 JSON 模式会在连接事件流前输出安全的运行环境与任务上下文，包括
+`JOB_SERVER_URL` 的取值来源、数据目录、平台、模式、当前状态、是否为
+reload-only、父任务/标签页复用、停滞与硬超时、刷新上限和自动重试配置。
+关键状态会附带当前阶段说明；发生可处理异常时会直接给出完整的
+`retry -> dispatch -> listen` 或 `doctor -> open` 命令。
+
+`--json` 模式保持纯 JSON/NDJSON，不会混入上述说明文字。连接事件流前会先
+输出一条 `type: "job_snapshot"` 的当前任务快照；如果任务已经结束，输出快照后
+立即退出，不会在 SSE 上空等：
+
+```bash
+auto-chat listen <jobId> --json
+```
+
+如果出现 `Prompt was filled but no submitted ... user turn appeared`，说明插件
+没有确认当前 `JOB_ID` 的用户消息已经进入对话。此类错误应执行 `retry` 重新
+提交，不应执行 `reload`；`reload` 只重新打开并监控已经提交的对话，不会发送
+提示词。reload-only 恢复若找不到对应用户消息，会立即转为 `failed_retryable`，
+不再空等到刷新次数耗尽。
+
 监听全部任务：
 
 ```bash
