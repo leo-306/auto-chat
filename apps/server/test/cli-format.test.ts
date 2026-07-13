@@ -342,6 +342,17 @@ describe("CLI formatting", () => {
     expect(output).toContain("下一步: auto-chat retry job_1");
   });
 
+  it("prints manual page recheck requests in the event stream", () => {
+    const output = formatSseEvent({
+      at: "2026-06-21T00:01:00.000Z",
+      jobId: "job_1",
+      job: { ...baseJob, status: "waiting_generation" },
+      event: { type: "job_recheck_requested", payload: {} }
+    });
+
+    expect(output).toContain("已请求打开原会话并重新检测页面状态");
+  });
+
   it("reads positional args without treating option values as job ids", () => {
     expect(positionalArgs(["--platform", "gemini", "img_1", "--json"])).toEqual(["img_1"]);
     expect(positionalArgs(["--file", "examples/job.json", "--platform", "gpt"])).toEqual([]);

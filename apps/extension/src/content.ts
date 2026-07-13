@@ -2,6 +2,7 @@ import { buildGeminiOutputPrompt, findLatestJobConversationScope } from "auto-ch
 import type { AppConfig, ConversationTurnRole, Job } from "auto-chat-shared";
 import { findGeminiSendControl, isGeminiSendDisabled } from "./gemini.js";
 import { hasGeneratingText, isGenerationStopControl } from "./inspect.js";
+import { selectMonitorStallRecovery } from "./monitor.js";
 import { shouldMonitorWithoutSubmit, shouldRetryReloadWithoutJobTurn, waitForEmptyAssistantRecovery } from "./recovery.js";
 import type { EmptyAssistantRecoveryMode } from "./recovery.js";
 import { waitForStableReadiness } from "./readiness.js";
@@ -296,8 +297,21 @@ async function monitorJob(job: Job, appConfig: AppConfig, signal: AbortSignal): 
         return;
       }
 
-      if (!state.isGenerating && Date.now() - lastChangedAt > appConfig.stallTimeoutMs) {
-        await report(job.id, "stalled", "No visible progress before stall timeout.");
+      const stallRecovery = selectMonitorStallRecovery({
+        platform: job.platform,
+        mode: job.mode,
+        isGenerating: state.isGenerating,
+        idleMs: Date.now() - lastChangedAt,
+        stallTimeoutMs: appConfig.stallTimeoutMs
+      });
+      if (stallRecovery) {
+        await sendProgress({
+          type: "JOB_PROGRESS",
+          jobId: job.id,
+          status: "stalled",
+          recoveryMode: stallRecovery.recoveryMode,
+          errorMessage: stallRecovery.errorMessage
+        });
         return;
       }
 

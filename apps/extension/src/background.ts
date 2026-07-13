@@ -5,6 +5,11 @@ import type { DebugInspectMessage, DebugInspectResult, JobProgressMessage, Popup
 
 const SERVER_URL = "http://127.0.0.1:17321";
 const PLATFORMS: JobPlatform[] = ["gpt", "gemini"];
+const RECHECKABLE_STATUSES = new Set<Job["status"]>([
+  "opening_tab", "waiting_chat_ready", "uploading", "waiting_upload_ready",
+  "sending_prompt", "waiting_generation", "stalled", "refreshing",
+  "collecting_outputs", "downloading"
+]);
 const workerId = `ext_${crypto.randomUUID()}`;
 const workers = new Map<number, WorkerRecord>();
 let pausedByPlatform: Record<JobPlatform, boolean> = { gpt: true, gemini: true };
@@ -111,6 +116,22 @@ async function schedulerTick(options: { force?: boolean; platform?: JobPlatform 
   const dispatched = await consumeDispatchSignal();
   if (!serverOk) return;
 
+  if (dispatched && dispatched.jobId) {
+    const requestedJob = await api<Job>(`/jobs/${dispatched.jobId}`).catch(() => null);
+    if (requestedJob && RECHECKABLE_STATUSES.has(requestedJob.status)) {
+      try {
+        await recheckJob(requestedJob);
+      } catch (error) {
+        await postStatus(requestedJob.id, {
+          status: "needs_manual",
+          errorMessage: `Manual recheck failed: ${String(error)}`,
+          workerId
+        });
+      }
+      return;
+    }
+  }
+
   const targetPlatforms = options.platform ? [options.platform] : PLATFORMS;
   for (const platform of targetPlatforms) {
     const dispatchMatches = dispatched !== false &&
@@ -130,6 +151,60 @@ async function schedulerTick(options: { force?: boolean; platform?: JobPlatform 
         });
       }
     }
+  }
+}
+
+async function recheckJob(job: Job): Promise<void> {
+  const activeWorker = [...workers.values()].find(worker => worker.jobId === job.id);
+  const recordedTab = activeWorker
+    ? await getTab(activeWorker.tabId)
+    : job.tabId === null ? null : await getTab(job.tabId);
+  let tabId: number;
+
+  if (recordedTab?.id) {
+    tabId = recordedTab.id;
+    await chrome.tabs.update(tabId, { active: true });
+  } else {
+    if (!job.conversationUrl) throw new Error(`Job has no recorded conversation URL: ${job.id}`);
+    const tab = await chrome.tabs.create({ url: job.conversationUrl, active: true });
+    if (!tab.id) throw new Error("Chrome did not return a tab id");
+    tabId = tab.id;
+  }
+
+  for (const [workerTabId, worker] of workers) {
+    if (worker.jobId === job.id && workerTabId !== tabId) workers.delete(workerTabId);
+  }
+  const worker: WorkerRecord = {
+    tabId,
+    jobId: job.id,
+    platform: job.platform,
+    startedAt: Date.now(),
+    lastStateAt: Date.now(),
+    refreshCount: job.refreshCount,
+    rateLimitRefreshCount: 0
+  };
+  workers.set(tabId, worker);
+
+  try {
+    await postStatus(job.id, {
+      status: "refreshing",
+      tabId,
+      ...(job.conversationUrl ? { conversationUrl: job.conversationUrl } : {}),
+      refreshCount: job.refreshCount,
+      workerId
+    });
+    if (recordedTab?.id) await chrome.tabs.reload(tabId);
+    await waitForTabComplete(tabId);
+    const latest = await api<Job>(`/jobs/${job.id}`);
+    await sendStartMessage(tabId, latest, "monitor_only");
+  } catch (error) {
+    workers.delete(tabId);
+    await postStatus(job.id, {
+      status: "needs_manual",
+      tabId,
+      errorMessage: `Manual recheck failed: ${String(error)}`,
+      workerId
+    });
   }
 }
 

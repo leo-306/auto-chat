@@ -626,6 +626,7 @@ export function formatSseEvent(
   if (event?.type === "text_output") return `${prefix} 已复制文本响应`;
   if (event?.type === "job_retry") return `${prefix} 已重新入队`;
   if (event?.type === "job_reload") return `${prefix} 已重新加载对话（仅检查已有对话，不会重新发送提示词）`;
+  if (event?.type === "job_recheck_requested") return `${prefix} 已请求打开原会话并重新检测页面状态`;
   if (job) {
     const statusLine = `${prefix} ${formatStatus(job.status, job.platform)} ${formatProgress(job)}${job.errorMessage ? ` 错误: ${job.errorMessage}` : ""}`;
     const description = statusDescription(job.status);

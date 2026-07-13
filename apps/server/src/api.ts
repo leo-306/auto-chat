@@ -15,6 +15,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { EventHub } from "./events.js";
 
+const RECHECKABLE_STATUSES = new Set([
+  "opening_tab", "waiting_chat_ready", "uploading", "waiting_upload_ready",
+  "sending_prompt", "waiting_generation", "stalled", "refreshing",
+  "collecting_outputs", "downloading"
+]);
+
 export async function buildServer(store: JobStore, events = new EventHub()): Promise<FastifyInstance> {
   const app = Fastify({ logger: true, bodyLimit: 50 * 1024 * 1024 });
   await app.register(cors, { origin: true });
@@ -178,6 +184,21 @@ export async function buildServer(store: JobStore, events = new EventHub()): Pro
     } catch (error) {
       return reply.code(404).send({ error: String(error) });
     }
+  });
+
+  app.post("/jobs/:id/recheck", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const job = store.getJob(id);
+    if (!job) return reply.code(404).send({ error: "not_found" });
+    if (!RECHECKABLE_STATUSES.has(job.status)) {
+      return reply.code(409).send({ error: "job_not_running", status: job.status });
+    }
+    if (!job.conversationUrl) {
+      return reply.code(400).send({ error: "conversation_url_missing" });
+    }
+    store.appendEvent(id, { type: "job_recheck_requested", payload: { status: job.status } });
+    const dispatch = store.requestDispatch(job.platform, job.id);
+    return { job, dispatch };
   });
 
   app.post("/jobs/:id/reload", async (request, reply) => {

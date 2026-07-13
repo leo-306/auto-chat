@@ -119,6 +119,9 @@
       .retry-button { border: 1px solid #c7d2fe; border-radius: 7px; padding: 6px 10px; background: var(--primary-soft); color: #4338ca; cursor: pointer; font-size: 12px; font-weight: 700; white-space: nowrap; }
       .retry-button:hover { border-color: #a5b4fc; background: #e0e7ff; }
       .retry-button:disabled { cursor: not-allowed; opacity: 0.55; }
+      .recheck-button { border: 1px solid #bae6fd; border-radius: 7px; padding: 6px 10px; background: #f0f9ff; color: #0369a1; cursor: pointer; font-size: 12px; font-weight: 700; white-space: nowrap; }
+      .recheck-button:hover { border-color: #7dd3fc; background: #e0f2fe; }
+      .recheck-button:disabled { cursor: not-allowed; opacity: 0.55; }
       .empty-row { padding: 42px 16px; color: var(--muted); text-align: center; }
 
       dialog { width: min(820px, calc(100vw - 32px)); max-height: min(760px, calc(100vh - 48px)); padding: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); color: var(--text); box-shadow: 0 24px 70px rgba(15, 23, 42, 0.25); }
@@ -282,6 +285,7 @@
       ];
       let deletingId = null;
       const retryingIds = new Set();
+      const recheckingIds = new Set();
       const jobRenderSignatures = new Map();
 
       renderJobConfigLegend();
@@ -389,7 +393,7 @@
 
         for (const job of jobs) {
           visibleIds.add(job.id);
-          const signature = JSON.stringify([job, deletingId === job.id, retryingIds.has(job.id)]);
+          const signature = JSON.stringify([job, deletingId === job.id, retryingIds.has(job.id), recheckingIds.has(job.id)]);
           let row = existingRows.get(job.id);
           if (!row) {
             row = document.createElement('tr');
@@ -431,12 +435,17 @@
           <td>${job.errorMessage ? `<span class="error-message">${escapeHtml(job.errorMessage)}</span>` : '<span class="empty-value">—</span>'}</td>
           <td>
             <div class="row-actions">
+              ${RUNNING_STATUSES.has(job.status) && job.conversationUrl ? `
+                <button class="recheck-button" data-recheck="${escapeAttribute(job.id)}" ${recheckingIds.has(job.id) ? 'disabled' : ''}>
+                  ${recheckingIds.has(job.id) ? '检测中…' : '检测'}
+                </button>
+              ` : ''}
               ${FAILED_STATUSES.has(job.status) ? `
-                <button class="retry-button" data-retry="${escapeAttribute(job.id)}" data-platform="${escapeAttribute(job.platform)}" ${retryingIds.has(job.id) ? 'disabled' : ''}>
+                <button class="retry-button" data-retry="${escapeAttribute(job.id)}" data-platform="${escapeAttribute(job.platform)}" ${retryingIds.has(job.id) || recheckingIds.has(job.id) ? 'disabled' : ''}>
                   ${retryingIds.has(job.id) ? '触发中…' : '重试'}
                 </button>
               ` : ''}
-              <button class="danger" data-delete="${escapeAttribute(job.id)}" ${deletingId === job.id || retryingIds.has(job.id) ? 'disabled' : ''}>
+              <button class="danger" data-delete="${escapeAttribute(job.id)}" ${deletingId === job.id || retryingIds.has(job.id) || recheckingIds.has(job.id) ? 'disabled' : ''}>
                 ${deletingId === job.id ? '删除中…' : '删除'}
               </button>
             </div>
@@ -453,6 +462,11 @@
         const retryButton = event.target.closest('button[data-retry]');
         if (retryButton) {
           await retryAndDispatch(retryButton.dataset.retry, retryButton.dataset.platform);
+          return;
+        }
+        const recheckButton = event.target.closest('button[data-recheck]');
+        if (recheckButton) {
+          await recheckJob(recheckButton.dataset.recheck);
           return;
         }
         const button = event.target.closest('button[data-delete]');
@@ -529,6 +543,22 @@
           setNotice(requeued ? `任务已重新入队，但触发调度失败：${error}` : `重新触发失败：${error}`, true);
         } finally {
           retryingIds.delete(id);
+          await refresh();
+        }
+      }
+
+      async function recheckJob(id) {
+        recheckingIds.add(id);
+        setNotice(`正在打开页面并重新检测 ${id}…`);
+        await refresh();
+        try {
+          const response = await fetch(`/jobs/${encodeURIComponent(id)}/recheck`, { method: 'POST' });
+          if (!response.ok) throw new Error(`${response.status} ${await response.text()}`);
+          setNotice(`已请求重新检测 ${id}，检测结果会自动同步到任务状态与输出`);
+        } catch (error) {
+          setNotice(`重新检测失败：${error}`, true);
+        } finally {
+          recheckingIds.delete(id);
           await refresh();
         }
       }
