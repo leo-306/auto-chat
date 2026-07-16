@@ -33,14 +33,45 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   const worker = workers.get(tabId);
-  if (!worker || !changeInfo.url || !isConversationUrl(worker.platform, changeInfo.url)) return;
-  void postStatus(worker.jobId, {
-    status: "waiting_generation",
-    tabId,
-    conversationUrl: changeInfo.url,
-    workerId
-  });
+  if (!worker) return;
+
+  if (changeInfo.url && isConversationUrl(worker.platform, changeInfo.url)) {
+    void postStatus(worker.jobId, {
+      status: "waiting_generation",
+      tabId,
+      conversationUrl: changeInfo.url,
+      workerId
+    });
+  }
+
+  if (changeInfo.status === "loading" && !worker.expectingReload) {
+    void recoverFromUnexpectedReload(tabId, worker);
+  }
 });
+
+const unexpectedReloadInFlight = new Set<number>();
+
+async function recoverFromUnexpectedReload(tabId: number, worker: WorkerRecord): Promise<void> {
+  if (unexpectedReloadInFlight.has(tabId)) return;
+  unexpectedReloadInFlight.add(tabId);
+  try {
+    await waitForTabComplete(tabId);
+    if (workers.get(tabId) !== worker) return;
+    const job = await api<Job>(`/jobs/${worker.jobId}`);
+    if (!RECHECKABLE_STATUSES.has(job.status)) return;
+    await sendStartMessage(tabId, job, "monitor_only");
+  } catch (error) {
+    await postStatus(worker.jobId, {
+      status: "needs_manual",
+      tabId,
+      errorMessage: `Failed to recover monitoring after the tab reloaded unexpectedly: ${String(error)}`,
+      workerId
+    });
+    workers.delete(tabId);
+  } finally {
+    unexpectedReloadInFlight.delete(tabId);
+  }
+}
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   const worker = workers.get(tabId);
@@ -181,7 +212,8 @@ async function recheckJob(job: Job): Promise<void> {
     startedAt: Date.now(),
     lastStateAt: Date.now(),
     refreshCount: job.refreshCount,
-    rateLimitRefreshCount: 0
+    rateLimitRefreshCount: 0,
+    expectingReload: true
   };
   workers.set(tabId, worker);
 
@@ -197,6 +229,7 @@ async function recheckJob(job: Job): Promise<void> {
     await waitForTabComplete(tabId);
     const latest = await api<Job>(`/jobs/${job.id}`);
     await sendStartMessage(tabId, latest, "monitor_only");
+    worker.expectingReload = false;
   } catch (error) {
     workers.delete(tabId);
     await postStatus(job.id, {
@@ -289,7 +322,8 @@ async function launchJob(job: Job): Promise<void> {
     startedAt: Date.now(),
     lastStateAt: Date.now(),
     refreshCount: job.refreshCount,
-    rateLimitRefreshCount: 0
+    rateLimitRefreshCount: 0,
+    expectingReload: false
   };
   workers.set(tabId, worker);
   await postStatus(job.id, {
@@ -346,11 +380,13 @@ async function handleProgress(message: JobProgressMessage, tabId?: number): Prom
       return;
     }
     worker.rateLimitRefreshCount += 1;
+    worker.expectingReload = true;
     await postStatus(worker.jobId, { status: "refreshing", tabId, refreshCount: worker.refreshCount, workerId });
     await chrome.tabs.reload(tabId);
     await waitForTabComplete(tabId);
     const job = await api<Job>(`/jobs/${worker.jobId}`);
     await sendStartMessage(tabId, job, "monitor_only");
+    worker.expectingReload = false;
     return;
   }
 
@@ -367,6 +403,7 @@ async function handleProgress(message: JobProgressMessage, tabId?: number): Prom
       return;
     }
     worker.refreshCount += 1;
+    worker.expectingReload = true;
     await postStatus(worker.jobId, {
       status: "refreshing",
       tabId,
@@ -377,6 +414,7 @@ async function handleProgress(message: JobProgressMessage, tabId?: number): Prom
     await waitForTabComplete(tabId);
     const job = await api<Job>(`/jobs/${worker.jobId}`);
     await sendStartMessage(tabId, job, message.recoveryMode ?? "monitor_only");
+    worker.expectingReload = false;
     return;
   }
 

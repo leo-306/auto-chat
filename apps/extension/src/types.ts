@@ -9,6 +9,7 @@ export type WorkerRecord = {
   lastStateAt: number;
   refreshCount: number;
   rateLimitRefreshCount: number;
+  expectingReload: boolean;
 };
 
 export type StartJobMessage = {
