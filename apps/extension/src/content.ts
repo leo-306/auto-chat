@@ -1,6 +1,7 @@
 import { buildGeminiOutputPrompt, findLatestJobConversationScope } from "auto-chat-shared";
 import type { AppConfig, ConversationTurnRole, Job } from "auto-chat-shared";
 import { findGeminiSendControl, isGeminiSendDisabled } from "./gemini.js";
+import { isGptConversationPath, shouldReloadCapturedConversation } from "./homeRedirectRecovery.js";
 import { hasGeneratingText, isGenerationStopControl } from "./inspect.js";
 import { selectMonitorStallRecovery } from "./monitor.js";
 import { shouldCheckEmptyAssistantRecovery, shouldMonitorWithoutSubmit, shouldRetryReloadWithoutJobTurn, waitForEmptyAssistantRecovery } from "./recovery.js";
@@ -838,19 +839,64 @@ async function pasteGeminiSources(job: Job, composer: HTMLElement | HTMLTextArea
 
 async function fillPromptAndSendGpt(job: Job): Promise<void> {
   const { prompt } = job;
-  const composer = fillPrompt(prompt);
-  await sleep(300);
-  const sendButton = findSendButton();
-  if (await submitPromptWithFallback({
-    composer,
-    sendButton,
-    getSendButton: findSendButton,
-    isSubmitted: () => isPromptSubmitted(prompt),
-    onWaitingForSubmitReady: () => report(job.id, "waiting_upload_ready"),
-    sleep
-  })) return;
+  const isNewConversation = !hasRecordedConversation(job);
+  const capture = isNewConversation ? startGptConversationUrlCapture() : null;
 
-  throw new RetryableJobError(`Prompt was filled but no submitted ${activeJob?.platform === "gemini" ? "Gemini" : "ChatGPT"} user turn appeared.`);
+  try {
+    const composer = fillPrompt(prompt);
+    await sleep(300);
+    const sendButton = findSendButton();
+    if (await submitPromptWithFallback({
+      composer,
+      sendButton,
+      getSendButton: findSendButton,
+      isSubmitted: () => isPromptSubmitted(prompt),
+      onWaitingForSubmitReady: () => report(job.id, "waiting_upload_ready"),
+      sleep
+    })) return;
+
+    const capturedUrl = capture?.getUrl() ?? null;
+    if (shouldReloadCapturedConversation({ capturedUrl, currentPathname: location.pathname })) {
+      location.href = capturedUrl as string;
+      if (await waitForReloadConversation(job.id)) return;
+    }
+
+    throw new RetryableJobError(`Prompt was filled but no submitted ${activeJob?.platform === "gemini" ? "Gemini" : "ChatGPT"} user turn appeared.`);
+  } finally {
+    capture?.stop();
+  }
+}
+
+function startGptConversationUrlCapture(): { getUrl: () => string | null; stop: () => void } {
+  let capturedUrl: string | null = null;
+  const capture = () => {
+    if (!capturedUrl && isGptConversationPath(location.pathname)) capturedUrl = location.href;
+  };
+
+  const originalPushState = history.pushState.bind(history);
+  const originalReplaceState = history.replaceState.bind(history);
+  history.pushState = ((...args: Parameters<History["pushState"]>) => {
+    originalPushState(...args);
+    capture();
+  }) as History["pushState"];
+  history.replaceState = ((...args: Parameters<History["replaceState"]>) => {
+    originalReplaceState(...args);
+    capture();
+  }) as History["replaceState"];
+
+  let stopped = false;
+  return {
+    getUrl: () => {
+      capture();
+      return capturedUrl;
+    },
+    stop: () => {
+      if (stopped) return;
+      stopped = true;
+      history.pushState = originalPushState;
+      history.replaceState = originalReplaceState;
+    }
+  };
 }
 
 async function fillPromptAndSendOriginal(prompt: string): Promise<void> {
