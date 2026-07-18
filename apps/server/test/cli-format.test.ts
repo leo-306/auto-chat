@@ -19,8 +19,12 @@ import {
   parseAutoRetryArg,
   parseMaxConcurrencyArg,
   positionalArgs,
+  readCliVersion,
   shouldStopListeningForPayload
 } from "../src/cli.js";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const baseJob: Job = {
   id: "job_1",
@@ -42,11 +46,20 @@ const baseJob: Job = {
   screenshotFiles: [],
   persistTab: false,
   parentJobId: null,
+  outputDir: null,
+  copiedOutputFiles: [],
   createdAt: "2026-06-21T00:00:00.000Z",
   updatedAt: "2026-06-21T00:01:00.000Z"
 };
 
 describe("CLI formatting", () => {
+  it("reads the CLI version from the packaged root package.json", () => {
+    const rootManifest = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "package.json");
+    const expected = JSON.parse(fs.readFileSync(rootManifest, "utf8")).version;
+    expect(readCliVersion()).toBe(expected);
+  });
+
+
   it("normalizes old job commands to new auto-chat commands", () => {
     expect(normalizeCommand("job:add")).toBe("add");
     expect(normalizeCommand("job:list")).toBe("list");
@@ -259,6 +272,30 @@ describe("CLI formatting", () => {
     expect(formatAddResult(baseJob)).toContain(
       "下一步: auto-chat dispatch --platform gpt job_1 && auto-chat listen job_1"
     );
+  });
+
+  it("surfaces the requested outputDir and copy status in add/show/listen output", () => {
+    const withOutputDir = { ...baseJob, outputDir: "/Users/alice/Desktop/out" };
+
+    expect(formatAddResult(withOutputDir)).toContain("指定输出目录: /Users/alice/Desktop/out");
+    expect(formatAddResult(baseJob)).not.toContain("指定输出目录");
+
+    const freshJob = { ...withOutputDir, outputFiles: [], copiedOutputFiles: [] };
+    expect(formatAddResult(freshJob)).toContain("等待图片生成后复制");
+
+    expect(formatJobSummary(withOutputDir)).toContain("指定输出目录: /Users/alice/Desktop/out");
+    expect(formatJobSummary(baseJob)).not.toContain("指定输出目录");
+
+    expect(formatListenContext(withOutputDir)).toContain("指定输出目录=/Users/alice/Desktop/out");
+
+    const copied = { ...withOutputDir, copiedOutputFiles: ["/Users/alice/Desktop/out/output-01.png"] };
+    expect(formatJobSummary(copied)).toContain("已复制 1 个文件");
+
+    const copyFailed = { ...withOutputDir, outputFiles: ["/tmp/out/output-01.png"] };
+    expect(formatJobSummary(copyFailed)).toContain("复制失败");
+
+    const textWithOutputDir = { ...withOutputDir, mode: "text" as const };
+    expect(formatJobSummary(textWithOutputDir)).toContain("仅图片任务会额外复制");
   });
 
   it("formats reload result with the preserved conversation URL", () => {

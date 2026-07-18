@@ -157,6 +157,8 @@ Full protocol: [docs/agent-integration.md](docs/agent-integration.md)
 ## Commands
 
 ```bash
+auto-chat --version
+
 auto-chat start
 auto-chat status
 auto-chat stop
@@ -328,6 +330,24 @@ Works on both GPT and Gemini. The follow-up job sends into the existing conversa
   "sourceImages": []
 }
 ```
+
+### Custom output directory
+
+Image jobs accept an optional `outputDir` field:
+
+```json
+{
+  "id": "img_order_test_003",
+  "prompt": "Generate an image: red dress.",
+  "expectedImageCount": 1,
+  "sourceImages": [],
+  "outputDir": "./out"
+}
+```
+
+- **Image jobs only.** Only image (`kind: "output"`) artifacts are copied. Text jobs (`mode: "text"`) don't support and ignore `outputDir` entirely.
+- **Purely additive — the original `data/jobs/<jobId>/outputs/` storage is unchanged.** That directory remains the canonical output location for every job, written exactly as before regardless of `outputDir`. Setting `outputDir` only adds an extra copy of the same file elsewhere. A failed copy (unwritable path, etc.) never fails the job and never touches the file already saved under `outputs/` — it only logs an `output_copy_failed` event.
+- A relative path is resolved against the current working directory of the `auto-chat add` invocation. `auto-chat show <jobId>`, `auto-chat doctor <jobId>`, and `auto-chat listen <jobId>` all report the resolved directory and copy status.
 
 ### Gemini multi-image task
 

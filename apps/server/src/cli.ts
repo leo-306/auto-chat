@@ -45,6 +45,11 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     return;
   }
 
+  if (command === "--version" || command === "-v" || command === "version") {
+    print(readCliVersion());
+    return;
+  }
+
   if (command === "start") {
     await startServer();
     return;
@@ -89,6 +94,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     const body = JSON.parse(fs.readFileSync(resolveInputFile(file), "utf8"));
     if (options.autoId) delete body.id;
     if (options.platform) body.platform = options.platform;
+    if (typeof body.outputDir === "string" && body.outputDir.trim()) {
+      body.outputDir = path.resolve(process.cwd(), body.outputDir.trim());
+    }
     const apiPath = options.replace ? "/jobs?replace=1" : "/jobs";
     const job = await request<Job>(apiPath, { method: "POST", body });
     print(options.json ? JSON.stringify(job, null, 2) : formatAddResult(job));
@@ -220,10 +228,18 @@ export function formatJobSummary(job: Job): string {
     const preview = readTextPreview(job.textOutputFile);
     if (preview) lines.push(`预览: ${preview}`);
   }
+  if (job.outputDir) lines.push(`指定输出目录: ${job.outputDir}${formatOutputDirStatus(job)}`);
   if (job.conversationUrl) lines.push(`对话: ${job.conversationUrl}`);
   if (job.errorMessage) lines.push(`错误: ${job.errorMessage}`);
   lines.push(`更新: ${job.updatedAt}`);
   return lines.join("\n");
+}
+
+function formatOutputDirStatus(job: Job): string {
+  if (job.mode !== "image") return "（仅图片任务会额外复制）";
+  if (job.copiedOutputFiles.length > 0) return `（已复制 ${job.copiedOutputFiles.length} 个文件）`;
+  if (job.outputFiles.length > 0) return "（图片已生成，但复制失败，请查看 events.jsonl 中的 output_copy_failed）";
+  return "（等待图片生成后复制）";
 }
 
 export function formatDoctor(
@@ -380,6 +396,12 @@ function extensionPackageZipPath(): string | null {
 
 function packageRoot(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+}
+
+export function readCliVersion(): string {
+  const manifestPath = path.join(packageRoot(), "package.json");
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as { version?: string };
+  return manifest.version ?? "unknown";
 }
 
 async function stopServer(): Promise<void> {
@@ -624,6 +646,8 @@ export function formatSseEvent(
   if (event?.type === "artifact_saved") return `${prefix} 已保存${artifactLabel(event.payload?.kind)}：${displayPath(String(event.payload?.path ?? ""))}`;
   if (event?.type === "image_order") return `${prefix} 已记录图片顺序`;
   if (event?.type === "text_output") return `${prefix} 已复制文本响应`;
+  if (event?.type === "output_copied") return `${prefix} 已复制图片到指定输出目录：${displayPath(String(event.payload?.path ?? ""))}`;
+  if (event?.type === "output_copy_failed") return `${prefix} 复制到指定输出目录失败（${String(event.payload?.outputDir ?? "")}）：${String(event.payload?.message ?? "")}`;
   if (event?.type === "job_retry") return `${prefix} 已重新入队`;
   if (event?.type === "job_reload") return `${prefix} 已重新加载对话（仅检查已有对话，不会重新发送提示词）`;
   if (event?.type === "job_recheck_requested") return `${prefix} 已请求打开原会话并重新检测页面状态`;
@@ -649,6 +673,7 @@ export function formatListenContext(job: Job, config?: AppConfig, parentJob?: Jo
     `  最近更新=${job.updatedAt}（${formatElapsed(job.updatedAt)}前）`
   ];
   if (job.conversationUrl) lines.push(`  对话地址=${job.conversationUrl}`);
+  if (job.outputDir) lines.push(`  指定输出目录=${job.outputDir}${formatOutputDirStatus(job)}`);
   if (job.parentJobId) {
     lines.push(parentJob === null
       ? `  父任务校验=不存在（${job.parentJobId}），当前任务无法复用会话`
@@ -785,6 +810,7 @@ export function formatAddResult(job: Job): string {
     `平台: ${formatPlatform(job.platform)}`,
     `模式: ${formatMode(job.mode)}`,
     `状态: ${formatStatus(job.status, job.platform)}`,
+    ...(job.outputDir ? [`指定输出目录: ${job.outputDir}${formatOutputDirStatus(job)}`] : []),
     `下一步: auto-chat dispatch --platform ${job.platform} ${job.id} && auto-chat listen ${job.id}`
   ].join("\n");
 }
@@ -915,12 +941,14 @@ function usage(): void {
   print(`auto-chat
 
 Usage:
+  auto-chat --version
   auto-chat init
   auto-chat start
   auto-chat stop
   auto-chat status
   auto-chat add <job.json> [--replace] [--auto-id] [--json]
   auto-chat add <job.json> [--platform gpt|gemini]
+  (job.json 可选 "outputDir": "<dir>"，图片任务完成后会额外复制一份到该目录)
   auto-chat list [--json]
   auto-chat show <jobId> [--json]
   auto-chat listen [jobId] [--json]

@@ -135,6 +135,66 @@ describe("JobStore", () => {
     store.close();
   });
 
+  it("copies output artifacts into the requested outputDir", async () => {
+    const outputDir = path.join(tmp, "external-outputs");
+    const store = new JobStore(tmp);
+    await store.init();
+    store.createJob({ id: "job_output_dir", prompt: "hello", sourceImages: [], metadata: {}, outputDir });
+
+    const result = store.saveArtifact("job_output_dir", {
+      kind: "output",
+      filename: "output-01.png",
+      contentType: "image/png",
+      dataBase64: Buffer.from("image-bytes").toString("base64")
+    });
+
+    const copiedPath = path.join(outputDir, "output-01.png");
+    expect(fs.readFileSync(copiedPath, "utf8")).toBe("image-bytes");
+    expect(result.job.copiedOutputFiles).toEqual([copiedPath]);
+    expect(result.job.outputDir).toBe(outputDir);
+    store.close();
+  });
+
+  it("does not copy text output artifacts even when outputDir is set", async () => {
+    const outputDir = path.join(tmp, "external-outputs-text");
+    const store = new JobStore(tmp);
+    await store.init();
+    store.createJob({ id: "job_output_dir_text", mode: "text", prompt: "hello", sourceImages: [], metadata: {}, outputDir });
+
+    const result = store.saveArtifact("job_output_dir_text", {
+      kind: "text_output",
+      filename: "output-01.txt",
+      contentType: "text/plain",
+      dataBase64: Buffer.from("text").toString("base64")
+    });
+
+    expect(result.job.copiedOutputFiles).toEqual([]);
+    expect(fs.existsSync(outputDir)).toBe(false);
+    store.close();
+  });
+
+  it("records a failure event when outputDir cannot be created", async () => {
+    const blockerFile = path.join(tmp, "blocked-by-file");
+    fs.writeFileSync(blockerFile, "not a directory");
+    const outputDir = path.join(blockerFile, "nested");
+    const store = new JobStore(tmp);
+    await store.init();
+    store.createJob({ id: "job_output_dir_fail", prompt: "hello", sourceImages: [], metadata: {}, outputDir });
+
+    const result = store.saveArtifact("job_output_dir_fail", {
+      kind: "output",
+      filename: "output-01.png",
+      contentType: "image/png",
+      dataBase64: Buffer.from("image-bytes").toString("base64")
+    });
+
+    expect(result.job.copiedOutputFiles).toEqual([]);
+    expect(result.job.outputFiles).toHaveLength(1);
+    const events = fs.readFileSync(path.join(tmp, "data", "jobs", "job_output_dir_fail", "events.jsonl"), "utf8");
+    expect(events).toContain("output_copy_failed");
+    store.close();
+  });
+
   it("copies local source images into job assets", async () => {
     const source = path.join(tmp, "input.png");
     fs.writeFileSync(source, "fake-image");

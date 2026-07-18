@@ -1,0 +1,7 @@
+{
+  "id": "img_output_dir_test_001",
+  "prompt": "生成一张图，要求：红色裙子。",
+  "expectedImageCount": 1,
+  "sourceImages": [],
+  "outputDir": "./out"
+}

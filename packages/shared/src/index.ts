@@ -72,7 +72,8 @@ export const CreateJobSchema = z.object({
   sourceImages: z.array(z.string()).default([]),
   metadata: z.record(z.unknown()).default({}),
   persistTab: z.boolean().default(false),
-  parentJobId: z.string().min(1).optional()
+  parentJobId: z.string().min(1).optional(),
+  outputDir: z.string().min(1).optional()
 }).superRefine((value, ctx) => {
   if ((value.mode ?? "image") === "image" && value.expectedImageCount === 0) {
     ctx.addIssue({
@@ -133,6 +134,8 @@ export const JobSchema = z.object({
   screenshotFiles: z.array(z.string()),
   persistTab: z.boolean(),
   parentJobId: z.string().nullable(),
+  outputDir: z.string().nullable(),
+  copiedOutputFiles: z.array(z.string()),
   createdAt: z.string(),
   updatedAt: z.string()
 });

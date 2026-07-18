@@ -38,6 +38,8 @@ type JobRow = {
   screenshot_files: string;
   persist_tab: number;
   parent_job_id: string | null;
+  output_dir: string | null;
+  copied_output_files: string;
   created_at: string;
   updated_at: string;
 };
@@ -95,8 +97,8 @@ export class JobStore {
         id, platform, mode, status, prompt, expected_image_count, source_images, metadata,
         conversation_url, tab_id, attempt, refresh_count, error_message,
         worker_id, output_files, text_output_file, screenshot_files,
-        persist_tab, parent_job_id, created_at, updated_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, null, 0, 0, null, null, ?, null, ?, ?, ?, ?, ?)`,
+        persist_tab, parent_job_id, output_dir, copied_output_files, created_at, updated_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, null, 0, 0, null, null, ?, null, ?, ?, ?, ?, ?, ?, ?)`,
       [
         id,
         platform,
@@ -111,6 +113,8 @@ export class JobStore {
         JSON.stringify([]),
         input.persistTab ? 1 : 0,
         input.parentJobId ?? null,
+        input.outputDir ?? null,
+        JSON.stringify([]),
         now,
         now
       ]
@@ -282,6 +286,9 @@ export class JobStore {
     if (artifact.kind === "screenshot") {
       this.setJsonColumn(id, "screenshot_files", [...job.screenshotFiles, target]);
     }
+    if (artifact.kind === "output" && job.outputDir) {
+      this.copyOutputToJobDir(id, job.outputDir, target, safeName);
+    }
     this.appendEvent(id, { type: "artifact_saved", payload: { kind: artifact.kind, path: target } });
     this.persist();
     return { path: target, job: this.mustGet(id) };
@@ -365,6 +372,8 @@ export class JobStore {
     this.addColumnIfMissing("jobs", "text_output_file", "text");
     this.addColumnIfMissing("jobs", "persist_tab", "integer not null default 0");
     this.addColumnIfMissing("jobs", "parent_job_id", "text");
+    this.addColumnIfMissing("jobs", "output_dir", "text");
+    this.addColumnIfMissing("jobs", "copied_output_files", "text not null default '[]'");
   }
 
   private loadConfig(): void {
@@ -399,6 +408,24 @@ export class JobStore {
       fs.copyFileSync(absolute, target);
       return `http://127.0.0.1:17321/job-assets/${encodeURIComponent(id)}/source/${encodeURIComponent(filename)}`;
     });
+  }
+
+  private copyOutputToJobDir(id: string, outputDir: string, source: string, filename: string): void {
+    try {
+      fs.mkdirSync(outputDir, { recursive: true });
+      const target = path.join(outputDir, filename);
+      fs.copyFileSync(source, target);
+      const job = this.mustGet(id);
+      this.run("update jobs set copied_output_files = ?, updated_at = ? where id = ?", [
+        JSON.stringify([...job.copiedOutputFiles, target]),
+        new Date().toISOString(),
+        id
+      ]);
+      this.writeMeta(id);
+      this.appendEvent(id, { type: "output_copied", payload: { path: target } });
+    } catch (error) {
+      this.appendEvent(id, { type: "output_copy_failed", payload: { outputDir, message: String(error) } });
+    }
   }
 
   private setJsonColumn(id: string, column: "output_files" | "screenshot_files", value: string[]): void {
@@ -497,6 +524,8 @@ function rowToJob(row: JobRow): Job {
     screenshotFiles: JSON.parse(row.screenshot_files),
     persistTab: (row.persist_tab ?? 0) !== 0,
     parentJobId: row.parent_job_id ?? null,
+    outputDir: row.output_dir ?? null,
+    copiedOutputFiles: JSON.parse(row.copied_output_files ?? "[]"),
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };

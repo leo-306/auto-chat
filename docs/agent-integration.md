@@ -20,9 +20,12 @@ agent 的机器接口是真实安装后的 `auto-chat` CLI、本地服务和 SSE
 npm install
 npm run build
 npm link
+auto-chat --version
 auto-chat init
 auto-chat status
 ```
+
+`auto-chat --version`（或 `-v`）输出当前 CLI 版本号，读取自打包后的 `package.json`，用于确认 `PATH` 上运行的是哪个构建。
 
 `auto-chat init` 会安装 agent skill、启动本地服务，并每次打开 `chrome://extensions`，提示用户从 GitHub 或本机 npm 包里的 `auto-chat-extension.zip` 解压安装插件。
 
@@ -344,6 +347,38 @@ output-04.*
 - `output-04` 对应提示词中的图4。
 
 GPT 任务按生图卡片顺序采集，并按 estuary `file_...` 去重；Gemini 多图任务按串行轮次采集。同一张图片可能在 DOM 中出现多次，不能直接按 `<img>` 数量判断。
+
+### 自定义输出目录
+
+创建任务时可以在 JSON 中加入可选字段 `outputDir`，指定一个额外目录，每次保存图片 artifact（`kind: "output"`）时都会额外复制一份到该目录，文件名与 `outputs/` 下相同。**该功能仅支持图片任务，且不会改变原有的 `data/jobs/<jobId>/outputs/` 存储逻辑**——这是一次纯粹的额外复制，不是替换或迁移。
+
+```json
+{
+  "id": "img_order_test_003",
+  "prompt": "生成两张图，要求严格按顺序：红色球、蓝色花园。",
+  "expectedImageCount": 2,
+  "sourceImages": [],
+  "outputDir": "/Users/alice/Desktop/auto-chat-out"
+}
+```
+
+- **仅对 `mode: "image"` 任务生效。** `text_output`（文本结果）不会被复制；文本任务（`mode: "text"`）设置 `outputDir` 也不会有任何效果。
+- **不影响 `data/jobs/<jobId>/outputs/` 的原有落盘逻辑。** 该目录始终是每个任务的标准产物位置，写入方式与是否设置 `outputDir` 无关；`outputDir` 只是在此基础上把同一份文件再复制一份到别处。复制失败（例如目录不可写）不会导致任务失败，也不会影响 `outputs/` 中已保存的产物，只会记录一条 `output_copy_failed` 事件。
+- CLI (`auto-chat add`) 会把相对路径解析为相对于当前工作目录的绝对路径后再发给服务端，因为后台服务是常驻进程，其自身工作目录与调用 `add` 时的目录通常不同；直接调用 HTTP `POST /jobs` 的 agent 需要自行传入绝对路径。
+- `Job` 对象上新增 `outputDir`（string | null）和 `copiedOutputFiles`（string[]，已成功复制的文件绝对路径列表）两个字段，`auto-chat show` / `auto-chat doctor` / `auto-chat listen` 均会展示指定目录和当前复制状态。
+
+复制相关事件：
+
+```bash
+grep -e output_copied -e output_copy_failed data/jobs/<jobId>/events.jsonl
+```
+
+示例：
+
+```json
+{"type": "output_copied", "payload": {"path": "/Users/alice/Desktop/auto-chat-out/output-01.png"}}
+{"type": "output_copy_failed", "payload": {"outputDir": "/Users/alice/Desktop/auto-chat-out", "message": "Error: EACCES: permission denied, ..."}}
+```
 
 顺序映射事件：
 

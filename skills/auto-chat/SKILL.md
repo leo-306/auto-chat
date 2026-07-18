@@ -17,9 +17,12 @@ For production-style local use, install the package globally and initialize the 
 
 ```bash
 npm install -g <package-or-tarball>
+auto-chat --version
 auto-chat init
 auto-chat status
 ```
+
+`auto-chat --version` (or `auto-chat -v`) prints the installed CLI version, read from the packaged `package.json`. Use it to confirm which build is actually on `PATH` after a reinstall.
 
 `auto-chat init` installs this skill into common global agent skill directories, starts the background service, opens `chrome://extensions`, and always prints Chrome extension installation steps with the GitHub zip URL and local npm package zip path.
 
@@ -78,6 +81,21 @@ Gemini image jobs should use `prompts: string[]` for multi-image tasks. Each arr
 GPT and Gemini text jobs both support optional `sourceImages`; set `mode: "text"` for text output and `mode: "image"` for image output. Gemini source images are pasted directly into the composer, not uploaded through the file picker. The extension waits until Gemini's send control is no longer disabled before submitting.
 
 For text outputs, the extension uses the platform copy action where available. If the clipboard still contains an old command beginning with `auto-chat`, treat it as stale automation text and keep waiting for a real copied response before marking the job failed.
+
+## Custom Output Directory
+
+Set an optional `"outputDir": "<dir>"` in the job JSON to have image outputs copied to that directory in addition to the normal `data/jobs/<jobId>/outputs/` location.
+
+- **Image jobs only.** `outputDir` only copies image (`kind: "output"`) artifacts. Text-mode jobs (`mode: "text"`) ignore `outputDir` entirely — text outputs are never copied anywhere else.
+- **Additive, not a replacement.** The original `data/jobs/<jobId>/outputs/` file is always written first and is unaffected by `outputDir` — the extra directory only receives a copy. If the copy fails (bad path, no permission), the job's own output is untouched and the job does not fail; only an `output_copy_failed` event is recorded.
+- A relative path is resolved against the current working directory of the `auto-chat add` invocation, not the background service's directory.
+
+```bash
+auto-chat add examples/output-dir-job.json --replace
+auto-chat dispatch --platform gpt img_output_dir_test_001 && auto-chat listen img_output_dir_test_001
+```
+
+`auto-chat show <jobId>`, `auto-chat doctor <jobId>`, and `auto-chat listen <jobId>` all report the resolved `outputDir` and copy status (waiting / copied N files / copy failed — check `events.jsonl` for `output_copy_failed` when a copy fails, e.g. an unwritable path). The copy is best-effort: a failed copy does not fail the job or block the normal `outputs/` artifact.
 
 ## Persistent Tabs and Follow-up Jobs
 
