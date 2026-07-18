@@ -50,6 +50,7 @@ describe("prompt submission", () => {
     let requestSubmitSubmitter: HTMLElement | null | undefined = undefined;
 
     const form = {
+      isConnected: true,
       contains() {
         return false;
       },
@@ -86,5 +87,73 @@ describe("prompt submission", () => {
 
     expect(result).toBe(true);
     expect(requestSubmitSubmitter).toBeUndefined();
+  });
+
+  it("re-resolves the form when the initial reference gets detached mid-submit", async () => {
+    let submitted = false;
+    let requestSubmitCalls = 0;
+
+    const staleForm = {
+      isConnected: false,
+      contains() {
+        return true;
+      },
+      requestSubmit() {
+        throw new DOMException("Form submission canceled because the form is not connected");
+      }
+    } as unknown as HTMLFormElement;
+
+    const freshForm = {
+      isConnected: true,
+      contains() {
+        return true;
+      },
+      requestSubmit() {
+        requestSubmitCalls += 1;
+        submitted = true;
+      }
+    } as unknown as HTMLFormElement;
+
+    const staleButton = {
+      disabled: false,
+      click() {},
+      getAttribute() {
+        return null;
+      },
+      closest() {
+        return staleForm;
+      }
+    } as unknown as HTMLButtonElement;
+
+    const freshButton = {
+      disabled: false,
+      click() {},
+      getAttribute() {
+        return null;
+      },
+      closest() {
+        return freshForm;
+      }
+    } as unknown as HTMLButtonElement;
+
+    const composer = {
+      dispatchEvent() {
+        return true;
+      },
+      closest() {
+        return staleForm;
+      }
+    } as unknown as HTMLElement;
+
+    const result = await submitPromptWithFallback({
+      composer,
+      sendButton: staleButton,
+      getSendButton: () => freshButton,
+      isSubmitted: async () => submitted,
+      sleep: async () => {}
+    });
+
+    expect(result).toBe(true);
+    expect(requestSubmitCalls).toBe(1);
   });
 });

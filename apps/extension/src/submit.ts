@@ -18,9 +18,7 @@ export async function submitPromptWithFallback(options: SubmissionOptions): Prom
     readyButton.click();
     if (await waitForSubmitted(isSubmitted, sleep, 4, 250)) return true;
 
-    const form = readyButton.closest("form") ?? composer.closest("form");
-    if (form) {
-      safeRequestSubmit(form, readyButton);
+    if (await retryRequestSubmit(readyButton, options)) {
       if (await waitForSubmitted(isSubmitted, sleep, 4, 250)) return true;
     }
   }
@@ -64,15 +62,43 @@ function isDisabled(button: HTMLButtonElement): boolean {
   return button.disabled || button.getAttribute("aria-disabled") === "true";
 }
 
-function safeRequestSubmit(form: HTMLFormElement, submitter: HTMLButtonElement): void {
+const FORM_LOOKUP_RETRY_ATTEMPTS = 3;
+const FORM_LOOKUP_RETRY_DELAY_MS = 150;
+
+// ChatGPT re-renders the composer between the click and this fallback, which can detach the
+// form we already resolved (form.isConnected === false) and make requestSubmit throw. Re-resolve
+// the button/form pair from the DOM each attempt instead of reusing the stale reference.
+async function retryRequestSubmit(
+  initialButton: HTMLButtonElement,
+  options: SubmissionOptions
+): Promise<boolean> {
+  const { composer, getSendButton, sleep } = options;
+  let button = initialButton;
+
+  for (let attempt = 0; attempt < FORM_LOOKUP_RETRY_ATTEMPTS; attempt += 1) {
+    if (attempt > 0) {
+      await sleep(FORM_LOOKUP_RETRY_DELAY_MS);
+      button = getSendButton?.() ?? button;
+    }
+
+    const form = button.closest("form") ?? composer.closest("form");
+    if (form?.isConnected && safeRequestSubmit(form, button)) return true;
+  }
+
+  return false;
+}
+
+function safeRequestSubmit(form: HTMLFormElement, submitter: HTMLButtonElement): boolean {
   try {
     if (form.contains(submitter)) {
       form.requestSubmit(submitter);
-      return;
+      return true;
     }
     form.requestSubmit();
+    return true;
   } catch {
-    // ChatGPT occasionally returns a button that is visually associated with the composer
-    // but is not owned by the same form. Fall through to the keyboard-submit fallback.
+    // Form was detached mid-call, or the button isn't owned by this form. Let the caller retry
+    // with a freshly resolved reference, or fall through to the keyboard-submit fallback.
+    return false;
   }
 }
