@@ -24,7 +24,7 @@ export type JobStatus = z.infer<typeof JobStatusSchema>;
 export const JobModeSchema = z.enum(["image", "text"]);
 export type JobMode = z.infer<typeof JobModeSchema>;
 
-export const JobPlatformSchema = z.enum(["gpt", "gemini"]);
+export const JobPlatformSchema = z.enum(["gpt", "gemini", "doubao"]);
 export type JobPlatform = z.infer<typeof JobPlatformSchema>;
 
 export const ConfigSchema = z.object({
@@ -35,6 +35,7 @@ export const ConfigSchema = z.object({
   expectedImageCount: z.number().int().min(1).max(12).default(4),
   chatgptUrl: z.string().url().default("https://chatgpt.com/"),
   geminiUrl: z.string().url().default("https://gemini.google.com/app"),
+  doubaoUrl: z.string().url().default("https://www.doubao.com/chat/"),
   webhookUrls: z.array(z.string().url()).default([]),
   autoRetry: z.boolean().default(false),
   maxRetries: z.number().int().min(1).max(10).optional()
@@ -58,6 +59,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   expectedImageCount: 4,
   chatgptUrl: "https://chatgpt.com/",
   geminiUrl: "https://gemini.google.com/app",
+  doubaoUrl: "https://www.doubao.com/chat/",
   webhookUrls: [],
   autoRetry: false
 };

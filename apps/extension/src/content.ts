@@ -22,6 +22,12 @@ const GEMINI_SINGLE_IMAGE_DONE_STABLE_MS = 2000;
 
 class RetryableJobError extends Error {}
 
+function platformLabel(): string {
+  if (activeJob?.platform === "gemini") return "Gemini";
+  if (activeJob?.platform === "doubao") return "豆包";
+  return "ChatGPT";
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   const typed = message as StartJobMessage | DebugInspectMessage;
   if (typed.type === "START_JOB") {
@@ -91,6 +97,14 @@ async function startJob(
     await uploadSources(job);
     await report(job.id, "sending_prompt");
     await fillPromptAndSendGpt(job);
+  } else if (job.platform === "doubao") {
+    if (job.sourceImages.length > 0) {
+      await report(job.id, "uploading");
+      await uploadSources(job);
+      await waitForDoubaoUploadReady(job.id);
+    }
+    await report(job.id, "sending_prompt");
+    await fillPromptAndSendDoubao(job);
   } else {
     await fillPromptPasteSourcesAndSendGemini(job, job.prompt);
   }
@@ -397,7 +411,8 @@ async function inspectJob(jobId: string): Promise<{
   const isInterrupted = INTERRUPTED_TEXT_PATTERN.test(`${text}\n${jobText}`);
   const isGenerating =
     hasGeneratingText(text) ||
-    Boolean(assistant.querySelector('[aria-busy="true"], [data-testid*="loading"], .animate-pulse')) ||
+    Boolean(assistant.querySelector('[aria-busy="true"], [data-testid*="loading"], .animate-pulse, [class*="dot-flashing"], [class*="loading-container"]')) ||
+    Boolean(assistant.querySelector('[data-streaming="true"]')) ||
     hasActiveGenerationControl();
   const assistantImages = findGeneratedImagesInOrder(assistant);
   const loadedImages = uniqueImages([...assistantImages, ...scopedImages]);
@@ -457,7 +472,7 @@ async function debugInspect(jobId?: string): Promise<DebugInspectResult> {
 }
 
 function findLatestJobId(): string | null {
-  const matches = [...document.querySelectorAll<HTMLElement>("[data-message-author-role='user'], section[data-turn='user'], user-query")]
+  const matches = [...document.querySelectorAll<HTMLElement>("[data-message-author-role='user'], section[data-turn='user'], user-query, [data-message-id]")]
     .map(node => (node.innerText || "").match(/JOB_ID:\s*([^\s]+)/)?.[1])
     .filter((value): value is string => Boolean(value));
   return matches.at(-1) ?? null;
@@ -568,10 +583,12 @@ function findGeneratedImageElements(root: ParentNode): HTMLImageElement[] {
       const largeEnough = width > 100 && height > 100;
       const hasEstuarySource = /\/backend-api\/estuary\/content/i.test(src);
       const hasGeminiBlob = /^blob:https:\/\/gemini\.google\.com\//i.test(src);
+      const hasDoubaoGenSource = /imagex-sign\.byteimg\.com\/.*rc_gen_image/i.test(src);
       const hasGeneratedAlt = /Generated image/i.test(img.alt);
       const hasGeminiGeneratedAlt = /AI generated/i.test(img.alt);
       const isDecorative = /gstatic\.com\/lamda\/images\/gemini|googleusercontent\.com\/a\//i.test(src);
-      return Boolean(src) && !isDecorative && (hasEstuarySource || hasGeminiBlob || ((hasGeneratedAlt || hasGeminiGeneratedAlt) && largeEnough));
+      return Boolean(src) && !isDecorative &&
+        (hasEstuarySource || hasGeminiBlob || hasDoubaoGenSource || ((hasGeneratedAlt || hasGeminiGeneratedAlt) && largeEnough));
     });
 }
 
@@ -710,7 +727,12 @@ function findCopyResponseButton(assistant: HTMLElement): HTMLButtonElement | nul
   ) ?? buttons.find(button => {
     const label = `${button.innerText} ${button.ariaLabel ?? ""} ${button.title ?? ""}`;
     return /copy response/i.test(label) && !/copy image|copy prompt/i.test(label);
-  }) ?? null;
+  }) ?? findDoubaoCopyButton(assistant);
+}
+
+function findDoubaoCopyButton(assistant: HTMLElement): HTMLButtonElement | null {
+  if (!assistant.hasAttribute("data-message-id")) return null;
+  return assistant.parentElement?.querySelector<HTMLButtonElement>('[class*="message-action-bar"] button:first-child') ?? null;
 }
 
 function uniqueImages(images: HTMLImageElement[]): HTMLImageElement[] {
@@ -736,9 +758,9 @@ function imageKey(image: HTMLImageElement): string {
 }
 
 function findJobUserTurn(jobId: string): HTMLElement | null {
-  const message = [...document.querySelectorAll<HTMLElement>("[data-message-author-role='user'], user-query")]
+  const message = [...document.querySelectorAll<HTMLElement>("[data-message-author-role='user'], user-query, [data-message-id]")]
     .find(node => (node.innerText || "").includes(`JOB_ID: ${jobId}`));
-  return message?.closest<HTMLElement>("section[data-turn='user'], [data-turn='user'], [data-testid^='conversation-turn'], user-query") ?? message ?? null;
+  return message?.closest<HTMLElement>("section[data-turn='user'], [data-turn='user'], [data-testid^='conversation-turn'], user-query, [data-message-id]") ?? message ?? null;
 }
 
 function findConversationTurns(): HTMLElement[] {
@@ -746,6 +768,8 @@ function findConversationTurns(): HTMLElement[] {
   if (sectionTurns.length > 0) return sectionTurns;
   const geminiTurns = [...document.querySelectorAll<HTMLElement>("user-query, model-response")];
   if (geminiTurns.length > 0) return geminiTurns;
+  const doubaoTurns = [...document.querySelectorAll<HTMLElement>("[data-message-id]")].filter(row => (row.innerText || "").trim());
+  if (doubaoTurns.length > 0) return doubaoTurns;
   return [...document.querySelectorAll<HTMLElement>("[data-message-author-role]")];
 }
 
@@ -753,14 +777,16 @@ function isUserTurn(node: HTMLElement): boolean {
   return node.getAttribute("data-turn") === "user" ||
     node.getAttribute("data-message-author-role") === "user" ||
     node.tagName.toLowerCase() === "user-query" ||
-    Boolean(node.querySelector("[data-message-author-role='user']"));
+    Boolean(node.querySelector("[data-message-author-role='user']")) ||
+    (node.hasAttribute("data-message-id") && /JOB_ID:/.test(node.innerText || ""));
 }
 
 function isAssistantTurn(node: HTMLElement): boolean {
   return node.getAttribute("data-turn") === "assistant" ||
     node.getAttribute("data-message-author-role") === "assistant" ||
     node.tagName.toLowerCase() === "model-response" ||
-    Boolean(node.querySelector("[data-message-author-role='assistant'], .agent-turn"));
+    Boolean(node.querySelector("[data-message-author-role='assistant'], .agent-turn")) ||
+    (node.hasAttribute("data-message-id") && !isUserTurn(node));
 }
 
 function isAfter(node: Node, reference: Node): boolean {
@@ -776,7 +802,7 @@ async function waitForComposer(): Promise<void> {
     if (findComposer()) return;
     await sleep(500);
   }
-  throw new Error(`${activeJob?.platform === "gemini" ? "Gemini" : "ChatGPT"} composer was not found.`);
+  throw new Error(`${platformLabel()} composer was not found.`);
 }
 
 async function waitForConversationPageReady(
@@ -812,6 +838,12 @@ async function uploadSources(job: Job): Promise<void> {
     findUploadMenuButton()?.click();
     await sleep(500);
     input = document.querySelector<HTMLInputElement>('input[type="file"]');
+  }
+  if (!input && job.platform === "doubao") {
+    for (let attempt = 0; attempt < 10 && !input; attempt += 1) {
+      await sleep(300);
+      input = document.querySelector<HTMLInputElement>('input[type="file"]');
+    }
   }
   if (!input) throw new Error("File input was not found.");
   const files = await Promise.all(job.sourceImages.map((source, index) => sourceToFile(source, index)));
@@ -861,7 +893,7 @@ async function fillPromptAndSendGpt(job: Job): Promise<void> {
       if (await waitForReloadConversation(job.id)) return;
     }
 
-    throw new RetryableJobError(`Prompt was filled but no submitted ${activeJob?.platform === "gemini" ? "Gemini" : "ChatGPT"} user turn appeared.`);
+    throw new RetryableJobError(`Prompt was filled but no submitted ${platformLabel()} user turn appeared.`);
   } finally {
     capture?.stop();
   }
@@ -897,6 +929,76 @@ function startGptConversationUrlCapture(): { getUrl: () => string | null; stop: 
       history.replaceState = originalReplaceState;
     }
   };
+}
+
+async function fillPromptAndSendDoubao(job: Job): Promise<void> {
+  const { prompt } = job;
+  const isNewConversation = !hasRecordedConversation(job);
+  const capture = isNewConversation ? startGptConversationUrlCapture() : null;
+
+  try {
+    if (job.mode === "image") await enterDoubaoImageMode();
+
+    const composer = fillPrompt(prompt);
+    await sleep(300);
+    const sendButton = findDoubaoSendButton();
+    if (await submitPromptWithFallback({
+      composer,
+      sendButton,
+      getSendButton: findDoubaoSendButton,
+      isSubmitted: () => isPromptSubmitted(prompt),
+      onWaitingForSubmitReady: () => report(job.id, "waiting_upload_ready"),
+      sleep
+    })) return;
+
+    const capturedUrl = capture?.getUrl() ?? null;
+    if (shouldReloadCapturedConversation({ capturedUrl, currentPathname: location.pathname })) {
+      location.href = capturedUrl as string;
+      if (await waitForReloadConversation(job.id)) return;
+    }
+
+    throw new RetryableJobError("Prompt was filled but no submitted 豆包 user turn appeared.");
+  } finally {
+    capture?.stop();
+  }
+}
+
+async function enterDoubaoImageMode(): Promise<void> {
+  if (isDoubaoImageModeActive()) return;
+
+  const button = findDoubaoToolbarButton("图像生成");
+  if (!button) throw new Error("豆包「图像生成」按钮未找到。");
+  button.click();
+
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (isDoubaoImageModeActive()) return;
+    await sleep(300);
+  }
+  throw new Error("点击「图像生成」后未能进入图片生成模式。");
+}
+
+function isDoubaoImageModeActive(): boolean {
+  const placeholderEl = document.querySelector("[data-placeholder]");
+  return placeholderEl?.getAttribute("data-placeholder") === "描述你想要的图片";
+}
+
+function findDoubaoToolbarButton(label: string): HTMLButtonElement | null {
+  return [...document.querySelectorAll<HTMLButtonElement>("button")]
+    .find(button => isVisible(button) && button.innerText?.trim() === label) ?? null;
+}
+
+function findDoubaoSendButton(): HTMLButtonElement | null {
+  return [...document.querySelectorAll<HTMLButtonElement>("button")]
+    .find(button => isVisible(button) && getComputedStyle(button).backgroundColor === "rgb(0, 102, 255)") ?? null;
+}
+
+async function waitForDoubaoUploadReady(jobId: string): Promise<void> {
+  await report(jobId, "waiting_upload_ready");
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    if (findDoubaoSendButton()) return;
+    await sleep(500);
+  }
+  throw new Error("豆包图片上传未在超时前完成。");
 }
 
 async function fillPromptAndSendOriginal(prompt: string): Promise<void> {
@@ -1071,7 +1173,7 @@ async function waitForPromptSubmitted(prompt: string): Promise<void> {
     if (findJobUserTurn(jobId)) return;
     await sleep(500);
   }
-  throw new Error(`Prompt was filled but no submitted ${activeJob?.platform === "gemini" ? "Gemini" : "ChatGPT"} user turn appeared.`);
+  throw new Error(`Prompt was filled but no submitted ${platformLabel()} user turn appeared.`);
 }
 
 async function sourceToFile(source: string, index: number): Promise<File> {

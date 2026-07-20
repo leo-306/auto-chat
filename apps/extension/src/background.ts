@@ -4,7 +4,7 @@ import type { EmptyAssistantRecoveryMode } from "./recovery.js";
 import type { DebugInspectMessage, DebugInspectResult, JobProgressMessage, PopupState, StartJobMessage, WorkerRecord } from "./types.js";
 
 const SERVER_URL = "http://127.0.0.1:17321";
-const PLATFORMS: JobPlatform[] = ["gpt", "gemini"];
+const PLATFORMS: JobPlatform[] = ["gpt", "gemini", "doubao"];
 const RECHECKABLE_STATUSES = new Set<Job["status"]>([
   "opening_tab", "waiting_chat_ready", "uploading", "waiting_upload_ready",
   "sending_prompt", "waiting_generation", "stalled", "refreshing",
@@ -12,10 +12,10 @@ const RECHECKABLE_STATUSES = new Set<Job["status"]>([
 ]);
 const workerId = `ext_${crypto.randomUUID()}`;
 const workers = new Map<number, WorkerRecord>();
-let pausedByPlatform: Record<JobPlatform, boolean> = { gpt: true, gemini: true };
+let pausedByPlatform: Record<JobPlatform, boolean> = { gpt: true, gemini: true, doubao: true };
 let config: AppConfig = DEFAULT_CONFIG;
 let serverOk = false;
-let lastDebugByPlatform: Record<JobPlatform, string> = { gpt: "", gemini: "" };
+let lastDebugByPlatform: Record<JobPlatform, string> = { gpt: "", gemini: "", doubao: "" };
 let lastDispatchId: number | null = null;
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -141,7 +141,8 @@ async function schedulerTick(options: { force?: boolean; platform?: JobPlatform 
   const stored = await chrome.storage.local.get(["paused", "pausedByPlatform"]);
   pausedByPlatform = {
     gpt: stored.pausedByPlatform?.gpt ?? stored.paused !== false,
-    gemini: stored.pausedByPlatform?.gemini ?? true
+    gemini: stored.pausedByPlatform?.gemini ?? true,
+    doubao: stored.pausedByPlatform?.doubao ?? true
   };
   await refreshConfig();
   const dispatched = await consumeDispatchSignal();
@@ -543,6 +544,11 @@ function state(activePlatform: JobPlatform): PopupState {
         paused: pausedByPlatform.gemini,
         workers: workersForPlatform("gemini"),
         lastDebug: lastDebugByPlatform.gemini
+      },
+      doubao: {
+        paused: pausedByPlatform.doubao,
+        workers: workersForPlatform("doubao"),
+        lastDebug: lastDebugByPlatform.doubao
       }
     }
   };
@@ -593,11 +599,14 @@ function debugResult(message: string, ok = true): { ok: boolean; message: string
 }
 
 function normalizePlatform(platform: unknown): JobPlatform {
-  return platform === "gemini" ? "gemini" : "gpt";
+  if (platform === "gemini" || platform === "doubao") return platform;
+  return "gpt";
 }
 
 function urlForPlatform(platform: JobPlatform): string {
-  return platform === "gemini" ? config.geminiUrl : config.chatgptUrl;
+  if (platform === "gemini") return config.geminiUrl;
+  if (platform === "doubao") return config.doubaoUrl;
+  return config.chatgptUrl;
 }
 
 function workerCount(platform: JobPlatform): number {
@@ -609,15 +618,20 @@ function workersForPlatform(platform: JobPlatform): WorkerRecord[] {
 }
 
 function platformForUrl(url: string): JobPlatform {
-  return url.includes("gemini.google.com") ? "gemini" : "gpt";
+  if (url.includes("gemini.google.com")) return "gemini";
+  if (url.includes("doubao.com")) return "doubao";
+  return "gpt";
 }
 
 function platformName(platform: JobPlatform): string {
-  return platform === "gemini" ? "Gemini" : "GPT";
+  if (platform === "gemini") return "Gemini";
+  if (platform === "doubao") return "豆包";
+  return "GPT";
 }
 
 function isConversationUrl(platform: JobPlatform, url: string): boolean {
   if (platform === "gemini") return url.includes("gemini.google.com/app");
+  if (platform === "doubao") return /doubao\.com\/chat\/\d+/.test(url);
   return url.includes("/c/");
 }
 

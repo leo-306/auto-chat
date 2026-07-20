@@ -885,11 +885,13 @@ function formatMode(mode: Job["mode"]): string {
 }
 
 function formatPlatform(platform: JobPlatform): string {
-  return platform === "gemini" ? "Gemini" : "GPT";
+  if (platform === "gemini") return "Gemini";
+  if (platform === "doubao") return "豆包";
+  return "GPT";
 }
 
 function formatStatus(status: JobStatus, platform?: JobPlatform): string {
-  const platformLabel = platform === "gemini" ? "Gemini" : "ChatGPT";
+  const platformLabel = platform === "gemini" ? "Gemini" : platform === "doubao" ? "豆包" : "ChatGPT";
   const labels: Record<JobStatus, string> = {
     queued: "排队中",
     opening_tab: `打开 ${platformLabel} 标签页`,
@@ -947,12 +949,12 @@ Usage:
   auto-chat stop
   auto-chat status
   auto-chat add <job.json> [--replace] [--auto-id] [--json]
-  auto-chat add <job.json> [--platform gpt|gemini]
+  auto-chat add <job.json> [--platform gpt|gemini|doubao]
   (job.json 可选 "outputDir": "<dir>"，图片任务完成后会额外复制一份到该目录)
   auto-chat list [--json]
   auto-chat show <jobId> [--json]
   auto-chat listen [jobId] [--json]
-  auto-chat dispatch [--platform gpt|gemini] [jobId] [--json]
+  auto-chat dispatch [--platform gpt|gemini|doubao] [jobId] [--json]
   auto-chat concurrency [1-8] [--json]
   auto-chat autoretry [0-10] [--json]
   auto-chat doctor <jobId>

@@ -13,6 +13,7 @@
   "host_permissions": [
     "https://chatgpt.com/*",
     "https://gemini.google.com/*",
+    "https://www.doubao.com/*",
     "http://127.0.0.1:17321/*"
   ],
   "background": {
@@ -20,7 +21,7 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://chatgpt.com/*", "https://gemini.google.com/*"],
+      "matches": ["https://chatgpt.com/*", "https://gemini.google.com/*", "https://www.doubao.com/*"],
       "js": ["content.js"],
       "run_at": "document_idle"
     }

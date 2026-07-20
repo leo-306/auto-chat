@@ -120,11 +120,14 @@ function statusMessage(state: PopupState, platform: PlatformState): string {
 }
 
 function platformFromButton(button: HTMLButtonElement): JobPlatform {
-  return button.dataset.platform === "gemini" ? "gemini" : "gpt";
+  if (button.dataset.platform === "gemini" || button.dataset.platform === "doubao") return button.dataset.platform;
+  return "gpt";
 }
 
 function platformLabel(platform: JobPlatform): string {
-  return platform === "gemini" ? "Gemini" : "GPT";
+  if (platform === "gemini") return "Gemini";
+  if (platform === "doubao") return "豆包";
+  return "GPT";
 }
 
 render();

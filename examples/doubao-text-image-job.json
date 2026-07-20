@@ -1,0 +1,7 @@
+{
+  "id": "doubao_text_image_test_001",
+  "platform": "doubao",
+  "mode": "text",
+  "prompt": "请描述这张图片里的动物和场景，直接说明内容，不要展开无关内容。",
+  "sourceImages": ["http://127.0.0.1:17321/job-assets/doubao_img_test_002/outputs/output-01.png"]
+}

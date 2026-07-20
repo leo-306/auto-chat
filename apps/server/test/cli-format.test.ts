@@ -323,6 +323,7 @@ describe("CLI formatting", () => {
       expectedImageCount: 4,
       chatgptUrl: "https://chatgpt.com/",
       geminiUrl: "https://gemini.google.com/app",
+      doubaoUrl: "https://www.doubao.com/chat/",
       webhookUrls: [],
       autoRetry: false
     });

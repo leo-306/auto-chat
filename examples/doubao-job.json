@@ -1,0 +1,8 @@
+{
+  "id": "doubao_img_test_001",
+  "platform": "doubao",
+  "mode": "image",
+  "prompt": "生成一只可爱的橘猫坐在窗台上，阳光照射，写实摄影风格。",
+  "expectedImageCount": 4,
+  "sourceImages": []
+}
