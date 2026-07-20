@@ -1,8 +1,19 @@
 import path from "node:path";
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 
 export const workspaceRoot = findWorkspaceRoot(process.cwd());
 export const publicDir = path.join(workspaceRoot, "apps", "server", "public");
+
+export function packageRoot(): string {
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+}
+
+export function readPackageVersion(): string {
+  const manifestPath = path.join(packageRoot(), "package.json");
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as { version?: string };
+  return manifest.version ?? "unknown";
+}
 
 export type ResolvedPaths = ReturnType<typeof resolvePaths>;
 

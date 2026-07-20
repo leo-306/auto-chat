@@ -534,6 +534,7 @@ function state(activePlatform: JobPlatform): PopupState {
   return {
     serverOk,
     activePlatform,
+    extensionVersion: chrome.runtime.getManifest().version,
     platforms: {
       gpt: {
         paused: pausedByPlatform.gpt,

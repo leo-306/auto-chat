@@ -40,6 +40,7 @@ export type PlatformState = {
 export type PopupState = {
   serverOk: boolean;
   activePlatform: JobPlatform;
+  extensionVersion: string;
   platforms: Record<JobPlatform, PlatformState>;
 };
 

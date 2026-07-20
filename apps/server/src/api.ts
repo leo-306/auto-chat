@@ -10,7 +10,7 @@ import {
   UpdateStatusSchema
 } from "auto-chat-shared";
 import { DuplicateJobError, InvalidParentJobError, JobStore } from "./store.js";
-import { publicDir } from "./paths.js";
+import { publicDir, readPackageVersion } from "./paths.js";
 import fs from "node:fs";
 import path from "node:path";
 import { EventHub } from "./events.js";
@@ -25,7 +25,7 @@ export async function buildServer(store: JobStore, events = new EventHub()): Pro
   const app = Fastify({ logger: true, bodyLimit: 50 * 1024 * 1024 });
   await app.register(cors, { origin: true });
 
-  app.get("/health", async () => ({ ok: true }));
+  app.get("/health", async () => ({ ok: true, version: readPackageVersion() }));
 
   app.get("/events", async (request, reply) => {
     const raw = reply.raw;

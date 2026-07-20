@@ -2,6 +2,7 @@ import type { JobPlatform } from "auto-chat-shared";
 import type { PlatformState, PopupState } from "./types.js";
 
 const server = document.querySelector("#server")!;
+const extensionVersion = document.querySelector("#extension-version")!;
 const statusCopy = document.querySelector("#status-copy")!;
 const pause = document.querySelector<HTMLButtonElement>("#pause")!;
 const tick = document.querySelector<HTMLButtonElement>("#tick")!;
@@ -73,6 +74,7 @@ async function render(): Promise<void> {
   }
   server.textContent = state.serverOk ? "服务在线" : "服务离线";
   server.className = `status-pill ${state.serverOk ? "ok" : "off"}`;
+  extensionVersion.textContent = `v${state.extensionVersion}`;
   statusCopy.textContent = statusMessage(state, platform);
   pause.textContent = platform.paused ? "开启自动执行" : "暂停自动执行";
   tick.disabled = !state.serverOk;

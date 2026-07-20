@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import open from "open";
 import { JobPlatformSchema } from "auto-chat-shared";
 import type { AppConfig, Job, JobPlatform, JobStatus } from "auto-chat-shared";
-import { workspaceRoot } from "./paths.js";
+import { workspaceRoot, readPackageVersion } from "./paths.js";
 
 const baseUrl = process.env.JOB_SERVER_URL ?? "http://127.0.0.1:17321";
 const dataDir = path.join(workspaceRoot, "data");
@@ -287,6 +287,7 @@ async function startServer(): Promise<void> {
   fs.mkdirSync(dataDir, { recursive: true });
   if (await isServerHealthy()) {
     print(`auto-chat 服务已在后台运行：${baseUrl}`);
+    await printVersionMismatchWarning();
     return;
   }
 
@@ -399,9 +400,7 @@ function packageRoot(): string {
 }
 
 export function readCliVersion(): string {
-  const manifestPath = path.join(packageRoot(), "package.json");
-  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as { version?: string };
-  return manifest.version ?? "unknown";
+  return readPackageVersion();
 }
 
 async function stopServer(): Promise<void> {
@@ -434,6 +433,7 @@ async function printServerStatus(): Promise<void> {
   if (healthy) {
     print(`auto-chat 服务在线：${baseUrl}`);
     if (pid) print(`pid: ${pid}`);
+    await printVersionMismatchWarning();
     return;
   }
   if (pid && isProcessAlive(pid)) {
@@ -451,6 +451,42 @@ async function isServerHealthy(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function fetchServerVersion(): Promise<string | null> {
+  try {
+    const response = await fetch(`${baseUrl}/health`);
+    if (!response.ok) return null;
+    const body = await response.json() as { version?: string };
+    return body.version ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function printVersionMismatchWarning(): Promise<void> {
+  const cliVersion = readCliVersion();
+  const serverVersion = await fetchServerVersion();
+  if (serverVersion === cliVersion) return;
+
+  const relation = serverVersion === null || compareVersions(serverVersion, cliVersion) < 0 ? "落后" : "领先";
+  print("");
+  print(`⚠️  版本不一致：`);
+  print(`   已安装 CLI 版本: ${cliVersion}`);
+  print(`   本地服务运行版本: ${serverVersion ?? "未知（早期版本，不上报版本号）"}（${relation}）`);
+  print(`   → 请执行 auto-chat stop && auto-chat start 以加载新版本`);
+  print(`⚠️  Chrome 插件版本可能也需要更新：`);
+  print(`   → 请在 chrome://extensions 中重新加载 auto-chat 扩展`);
+}
+
+function compareVersions(a: string, b: string): number {
+  const partsA = a.split(".").map(Number);
+  const partsB = b.split(".").map(Number);
+  for (let i = 0; i < Math.max(partsA.length, partsB.length); i += 1) {
+    const diff = (partsA[i] ?? 0) - (partsB[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
 }
 
 function readPid(): number | null {
