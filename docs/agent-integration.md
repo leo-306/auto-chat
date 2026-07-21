@@ -29,6 +29,8 @@ auto-chat status
 
 `auto-chat init` 会安装 agent skill、启动本地服务，并每次打开 `chrome://extensions`，提示用户从 GitHub 或本机 npm 包里的 `auto-chat-extension.zip` 解压安装插件。
 
+运行数据默认保存在系统用户数据目录：macOS 使用 `~/Library/Application Support/auto-chat`，Linux 使用 `$XDG_DATA_HOME/auto-chat`（默认 `~/.local/share/auto-chat`），Windows 使用 `%LOCALAPPDATA%\auto-chat`。通过 `AUTO_CHAT_DATA_DIR` 可以覆盖默认位置。旧版当前工作区下的 `data/jobs.sqlite` 会在新目录为空时随任务文件一起非破坏性迁移；`server.pid` 和 `server.log` 不会复制。
+
 本地开发的 Chrome 插件加载目录：
 
 ```text

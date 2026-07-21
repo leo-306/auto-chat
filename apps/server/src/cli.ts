@@ -7,12 +7,16 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import open from "open";
 import { JobPlatformSchema } from "auto-chat-shared";
 import type { AppConfig, Job, JobPlatform, JobStatus } from "auto-chat-shared";
-import { workspaceRoot, readPackageVersion } from "./paths.js";
+import { migrateLegacyData, resolvePaths, shouldUseLegacyData, workspaceRoot, readPackageVersion } from "./paths.js";
 
 const baseUrl = process.env.JOB_SERVER_URL ?? "http://127.0.0.1:17321";
-const dataDir = path.join(workspaceRoot, "data");
+const dataDir = resolvePaths().dataDir;
 const pidFile = path.join(dataDir, "server.pid");
 const logFile = path.join(dataDir, "server.log");
+const legacyDataDir = path.join(workspaceRoot, "data");
+const legacyPidFile = path.join(legacyDataDir, "server.pid");
+const legacyLogFile = path.join(legacyDataDir, "server.log");
+const legacyCompatibilityEnabled = shouldUseLegacyData();
 const terminalStatuses = new Set<JobStatus>(["done", "failed_retryable", "failed_final", "needs_manual"]);
 const extensionGithubUrl = process.env.AUTO_CHAT_EXTENSION_GITHUB_URL ?? "https://github.com/leo-306/auto-chat";
 const extensionZipUrl = process.env.AUTO_CHAT_EXTENSION_ZIP_URL ?? `${extensionGithubUrl}/raw/master/auto-chat-extension.zip`;
@@ -284,18 +288,23 @@ async function inspectParentJob(job: Job): Promise<Job | null | undefined> {
 }
 
 async function startServer(): Promise<void> {
-  fs.mkdirSync(dataDir, { recursive: true });
   if (await isServerHealthy()) {
     print(`auto-chat 服务已在后台运行：${baseUrl}`);
     await printVersionMismatchWarning();
     return;
   }
 
-  const existingPid = readPid();
-  if (existingPid && isProcessAlive(existingPid)) {
-    print(`发现已有服务进程 pid=${existingPid}，但健康检查未通过。日志：${displayPath(logFile)}`);
+  const existingProcess = readServerProcess();
+  if (existingProcess && isProcessAlive(existingProcess.pid)) {
+    print(`发现已有服务进程 pid=${existingProcess.pid}，但健康检查未通过。日志：${displayPath(existingProcess.logFile)}`);
     return;
   }
+
+  if (legacyCompatibilityEnabled && migrateLegacyData(legacyDataDir, dataDir)) {
+    print(`已从旧数据目录迁移任务数据：${displayPath(legacyDataDir)} -> ${displayPath(dataDir)}`);
+    print("旧数据仍保留在原目录，可确认新服务正常后自行归档。");
+  }
+  fs.mkdirSync(dataDir, { recursive: true });
 
   const logFd = fs.openSync(logFile, "a");
   const child = spawn(process.execPath, [path.join(path.dirname(fileURLToPath(import.meta.url)), "index.js")], {
@@ -404,13 +413,14 @@ export function readCliVersion(): string {
 }
 
 async function stopServer(): Promise<void> {
-  const pid = readPid();
-  if (!pid) {
+  const serverProcess = readServerProcess();
+  if (!serverProcess) {
     print("没有找到 auto-chat 服务 pid 文件。");
     return;
   }
+  const { pid, pidFile: activePidFile } = serverProcess;
   if (!isProcessAlive(pid)) {
-    fs.rmSync(pidFile, { force: true });
+    fs.rmSync(activePidFile, { force: true });
     print("pid 文件已过期，已清理。");
     return;
   }
@@ -418,7 +428,7 @@ async function stopServer(): Promise<void> {
   process.kill(pid, "SIGTERM");
   for (let attempt = 0; attempt < 40; attempt += 1) {
     if (!isProcessAlive(pid)) {
-      fs.rmSync(pidFile, { force: true });
+      fs.rmSync(activePidFile, { force: true });
       print("auto-chat 服务已停止。");
       return;
     }
@@ -428,17 +438,18 @@ async function stopServer(): Promise<void> {
 }
 
 async function printServerStatus(): Promise<void> {
-  const pid = readPid();
+  const serverProcess = readServerProcess();
   const healthy = await isServerHealthy();
   if (healthy) {
     print(`auto-chat 服务在线：${baseUrl}`);
-    if (pid) print(`pid: ${pid}`);
+    if (serverProcess) print(`pid: ${serverProcess.pid}`);
+    print(`数据目录: ${displayPath(serverProcess?.dataDir ?? dataDir)}`);
     await printVersionMismatchWarning();
     return;
   }
-  if (pid && isProcessAlive(pid)) {
-    print(`auto-chat 服务进程存在但健康检查失败：pid=${pid}`);
-    print(`日志: ${displayPath(logFile)}`);
+  if (serverProcess && isProcessAlive(serverProcess.pid)) {
+    print(`auto-chat 服务进程存在但健康检查失败：pid=${serverProcess.pid}`);
+    print(`日志: ${displayPath(serverProcess.logFile)}`);
     return;
   }
   print("auto-chat 服务未运行。");
@@ -489,9 +500,19 @@ function compareVersions(a: string, b: string): number {
   return 0;
 }
 
-function readPid(): number | null {
-  if (!fs.existsSync(pidFile)) return null;
-  const pid = Number(fs.readFileSync(pidFile, "utf8").trim());
+function readServerProcess(): { pid: number; pidFile: string; logFile: string; dataDir: string } | null {
+  const current = readPidFile(pidFile);
+  if (current) return { pid: current, pidFile, logFile, dataDir };
+  if (!legacyCompatibilityEnabled || path.resolve(legacyPidFile) === path.resolve(pidFile)) return null;
+  const legacy = readPidFile(legacyPidFile);
+  return legacy
+    ? { pid: legacy, pidFile: legacyPidFile, logFile: legacyLogFile, dataDir: legacyDataDir }
+    : null;
+}
+
+function readPidFile(file: string): number | null {
+  if (!fs.existsSync(file)) return null;
+  const pid = Number(fs.readFileSync(file, "utf8").trim());
   return Number.isInteger(pid) && pid > 0 ? pid : null;
 }
 

@@ -82,6 +82,22 @@ auto-chat init
 
 `auto-chat init` 会启动后台服务、打开 Chrome 扩展管理页，并打印插件下载地址、本机 zip 路径和安装引导。按提示解压 [auto-chat-extension.zip](auto-chat-extension.zip)，在 [chrome://extensions](chrome://extensions) 里启用 Developer mode 后选择 Load unpacked。
 
+任务数据库、输出文件和服务日志默认保存在系统用户数据目录，不再依赖执行命令时的当前目录：
+
+```text
+macOS: ~/Library/Application Support/auto-chat
+Linux: $XDG_DATA_HOME/auto-chat（未设置时为 ~/.local/share/auto-chat）
+Windows: %LOCALAPPDATA%\auto-chat
+```
+
+可以通过环境变量覆盖：
+
+```bash
+AUTO_CHAT_DATA_DIR=/path/to/data auto-chat init
+```
+
+从旧版本升级时，如果新目录中还没有数据库，而当前项目下存在旧的 `data/jobs.sqlite`，首次启动会将数据库和任务文件复制到新目录；旧数据不会被删除。
+
 安装 Chrome 插件：
 
 1. 下载或找到 [auto-chat-extension.zip](auto-chat-extension.zip)。
