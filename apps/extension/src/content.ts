@@ -72,10 +72,12 @@ async function startJob(
     }
   }
   const existing = findJobAssistant(job.id);
+  const isGeminiMultiImage = job.platform === "gemini" && job.mode === "image" && job.expectedImageCount > 1;
   if (shouldMonitorWithoutSubmit({
     recoveryMode,
     reloadOnly: isReloadOnly(job),
-    hasExistingAssistant: Boolean(existing)
+    hasExistingAssistant: Boolean(existing),
+    isGeminiMultiImage
   })) {
     if (recoveryMode === "monitor_only" || isReloadOnly(job)) {
       await report(job.id, "waiting_generation");
@@ -85,7 +87,13 @@ async function startJob(
   }
 
   if (job.platform === "gemini" && job.mode === "image") {
-    void runGeminiImageJob(job, nextConfig, controller.signal);
+    // A restart triggered by recovery (stall/unexpected-reload) can land back
+    // here mid-conversation, with a previous attempt's image still on the
+    // page. runGeminiImageJob always starts counting from output 1 without
+    // clearing the chat first, so without this the resubmitted first prompt
+    // would land in the same conversation as the stale image instead of a
+    // fresh one.
+    void runGeminiImageJob(job, nextConfig, controller.signal, Boolean(recoveryMode) && Boolean(existing));
     return;
   }
 
@@ -147,21 +155,26 @@ async function recoverEmptyGptAssistant(
   }
 }
 
-async function runGeminiImageJob(job: Job, appConfig: AppConfig, signal: AbortSignal): Promise<void> {
+async function runGeminiImageJob(
+  job: Job,
+  appConfig: AppConfig,
+  signal: AbortSignal,
+  startFromFreshChat = false
+): Promise<void> {
   const images: Array<{ index: number; sourceId: string; dataUrl: string; contentType: string }> = [];
   const total = Math.max(1, job.expectedImageCount);
 
   try {
     for (let outputIndex = 1; outputIndex <= total; outputIndex += 1) {
       if (signal.aborted) return;
-      if (outputIndex > 1) await startGeminiNewChat(appConfig);
+      if (outputIndex > 1 || startFromFreshChat) await startGeminiNewChat(appConfig);
 
       const prompt = total > 1
         ? buildGeminiOutputPrompt(job.prompt, outputIndex, geminiPrompts(job))
         : job.prompt;
       await report(job.id, "waiting_chat_ready");
       await waitForComposer();
-      await waitForConversationPageReady(job, outputIndex === 1 && hasRecordedConversation(job));
+      await waitForConversationPageReady(job, outputIndex === 1 && !startFromFreshChat && hasRecordedConversation(job));
       await fillPromptPasteSourcesAndSendGemini(job, prompt);
       await report(job.id, "waiting_generation");
 
@@ -250,16 +263,26 @@ async function waitForGeminiSingleImage(
 
 async function startGeminiNewChat(appConfig: AppConfig): Promise<void> {
   const newChat = findVisibleElement<HTMLAnchorElement>('a[aria-label="New chat"], a[data-test-id="side-nav-sparkle-button"], a[href="/app"]');
-  if (newChat) {
-    newChat.click();
-  } else if (!location.href.startsWith(appConfig.geminiUrl)) {
-    location.href = appConfig.geminiUrl;
-  } else {
-    history.pushState(null, "", "/app");
-    window.dispatchEvent(new PopStateEvent("popstate"));
+  // Clicking "New chat" or reassigning location.href navigates the tab, which
+  // background's chrome.tabs.onUpdated listener would otherwise treat as an
+  // unexpected reload and re-trigger startJob mid-run, aborting this job's
+  // in-flight AbortController. Mark the navigation as expected around it so
+  // that recovery path is skipped for this self-initiated jump.
+  await setExpectingNavigation(true);
+  try {
+    if (newChat) {
+      newChat.click();
+    } else if (!location.href.startsWith(appConfig.geminiUrl)) {
+      location.href = appConfig.geminiUrl;
+    } else {
+      history.pushState(null, "", "/app");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    }
+    await sleep(1500);
+    await waitForComposer();
+  } finally {
+    await setExpectingNavigation(false);
   }
-  await sleep(1500);
-  await waitForComposer();
 }
 
 async function monitorJob(job: Job, appConfig: AppConfig, signal: AbortSignal): Promise<void> {
@@ -284,7 +307,7 @@ async function monitorJob(job: Job, appConfig: AppConfig, signal: AbortSignal): 
       }
 
       if (state.hasError) {
-        if (job.platform === "gpt" && !retriedInPage) {
+        if ((job.platform === "gpt" || job.platform === "gemini") && !retriedInPage) {
           retriedInPage = true;
           const retryButton = findJobScopeRetryButton(job.id);
           if (retryButton) {
@@ -414,7 +437,7 @@ async function inspectJob(jobId: string): Promise<{
     Boolean(assistant.querySelector('[aria-busy="true"], [data-testid*="loading"], .animate-pulse, [class*="dot-flashing"], [class*="loading-container"]')) ||
     Boolean(assistant.querySelector('[data-streaming="true"]')) ||
     hasActiveGenerationControl();
-  const assistantImages = findGeneratedImagesInOrder(assistant);
+  const assistantImages = findGeneratedImagesInOrder(assistant).filter(image => !isNonFirstDualResponseChoice(image));
   const loadedImages = uniqueImages([...assistantImages, ...scopedImages]);
   return {
     assistantExists: true,
@@ -524,7 +547,7 @@ function findJobScopeRetryButton(jobId: string): HTMLButtonElement | null {
   );
   const byLabel = buttons.find(button => {
     const label = `${button.innerText} ${button.ariaLabel ?? ""} ${button.title ?? ""}`;
-    return isVisible(button) && /retry|try again|重试/i.test(label);
+    return isVisible(button) && /retry|try again|regenerate|重试|重新生成/i.test(label);
   });
   if (byLabel) return byLabel;
 
@@ -561,7 +584,8 @@ function conversationTurnRole(node: HTMLElement): ConversationTurnRole {
 }
 
 function findLoadedImages(root: ParentNode): HTMLImageElement[] {
-  return uniqueImages([...findGeneratedImagesInOrder(root), ...findGeneratedImageElements(root)]);
+  return uniqueImages([...findGeneratedImagesInOrder(root), ...findGeneratedImageElements(root)])
+    .filter(image => !isNonFirstDualResponseChoice(image));
 }
 
 function findGeneratedImagesInOrder(root: ParentNode): HTMLImageElement[] {
@@ -570,6 +594,20 @@ function findGeneratedImagesInOrder(root: ParentNode): HTMLImageElement[] {
     .map(card => findGeneratedImageElements(card)[0])
     .filter((image): image is HTMLImageElement => Boolean(image));
   return uniqueImages(images);
+}
+
+// When Gemini runs an A/B response-quality comparison, dual-model-response
+// renders two full candidate answers side by side, each with its own
+// generated image. Without a human picking a winner, only the first
+// candidate (Choice A) is treated as this turn's actual output — the second
+// candidate's image must not be counted or collected alongside it.
+function isNonFirstDualResponseChoice(image: HTMLImageElement): boolean {
+  const dualResponse = image.closest("dual-model-response");
+  if (!dualResponse) return false;
+  const panel = image.closest("response-selection-panel");
+  if (!panel) return false;
+  const panels = dualResponse.querySelectorAll("response-selection-panel");
+  return panels[0] !== panel;
 }
 
 function findGeneratedImageElements(root: ParentNode): HTMLImageElement[] {
@@ -587,8 +625,9 @@ function findGeneratedImageElements(root: ParentNode): HTMLImageElement[] {
       const hasGeneratedAlt = /Generated image/i.test(img.alt);
       const hasGeminiGeneratedAlt = /AI generated/i.test(img.alt);
       const isDecorative = /gstatic\.com\/lamda\/images\/gemini|googleusercontent\.com\/a\//i.test(src);
+      const inGeneratedContainer = Boolean(img.closest(".group\\/imagegen-image, [id^='image-'], generated-image, single-image"));
       return Boolean(src) && !isDecorative &&
-        (hasEstuarySource || hasGeminiBlob || hasDoubaoGenSource || ((hasGeneratedAlt || hasGeminiGeneratedAlt) && largeEnough));
+        (hasEstuarySource || hasGeminiBlob || hasDoubaoGenSource || inGeneratedContainer || ((hasGeneratedAlt || hasGeminiGeneratedAlt) && largeEnough));
     });
 }
 
@@ -766,7 +805,11 @@ function findJobUserTurn(jobId: string): HTMLElement | null {
 function findConversationTurns(): HTMLElement[] {
   const sectionTurns = [...document.querySelectorAll<HTMLElement>("section[data-turn]")];
   if (sectionTurns.length > 0) return sectionTurns;
-  const geminiTurns = [...document.querySelectorAll<HTMLElement>("user-query, model-response")];
+  // dual-model-response appears in place of model-response when Gemini runs
+  // an A/B response-quality comparison ("Which response is more helpful?"),
+  // rendering two full candidate answers (each with its own image) side by
+  // side instead of one.
+  const geminiTurns = [...document.querySelectorAll<HTMLElement>("user-query, model-response, dual-model-response")];
   if (geminiTurns.length > 0) return geminiTurns;
   const doubaoTurns = [...document.querySelectorAll<HTMLElement>("[data-message-id]")].filter(row => (row.innerText || "").trim());
   if (doubaoTurns.length > 0) return doubaoTurns;
@@ -785,6 +828,7 @@ function isAssistantTurn(node: HTMLElement): boolean {
   return node.getAttribute("data-turn") === "assistant" ||
     node.getAttribute("data-message-author-role") === "assistant" ||
     node.tagName.toLowerCase() === "model-response" ||
+    node.tagName.toLowerCase() === "dual-model-response" ||
     Boolean(node.querySelector("[data-message-author-role='assistant'], .agent-turn")) ||
     (node.hasAttribute("data-message-id") && !isUserTurn(node));
 }
@@ -1186,8 +1230,7 @@ async function sourceToFile(source: string, index: number): Promise<File> {
 async function collectImages(images: HTMLImageElement[]): Promise<Array<{ index: number; sourceId: string; dataUrl: string; contentType: string }>> {
   const result = [];
   for (const [index, image] of images.entries()) {
-    const response = await fetch(image.currentSrc || image.src);
-    const blob = await response.blob();
+    const blob = await fetchBestImageBlob(image);
     result.push({
       index,
       sourceId: imageKey(image),
@@ -1196,6 +1239,50 @@ async function collectImages(images: HTMLImageElement[]): Promise<Array<{ index:
     });
   }
   return result;
+}
+
+// <img src> on Gemini is a resized/cropped thumbnail served from the image
+// CDN (eg. with a `=s1024` suffix), not the original generated image. The
+// full-size asset is only reachable through the URL exposed on the
+// download/full-size link or matching data attributes, so try those first
+// and only fall back to the rendered <img> source if none of them resolve.
+async function fetchBestImageBlob(image: HTMLImageElement): Promise<Blob> {
+  for (const source of imageCandidates(image)) {
+    try {
+      const response = await fetch(source);
+      if (!response.ok && !source.startsWith("blob:") && !source.startsWith("data:")) continue;
+      const blob = await response.blob();
+      if (blob.size > 0) return blob;
+    } catch {
+      // try the next candidate
+    }
+  }
+  const response = await fetch(image.currentSrc || image.src);
+  return response.blob();
+}
+
+function imageCandidates(image: HTMLImageElement): string[] {
+  const values: string[] = [];
+  const container = image.closest<HTMLElement>(".group\\/imagegen-image, [id^='image-'], generated-image, single-image") ?? image.parentElement;
+  for (const element of [image, container].filter((el): el is HTMLElement => Boolean(el))) {
+    for (const attribute of ["data-full-size-url", "data-download-url", "data-original-src", "data-src"]) {
+      const value = element.getAttribute(attribute);
+      if (value) values.push(value);
+    }
+  }
+  for (const anchor of container?.querySelectorAll<HTMLAnchorElement>("a[href]") ?? []) {
+    const label = `${anchor.innerText} ${anchor.getAttribute("aria-label") ?? ""} ${anchor.title ?? ""}`;
+    if (/download|full size|原图|下载/i.test(label) || /\.(png|jpe?g|webp)(?:\?|$)/i.test(anchor.href)) {
+      values.push(anchor.href);
+    }
+  }
+  return [...new Set(values.map(value => {
+    try {
+      return new URL(value, location.href).href;
+    } catch {
+      return value;
+    }
+  }))].filter(value => /^(https?:|blob:|data:image\/)/i.test(value));
 }
 
 function blobToDataUrl(blob: Blob): Promise<string> {
@@ -1213,6 +1300,15 @@ async function report(jobId: string, status: JobProgressMessage["status"], error
 
 async function sendProgress(message: JobProgressMessage): Promise<void> {
   await chrome.runtime.sendMessage(message);
+}
+
+async function setExpectingNavigation(expecting: boolean): Promise<void> {
+  try {
+    await chrome.runtime.sendMessage({ type: "EXPECT_NAVIGATION", expecting });
+  } catch {
+    // background may be temporarily unreachable during a service worker restart; the
+    // navigation still proceeds, it just risks being misclassified as unexpected once.
+  }
 }
 
 function sleep(ms: number): Promise<void> {

@@ -114,8 +114,18 @@ describe("GPT empty assistant recovery", () => {
     expect(shouldMonitorWithoutSubmit({
       recoveryMode: "monitor_only",
       reloadOnly: false,
-      hasExistingAssistant: false
+      hasExistingAssistant: false,
+      isGeminiMultiImage: false
     })).toBe(true);
+  });
+
+  it("never monitors without submitting for a Gemini multi-image job, regardless of other flags", () => {
+    expect(shouldMonitorWithoutSubmit({
+      recoveryMode: "monitor_only",
+      reloadOnly: true,
+      hasExistingAssistant: true,
+      isGeminiMultiImage: true
+    })).toBe(false);
   });
 
   it("only runs the 15-second empty-assistant check for GPT text jobs", () => {
@@ -128,15 +138,18 @@ describe("GPT empty assistant recovery", () => {
   it("preserves existing reload-only and existing-assistant behavior", () => {
     expect(shouldMonitorWithoutSubmit({
       reloadOnly: true,
-      hasExistingAssistant: false
+      hasExistingAssistant: false,
+      isGeminiMultiImage: false
     })).toBe(true);
     expect(shouldMonitorWithoutSubmit({
       reloadOnly: false,
-      hasExistingAssistant: true
+      hasExistingAssistant: true,
+      isGeminiMultiImage: false
     })).toBe(true);
     expect(shouldMonitorWithoutSubmit({
       reloadOnly: false,
-      hasExistingAssistant: false
+      hasExistingAssistant: false,
+      isGeminiMultiImage: false
     })).toBe(false);
   });
 

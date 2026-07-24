@@ -49,6 +49,11 @@ export type DebugInspectMessage = {
   jobId?: string;
 };
 
+export type ExpectNavigationMessage = {
+  type: "EXPECT_NAVIGATION";
+  expecting: boolean;
+};
+
 export type DebugInspectResult = {
   ok: boolean;
   jobId: string | null;

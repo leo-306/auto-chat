@@ -47,7 +47,16 @@ export function shouldMonitorWithoutSubmit(input: {
   recoveryMode?: EmptyAssistantRecoveryMode;
   reloadOnly: boolean;
   hasExistingAssistant: boolean;
+  isGeminiMultiImage: boolean;
 }): boolean {
+  // A Gemini multi-image job accumulates one image per freshly-started
+  // conversation (see runGeminiImageJob), so the generic monitor's "loaded
+  // images >= expectedImageCount" completion check can never be satisfied
+  // by any single conversation — it would wait forever for images that will
+  // never all appear in one turn, until the stall timeout retries itself
+  // into needs_manual. These jobs must always go back through the
+  // per-image flow instead of being monitored in place.
+  if (input.isGeminiMultiImage) return false;
   if (input.recoveryMode === "monitor_only") return true;
   return input.reloadOnly || input.hasExistingAssistant;
 }

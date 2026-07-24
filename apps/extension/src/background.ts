@@ -1,7 +1,7 @@
 import type { AppConfig, ArtifactRequest, ClaimJobRequest, DispatchState, Job, JobPlatform, UpdateStatusRequest } from "auto-chat-shared";
 import { DEFAULT_CONFIG } from "auto-chat-shared";
 import type { EmptyAssistantRecoveryMode } from "./recovery.js";
-import type { DebugInspectMessage, DebugInspectResult, JobProgressMessage, PopupState, StartJobMessage, WorkerRecord } from "./types.js";
+import type { DebugInspectMessage, DebugInspectResult, ExpectNavigationMessage, JobProgressMessage, PopupState, StartJobMessage, WorkerRecord } from "./types.js";
 
 const SERVER_URL = "http://127.0.0.1:17321";
 const PLATFORMS: JobPlatform[] = ["gpt", "gemini", "doubao"];
@@ -35,7 +35,16 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   const worker = workers.get(tabId);
   if (!worker) return;
 
-  if (changeInfo.url && isConversationUrl(worker.platform, changeInfo.url)) {
+  // Submitting a prompt drives the platform's own client-side router into a
+  // fresh conversation URL (e.g. Gemini's /app -> /app/<id>), which we
+  // already track as expected progress right below. That router navigation
+  // can itself be reported as a "loading" update; without excluding it here
+  // it would otherwise be misread as an unexpected reload and re-trigger
+  // startJob mid-run, aborting the job's own in-flight controller. A
+  // genuine unexpected reload either keeps the same URL (no changeInfo.url)
+  // or lands somewhere unrelated (e.g. a login redirect), so it won't match.
+  const isEnteringConversation = Boolean(changeInfo.url && isConversationUrl(worker.platform, changeInfo.url));
+  if (isEnteringConversation) {
     void postStatus(worker.jobId, {
       status: "waiting_generation",
       tabId,
@@ -44,7 +53,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
     });
   }
 
-  if (changeInfo.status === "loading" && !worker.expectingReload) {
+  if (changeInfo.status === "loading" && !worker.expectingReload && !isEnteringConversation) {
     void recoverFromUnexpectedReload(tabId, worker);
   }
 });
@@ -94,6 +103,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 async function handleMessage(message: unknown, sender: chrome.runtime.MessageSender): Promise<unknown> {
   if (isProgress(message)) {
     await handleProgress(message, sender.tab?.id);
+    return { ok: true };
+  }
+  if (isExpectNavigation(message)) {
+    const tabId = sender.tab?.id;
+    const worker = tabId === undefined ? undefined : workers.get(tabId);
+    if (worker && tabId !== undefined) {
+      worker.expectingReload = message.expecting;
+      // A self-initiated SPA navigation (e.g. Gemini's "New chat") normally
+      // clears this within ~1.5s via the matching false message; if that
+      // message never arrives (tab replaced, message lost) this tab would
+      // stay permanently blind to genuinely unexpected reloads otherwise.
+      if (message.expecting) {
+        setTimeout(() => {
+          const current = workers.get(tabId);
+          if (current === worker) worker.expectingReload = false;
+        }, 10_000);
+      }
+    }
     return { ok: true };
   }
 
@@ -324,7 +351,14 @@ async function launchJob(job: Job): Promise<void> {
     lastStateAt: Date.now(),
     refreshCount: job.refreshCount,
     rateLimitRefreshCount: 0,
-    expectingReload: false
+    // The tab's own initial navigation (freshly created, or already loading
+    // job.conversationUrl) fires the same chrome.tabs.onUpdated "loading"
+    // event as a genuinely unexpected mid-job reload. Since the worker
+    // record already exists at this point, that first load would otherwise
+    // be misclassified as unexpected, triggering a duplicate START_JOB via
+    // recoverFromUnexpectedReload that races with the one sent below and
+    // aborts this job's own in-flight controller.
+    expectingReload: needsLoad
   };
   workers.set(tabId, worker);
   await postStatus(job.id, {
@@ -335,6 +369,7 @@ async function launchJob(job: Job): Promise<void> {
   });
   if (needsLoad) await waitForTabComplete(tabId);
   await sendStartMessage(tabId, job);
+  worker.expectingReload = false;
 }
 
 async function sendStartMessage(
@@ -528,6 +563,10 @@ async function waitForTabComplete(tabId: number): Promise<void> {
 
 function isProgress(message: unknown): message is JobProgressMessage {
   return Boolean(message && typeof message === "object" && (message as { type?: string }).type === "JOB_PROGRESS");
+}
+
+function isExpectNavigation(message: unknown): message is ExpectNavigationMessage {
+  return Boolean(message && typeof message === "object" && (message as { type?: string }).type === "EXPECT_NAVIGATION");
 }
 
 function state(activePlatform: JobPlatform): PopupState {
