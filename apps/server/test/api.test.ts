@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { buildServer } from "../src/api.js";
+import { buildServer, isReadableLocalDownload } from "../src/api.js";
 import { JobStore } from "../src/store.js";
 import fs from "node:fs";
 import os from "node:os";
@@ -172,5 +172,85 @@ describe("job assets API", () => {
     expect(response.statusCode).toBe(400);
     await app.close();
     store.close();
+  });
+});
+
+describe("local downloads read endpoint", () => {
+  const downloadsDir = path.join(os.homedir(), "Downloads");
+  const testDownloadPaths: string[] = [];
+
+  afterEach(() => {
+    for (const filePath of testDownloadPaths.splice(0)) {
+      fs.rmSync(filePath, { force: true });
+    }
+  });
+
+  it("reads back a downloaded image from the user's Downloads folder and deletes it", async () => {
+    fs.mkdirSync(downloadsDir, { recursive: true });
+    const filePath = path.join(downloadsDir, `auto-chat-test-${Date.now()}.png`);
+    testDownloadPaths.push(filePath);
+    fs.writeFileSync(filePath, Buffer.from("fake-png-bytes"));
+    const store = new JobStore(tmp);
+    await store.init();
+    const app = await buildServer(store);
+
+    const response = await app.inject({ method: "POST", url: "/local-downloads/read", payload: { path: filePath } });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ contentType: "image/png" });
+    expect(Buffer.from(response.json().base64, "base64").toString()).toBe("fake-png-bytes");
+    expect(fs.existsSync(filePath)).toBe(false);
+    await app.close();
+    store.close();
+  });
+
+  it("rejects a path outside the Downloads folder", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+    const app = await buildServer(store);
+    const outsidePath = path.join(tmp, "not-a-download.png");
+    fs.writeFileSync(outsidePath, Buffer.from("x"));
+
+    const response = await app.inject({ method: "POST", url: "/local-downloads/read", payload: { path: outsidePath } });
+
+    expect(response.statusCode).toBe(400);
+    expect(fs.existsSync(outsidePath)).toBe(true);
+    await app.close();
+    store.close();
+  });
+
+  it("rejects a non-image extension even inside the Downloads folder", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+    const app = await buildServer(store);
+    fs.mkdirSync(downloadsDir, { recursive: true });
+    const scriptPath = path.join(downloadsDir, `auto-chat-test-${Date.now()}.sh`);
+
+    const response = await app.inject({ method: "POST", url: "/local-downloads/read", payload: { path: scriptPath } });
+
+    expect(response.statusCode).toBe(400);
+    await app.close();
+    store.close();
+  });
+});
+
+describe("isReadableLocalDownload", () => {
+  it("accepts an image path inside the Downloads folder", () => {
+    const target = path.join(os.homedir(), "Downloads", "photo.png");
+    expect(isReadableLocalDownload(target)).toBe(true);
+  });
+
+  it("rejects path traversal out of the Downloads folder", () => {
+    const target = path.join(os.homedir(), "Downloads", "..", "..", "etc", "passwd");
+    expect(isReadableLocalDownload(target)).toBe(false);
+  });
+
+  it("rejects a non-image extension", () => {
+    const target = path.join(os.homedir(), "Downloads", "script.sh");
+    expect(isReadableLocalDownload(target)).toBe(false);
+  });
+
+  it("rejects an empty path", () => {
+    expect(isReadableLocalDownload("")).toBe(false);
   });
 });

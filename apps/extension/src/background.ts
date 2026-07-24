@@ -1,7 +1,7 @@
 import type { AppConfig, ArtifactRequest, ClaimJobRequest, DispatchState, Job, JobPlatform, UpdateStatusRequest } from "auto-chat-shared";
 import { DEFAULT_CONFIG } from "auto-chat-shared";
 import type { EmptyAssistantRecoveryMode } from "./recovery.js";
-import type { DebugInspectMessage, DebugInspectResult, ExpectNavigationMessage, JobProgressMessage, PopupState, StartJobMessage, WorkerRecord } from "./types.js";
+import type { DebugInspectMessage, DebugInspectResult, ExpectNavigationMessage, JobProgressMessage, PopupState, RequestImageDownloadResult, StartJobMessage, WorkerRecord } from "./types.js";
 
 const SERVER_URL = "http://127.0.0.1:17321";
 const PLATFORMS: JobPlatform[] = ["gpt", "gemini", "doubao"];
@@ -551,6 +551,151 @@ async function api<T>(path: string, options: { method?: string; body?: unknown }
 
 async function requestDispatch(platform: JobPlatform): Promise<void> {
   await api("/dispatch", { method: "POST", body: { platform } });
+}
+
+// Chrome's downloads API gives no way to associate an onCreated event with
+// the click that triggered it (there's no correlation id for downloads the
+// page itself initiates), so only one capture can safely be in flight at a
+// time: whichever download fires next while we're listening is assumed to
+// be ours. downloadQueueTail chains requests so concurrent Gemini image
+// jobs wait their turn instead of racing to claim the same onCreated event.
+//
+// chrome.downloads.onCreated/onChanged are registered ONCE HERE, at the top
+// level of the script, and stay registered for the service worker's entire
+// lifetime — never added/removed inside captureOneDownload(). This matters
+// because MV3 service workers are killed after ~30s idle and only respawn
+// on a NEW top-level-registered event; a listener added dynamically inside
+// a function call does NOT survive that respawn. Two images in the same
+// multi-image job can be a minute or more apart (page navigation + prompt
+// submission + generation), which is easily enough idle time for the
+// worker to be torn down between arming the capture and Gemini's button
+// actually completing its download — silently orphaning a
+// dynamically-registered listener while the real download fires into a
+// service worker instance that isn't listening for it. Routing every event
+// through this single always-on listener plus a `pendingCapture` variable
+// avoids that: whichever service worker instance happens to be running
+// when Chrome delivers the event handles it, using state that gets
+// reconstructed by captureOneDownload() on every call regardless of
+// respawns in between.
+let downloadQueueTail: Promise<unknown> = Promise.resolve();
+const DOWNLOAD_CAPTURE_TIMEOUT_MS = 30_000;
+
+type PendingCapture = {
+  downloadId: number | null;
+  onCreated: (item: chrome.downloads.DownloadItem) => void;
+  onChanged: (item: chrome.downloads.DownloadItem) => void;
+};
+let pendingCapture: PendingCapture | null = null;
+
+chrome.downloads.onCreated.addListener(item => {
+  pendingCapture?.onCreated(item);
+});
+
+chrome.downloads.onChanged.addListener(delta => {
+  if (!pendingCapture || pendingCapture.downloadId !== delta.id || !delta.state) return;
+  if (delta.state.current === "complete" || delta.state.current === "interrupted") {
+    chrome.downloads.search({ id: delta.id }).then(([item]) => {
+      if (item) pendingCapture?.onChanged(item);
+    });
+  }
+});
+
+chrome.runtime.onConnect.addListener(port => {
+  if (port.name !== "gemini-image-download") return;
+  const tabId = port.sender?.tab?.id;
+  port.onMessage.addListener((message: { type?: string; point?: { x: number; y: number } }) => {
+    if (message?.type !== "REQUEST_IMAGE_DOWNLOAD" || !message.point || tabId === undefined) return;
+    const point = message.point;
+    const turn = downloadQueueTail.then(() => captureOneDownload(port, tabId, point));
+    // Swallow rejections in the chain itself so one failed/aborted capture
+    // doesn't permanently jam the queue for requests behind it.
+    downloadQueueTail = turn.catch(() => {});
+  });
+});
+
+// A synthetic HTMLElement.click() from the content script doesn't carry the
+// browser's "transient user activation" that Gemini's download handler
+// needs to actually trigger a save-to-disk — the click event reaches the
+// button, but empirically the underlying download only fires reliably for
+// the very first such click in a tab's lifetime, then intermittently stops
+// working (see the long investigation in git history for this file). Only
+// an OS-level input event can grant that activation, which content scripts
+// have no way to produce. chrome.debugger's Input.dispatchMouseEvent (the
+// same Chrome DevTools Protocol call the reference Electron implementation
+// uses) is a real, trusted click as far as the page and browser are
+// concerned, so it reliably triggers the download every time.
+async function dispatchTrustedClick(tabId: number, point: { x: number; y: number }): Promise<void> {
+  const target = { tabId };
+  await chrome.debugger.attach(target, "1.3");
+  try {
+    const args = { x: point.x, y: point.y, button: "left" as const, clickCount: 1 };
+    await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", { type: "mousePressed", ...args });
+    await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", { type: "mouseReleased", ...args });
+  } finally {
+    await chrome.debugger.detach(target).catch(() => {});
+  }
+}
+
+function captureOneDownload(port: chrome.runtime.Port, tabId: number, point: { x: number; y: number }): Promise<void> {
+  return new Promise(resolve => {
+    let settled = false;
+    let disconnected = false;
+    port.onDisconnect.addListener(() => {
+      disconnected = true;
+    });
+
+    const finish = (result: RequestImageDownloadResult) => {
+      if (settled) return;
+      settled = true;
+      pendingCapture = null;
+      clearTimeout(timeout);
+      if (!disconnected) {
+        try {
+          port.postMessage({ type: "RESULT", ...result });
+        } catch {
+          // the content script's tab may already be gone
+        }
+      }
+      resolve();
+    };
+
+    const timeout = setTimeout(() => {
+      finish({ ok: false, error: "Timed out waiting for the download to start." });
+    }, DOWNLOAD_CAPTURE_TIMEOUT_MS);
+
+    // Arm the listener BEFORE dispatching the click — the whole point of
+    // this handshake is that the click only happens once we're guaranteed
+    // to observe the resulting onCreated event.
+    pendingCapture = {
+      downloadId: null,
+      onCreated: item => {
+        if (pendingCapture) pendingCapture.downloadId = item.id;
+      },
+      onChanged: item => {
+        if (item.state === "interrupted") {
+          finish({ ok: false, error: "Download was interrupted." });
+          return;
+        }
+        readAndCleanUpDownload(item).then(finish, error => finish({ ok: false, error: String(error) }));
+      }
+    };
+    dispatchTrustedClick(tabId, point).catch(error => {
+      finish({ ok: false, error: `Failed to dispatch a trusted click via chrome.debugger: ${String(error)}` });
+    });
+  });
+}
+
+async function readAndCleanUpDownload(item: chrome.downloads.DownloadItem): Promise<RequestImageDownloadResult> {
+  try {
+    const result = await api<{ contentType: string; base64: string }>("/local-downloads/read", {
+      method: "POST",
+      body: { path: item.filename }
+    });
+    return { ok: true, contentType: result.contentType, base64: result.base64 };
+  } finally {
+    await chrome.downloads.removeFile(item.id).catch(() => {});
+    await chrome.downloads.erase({ id: item.id }).catch(() => {});
+  }
 }
 
 async function waitForTabComplete(tabId: number): Promise<void> {

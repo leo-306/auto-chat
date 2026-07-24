@@ -1241,12 +1241,20 @@ async function collectImages(images: HTMLImageElement[]): Promise<Array<{ index:
   return result;
 }
 
-// <img src> on Gemini is a resized/cropped thumbnail served from the image
-// CDN (eg. with a `=s1024` suffix), not the original generated image. The
-// full-size asset is only reachable through the URL exposed on the
-// download/full-size link or matching data attributes, so try those first
-// and only fall back to the rendered <img> source if none of them resolve.
+// <img src> is often a resized/cropped preview render, not the original
+// generated image. On Gemini specifically, the full-size asset is only
+// reachable by actually clicking the page's own "Download full-sized
+// image" button and letting background.ts capture the resulting browser
+// download (that button exposes no fetchable URL at all — no href, no
+// data-* attribute). There is no reliable fallback for Gemini: falling
+// back to the cropped/downsized <img> source would silently ship a lower-
+// quality image without any signal that the real download failed, so a
+// failed capture here must fail the job instead of being masked.
 async function fetchBestImageBlob(image: HTMLImageElement): Promise<Blob> {
+  if (activeJob?.platform === "gemini") {
+    return downloadGeminiFullSizeImage(image);
+  }
+
   for (const source of imageCandidates(image)) {
     try {
       const response = await fetch(source);
@@ -1259,6 +1267,100 @@ async function fetchBestImageBlob(image: HTMLImageElement): Promise<Blob> {
   }
   const response = await fetch(image.currentSrc || image.src);
   return response.blob();
+}
+
+// A programmatic HTMLElement.click() does not carry the browser's
+// "transient user activation" that Gemini's download handler apparently
+// requires to actually trigger a save-to-disk (observed empirically: it
+// reliably works for the first image in a tab but intermittently — and
+// increasingly, for later images — times out with no browser download ever
+// starting, despite the click event visibly reaching the button). A synthetic
+// click can't manufacture that activation; only an OS-level input event can,
+// which content scripts have no access to. background.ts uses
+// chrome.debugger (the same CDP the reference Electron implementation
+// relies on) to dispatch a trusted mouse click at this button's on-screen
+// coordinates instead — that's why this hands off coordinates rather than
+// clicking directly.
+//
+// A plain chrome.runtime.sendMessage() only resolves once background.ts has
+// finished the ENTIRE capture (including waiting for the download to
+// complete) — there's no way to tell from it when background's
+// chrome.downloads.onCreated listener actually got armed. Requesting the
+// click immediately after firing sendMessage() would race that listener
+// attaching (message delivery to the service worker is never synchronous),
+// risking the resulting download firing before anyone is listening for it.
+// A long-lived port gets background to explicitly ack "listening now"
+// before asking it to click, then deliver the final result as a second
+// message once the download has actually been captured.
+async function downloadGeminiFullSizeImage(image: HTMLImageElement): Promise<Blob> {
+  const button = findGeminiDownloadButton(image);
+  if (!button) throw new Error("Gemini's \"Download full-sized image\" button was not found for this image.");
+  button.scrollIntoView({ block: "center", inline: "center" });
+  const rect = button.getBoundingClientRect();
+  if (rect.width === 0 || rect.height === 0) {
+    throw new Error("Gemini's \"Download full-sized image\" button has no on-screen position to click.");
+  }
+  const point = { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+
+  return new Promise((resolve, reject) => {
+    const port = chrome.runtime.connect({ name: "gemini-image-download" });
+    let settled = false;
+    const finishOk = (blob: Blob) => {
+      if (settled) return;
+      settled = true;
+      port.disconnect();
+      resolve(blob);
+    };
+    const finishError = (message: string) => {
+      if (settled) return;
+      settled = true;
+      port.disconnect();
+      reject(new Error(message));
+    };
+
+    port.onMessage.addListener((message: { type: string; ok?: boolean; contentType?: string; base64?: string; error?: string }) => {
+      if (message.type === "RESULT") {
+        if (message.ok && message.contentType && message.base64) {
+          finishOk(base64ToBlob(message.base64, message.contentType));
+        } else {
+          finishError(message.error || "Gemini full-size image download failed for an unknown reason.");
+        }
+      }
+    });
+    port.onDisconnect.addListener(() => {
+      finishError("Connection to the extension background script was lost before the download completed.");
+    });
+    port.postMessage({ type: "REQUEST_IMAGE_DOWNLOAD", point });
+  });
+}
+
+function findGeminiDownloadButton(image: HTMLImageElement): HTMLElement | null {
+  const container = image.closest<HTMLElement>(".group\\/imagegen-image, [id^='image-'], generated-image, single-image") ?? image.parentElement;
+  if (!container) return null;
+  const candidates = [...container.querySelectorAll<HTMLElement>("button,[role='button'],a")];
+  return candidates.find(element => {
+    const label = `${element.getAttribute("aria-label") ?? ""} ${element.title ?? ""} ${element.innerText ?? ""}`;
+    // Gemini renders this button with an "on-hover-button" class that's
+    // opacity:0 until the user's mouse is actually resting on the image, so
+    // the usual isVisible() (which requires opacity !== "0") would reject
+    // it in a headless/no-hover automation run even though it's a real,
+    // clickable element occupying layout space. Only require that it isn't
+    // display:none/visibility:hidden and has real dimensions.
+    return isPresentInLayout(element) && /download full|download full-sized image|下载原图|下载完整/i.test(label);
+  }) ?? null;
+}
+
+function isPresentInLayout(element: HTMLElement): boolean {
+  const rect = element.getBoundingClientRect();
+  const style = getComputedStyle(element);
+  return rect.width > 0 && rect.height > 0 && style.display !== "none" && style.visibility !== "hidden";
+}
+
+function base64ToBlob(base64: string, contentType: string): Blob {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return new Blob([bytes], { type: contentType });
 }
 
 function imageCandidates(image: HTMLImageElement): string[] {

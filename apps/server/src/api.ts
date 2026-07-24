@@ -12,8 +12,11 @@ import {
 import { DuplicateJobError, InvalidParentJobError, JobStore } from "./store.js";
 import { publicDir, readPackageVersion } from "./paths.js";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { EventHub } from "./events.js";
+
+const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 
 const RECHECKABLE_STATUSES = new Set([
   "opening_tab", "waiting_chat_ready", "uploading", "waiting_upload_ready",
@@ -224,7 +227,42 @@ export async function buildServer(store: JobStore, events = new EventHub()): Pro
     }
   });
 
+  // Chrome's downloads API can only place a download inside the user's
+  // Downloads folder, never at an arbitrary path, and it exposes no way to
+  // read a downloaded file's bytes directly — only this local server (a
+  // Node process with real filesystem access) can do that. The extension's
+  // background script drives the browser's own "Download full-sized image"
+  // button to fetch the real, uncropped generated image (see
+  // apps/extension/src/background.ts's downloadGeneratedImage), waits for
+  // the download to land at an absolute path, then calls this endpoint to
+  // read it back as base64 before deleting the temporary file. The path is
+  // restricted to the user's Downloads directory and an image extension so
+  // this can't be turned into an arbitrary local file reader.
+  app.post("/local-downloads/read", async (request, reply) => {
+    const body = (request.body ?? {}) as { path?: unknown };
+    const target = typeof body.path === "string" ? body.path : "";
+    if (!isReadableLocalDownload(target)) {
+      return reply.code(400).send({ error: "invalid_path" });
+    }
+    try {
+      const buffer = await fs.promises.readFile(target);
+      const contentType = contentTypeForAsset(target) ?? "application/octet-stream";
+      await fs.promises.unlink(target).catch(() => {});
+      return { contentType, base64: buffer.toString("base64") };
+    } catch (error) {
+      return reply.code(404).send({ error: String(error) });
+    }
+  });
+
   return app;
+}
+
+export function isReadableLocalDownload(target: string): boolean {
+  if (!target) return false;
+  const downloadsDir = path.join(os.homedir(), "Downloads");
+  const resolved = path.resolve(target);
+  const withinDownloads = resolved === downloadsDir || resolved.startsWith(`${downloadsDir}${path.sep}`);
+  return withinDownloads && IMAGE_EXTENSIONS.has(path.extname(resolved).toLowerCase());
 }
 
 function contentTypeForAsset(file: string): string | null {

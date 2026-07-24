@@ -54,6 +54,25 @@ export type ExpectNavigationMessage = {
   expecting: boolean;
 };
 
+// Gemini's "Download full-sized image" button is the only way to reach the
+// original, uncropped generated image (the rendered <img> is a smaller
+// preview render); it exposes no fetchable URL, so content.ts has to click
+// it for real and let background.ts capture the resulting browser download.
+// A synthetic click from the content script doesn't carry the "transient
+// user activation" the button's handler needs to reliably trigger a real
+// download, so content.ts hands background.ts the button's on-screen
+// coordinates over a "gemini-image-download" runtime.connect port, and
+// background.ts dispatches a trusted click via chrome.debugger's
+// Input.dispatchMouseEvent before capturing the resulting
+// chrome.downloads event. Only one capture can be in flight at a time
+// (Chrome's downloads API has no way to tell two concurrent downloads
+// apart at onCreated time), so requests queue and each port gets its own
+// "RESULT" message once its turn comes up and the download has been
+// captured, read back, and cleaned up.
+export type RequestImageDownloadResult =
+  | { ok: true; contentType: string; base64: string }
+  | { ok: false; error: string };
+
 export type DebugInspectResult = {
   ok: boolean;
   jobId: string | null;

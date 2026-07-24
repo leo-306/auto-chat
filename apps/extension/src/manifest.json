@@ -9,7 +9,7 @@
     "48": "icons/icon-48.png",
     "128": "icons/icon-128.png"
   },
-  "permissions": ["tabs", "scripting", "storage", "downloads", "alarms", "clipboardRead"],
+  "permissions": ["tabs", "scripting", "storage", "downloads", "alarms", "clipboardRead", "debugger"],
   "host_permissions": [
     "https://chatgpt.com/*",
     "https://gemini.google.com/*",
