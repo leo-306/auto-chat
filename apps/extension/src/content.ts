@@ -28,6 +28,12 @@ const MONITOR_INTERVAL_MS = 5000;
 const TEXT_DONE_STABLE_MS = 1000;
 const IMAGE_DONE_STABLE_MS = 2000;
 const GEMINI_SINGLE_IMAGE_DONE_STABLE_MS = 2000;
+// Mirrors GPT_IMAGE_RENDER_STALL_MIN_MS's role in monitor.ts: a floor on
+// the effective stall timeout so genuinely slow-but-still-progressing
+// image generation isn't cut off by the general-purpose stallTimeoutMs
+// default. A real multi-image job was observed hitting the 5-minute
+// default stall timeout while still legitimately mid-generation.
+const GEMINI_IMAGE_STALL_MIN_MS = 480_000;
 
 class RetryableJobError extends Error {}
 
@@ -262,7 +268,8 @@ async function waitForGeminiSingleImage(
     }
     if (state.isInterrupted) throw new Error(state.interruptedText || "Gemini response was interrupted.");
     if (Date.now() - startedAt > appConfig.hardTimeoutMs) throw new Error("Job exceeded hard timeout.");
-    if (!state.isGenerating && Date.now() - lastChangedAt > appConfig.stallTimeoutMs) {
+    const stallTimeoutMs = Math.max(appConfig.stallTimeoutMs, GEMINI_IMAGE_STALL_MIN_MS);
+    if (!state.isGenerating && Date.now() - lastChangedAt > stallTimeoutMs) {
       throw new Error("No visible progress before stall timeout.");
     }
 
