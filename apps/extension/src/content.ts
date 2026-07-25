@@ -1,5 +1,5 @@
 import { buildGeminiOutputPrompt, findLatestJobConversationScope } from "auto-chat-shared";
-import type { AppConfig, ConversationTurnRole, Job } from "auto-chat-shared";
+import type { AppConfig, ConversationTurnRole, Job, JobPlatform } from "auto-chat-shared";
 import { findGeminiSendControl, isGeminiSendDisabled } from "./gemini.js";
 import { isGptConversationPath, shouldReloadCapturedConversation } from "./homeRedirectRecovery.js";
 import { hasGeneratingText, isGenerationStopControl } from "./inspect.js";
@@ -14,6 +14,15 @@ let activeJob: Job | null = null;
 let config: AppConfig | null = null;
 let monitorAbort: AbortController | null = null;
 const ERROR_TEXT_PATTERN = /Something went wrong|Retry|Try again|出错|重试/i;
+// Bare "Retry"/"重试" (used above for GPT/豆包) false-positives on Gemini:
+// every completed response has a persistent "Redo" regenerate control in
+// its actions bar, and its accessible label/tooltip text can read as
+// "重试" in a Chinese-language UI — so a fully-successful response with its
+// image already collected would still be flagged as an error. The
+// reference implementation avoids this entirely by matching only full
+// error phrases, never the bare word alone; mirror that for Gemini here.
+const GEMINI_ERROR_TEXT_PATTERN =
+  /Something went wrong|There was a problem generating|Failed to generate|rate limit|too many requests|try again later|出了点问题|生成失败|请求过多|稍后再试/i;
 const INTERRUPTED_TEXT_PATTERN = /Connection interrupted|Waiting for the complete answer|连接中断|等待完整回答/i;
 const MONITOR_INTERVAL_MS = 5000;
 const TEXT_DONE_STABLE_MS = 1000;
@@ -132,7 +141,7 @@ async function recoverEmptyGptAssistant(
       platform: job.platform,
       signal: controller.signal,
       inspect: async () => {
-        const state = await inspectJob(job.id);
+        const state = await inspectJob(job.id, job.platform);
         return {
           assistantExists: state.assistantExists,
           assistantText: state.assistantText,
@@ -227,16 +236,30 @@ async function waitForGeminiSingleImage(
   let lastSignature = "";
   let lastChangedAt = Date.now();
   let maybeDoneAt = 0;
+  let retriedInPage = false;
 
   while (!signal.aborted) {
-    const state = await inspectJob(job.id);
+    const state = await inspectJob(job.id, "gemini");
     if (state.signature !== lastSignature) {
       lastSignature = state.signature;
       lastChangedAt = Date.now();
       maybeDoneAt = 0;
     }
 
-    if (state.hasError) throw new Error(state.errorText || "Gemini returned an error.");
+    if (state.hasError) {
+      if (!retriedInPage) {
+        retriedInPage = true;
+        const retryButton = findJobScopeRetryButton(job.id, "gemini");
+        if (retryButton) {
+          retryButton.click();
+          lastChangedAt = Date.now();
+          maybeDoneAt = 0;
+          await sleep(MONITOR_INTERVAL_MS);
+          continue;
+        }
+      }
+      throw new Error(state.errorText || "Gemini returned an error.");
+    }
     if (state.isInterrupted) throw new Error(state.interruptedText || "Gemini response was interrupted.");
     if (Date.now() - startedAt > appConfig.hardTimeoutMs) throw new Error("Job exceeded hard timeout.");
     if (!state.isGenerating && Date.now() - lastChangedAt > appConfig.stallTimeoutMs) {
@@ -299,7 +322,7 @@ async function monitorJob(job: Job, appConfig: AppConfig, signal: AbortSignal): 
         return;
       }
 
-      const state = await inspectJob(job.id);
+      const state = await inspectJob(job.id, job.platform);
       if (state.signature !== lastSignature) {
         lastSignature = state.signature;
         lastChangedAt = Date.now();
@@ -309,7 +332,7 @@ async function monitorJob(job: Job, appConfig: AppConfig, signal: AbortSignal): 
       if (state.hasError) {
         if ((job.platform === "gpt" || job.platform === "gemini") && !retriedInPage) {
           retriedInPage = true;
-          const retryButton = findJobScopeRetryButton(job.id);
+          const retryButton = findJobScopeRetryButton(job.id, job.platform);
           if (retryButton) {
             retryButton.click();
             lastChangedAt = Date.now();
@@ -392,7 +415,7 @@ async function monitorJob(job: Job, appConfig: AppConfig, signal: AbortSignal): 
   }
 }
 
-async function inspectJob(jobId: string): Promise<{
+async function inspectJob(jobId: string, platform?: JobPlatform): Promise<{
   assistantExists: boolean;
   hasError: boolean;
   errorText: string;
@@ -405,13 +428,14 @@ async function inspectJob(jobId: string): Promise<{
   pageImages: HTMLImageElement[];
   signature: string;
 }> {
+  const errorPattern = platform === "gemini" ? GEMINI_ERROR_TEXT_PATTERN : ERROR_TEXT_PATTERN;
   const assistant = findJobAssistant(jobId);
   const scopedImages = findJobScopedImages(jobId);
   const pageImages = findLoadedImages(document);
   if (!assistant) {
     const text = document.body.innerText;
     const jobText = findJobScopeText(jobId);
-    const hasError = ERROR_TEXT_PATTERN.test(jobText);
+    const hasError = errorPattern.test(jobText);
     const isInterrupted = INTERRUPTED_TEXT_PATTERN.test(jobText);
     return {
       assistantExists: false,
@@ -430,7 +454,7 @@ async function inspectJob(jobId: string): Promise<{
 
   const text = assistant.innerText || "";
   const jobText = findJobScopeText(jobId);
-  const hasError = ERROR_TEXT_PATTERN.test(`${text}\n${jobText}`);
+  const hasError = errorPattern.test(`${text}\n${jobText}`);
   const isInterrupted = INTERRUPTED_TEXT_PATTERN.test(`${text}\n${jobText}`);
   const isGenerating =
     hasGeneratingText(text) ||
@@ -475,7 +499,7 @@ async function debugInspect(jobId?: string): Promise<DebugInspectResult> {
     };
   }
 
-  const state = await inspectJob(resolvedJobId);
+  const state = await inspectJob(resolvedJobId, activeJob?.platform);
   return {
     ok: true,
     jobId: resolvedJobId,
@@ -538,16 +562,29 @@ function dismissRateLimitModal(): boolean {
   return true;
 }
 
-function findJobScopeRetryButton(jobId: string): HTMLButtonElement | null {
+function findJobScopeRetryButton(jobId: string, platform?: JobPlatform): HTMLElement | null {
   const scope = findJobConversationScope(jobId);
   if (!scope) return null;
 
-  const buttons = [...document.querySelectorAll<HTMLButtonElement>("button")].filter(button =>
+  // Gemini's retry control isn't always a plain <button> — e.g. its
+  // gem-icon-button custom element wraps one — so this must match the same
+  // broader selector the reference implementation uses, not just "button".
+  const buttons = [...document.querySelectorAll<HTMLElement>("button,[role='button'],gem-icon-button")].filter(button =>
     isAfter(button, scope.user) && (!scope.nextUser || isBefore(button, scope.nextUser))
   );
+  // Gemini's own regenerate control is always labeled "Redo", not
+  // "retry"/"regenerate"/重试 like the error-recovery retry prompts on
+  // other platforms — e.g. after the user (or the page itself) stops a
+  // response mid-generation, the only way back is this "Redo" button, and
+  // its aria-label never varies by locale. Scoped to Gemini only since
+  // "redo" is common enough English wording that GPT/豆包 could plausibly
+  // use it for something unrelated (e.g. an actual undo/redo control).
+  const retryPattern = platform === "gemini"
+    ? /retry|try again|regenerate|redo|重试|重新生成/i
+    : /retry|try again|regenerate|重试|重新生成/i;
   const byLabel = buttons.find(button => {
-    const label = `${button.innerText} ${button.ariaLabel ?? ""} ${button.title ?? ""}`;
-    return isVisible(button) && /retry|try again|regenerate|重试|重新生成/i.test(label);
+    const label = `${button.innerText ?? ""} ${button.getAttribute("aria-label") ?? ""} ${button.title ?? ""}`;
+    return isVisible(button) && retryPattern.test(label);
   });
   if (byLabel) return byLabel;
 
