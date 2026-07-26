@@ -2,6 +2,7 @@ import { buildGeminiOutputPrompt, findLatestJobConversationScope } from "auto-ch
 import type { AppConfig, ConversationTurnRole, Job, JobPlatform } from "auto-chat-shared";
 import { findGeminiSendControl, isGeminiSendDisabled } from "./gemini.js";
 import { isGptConversationPath, shouldReloadCapturedConversation } from "./homeRedirectRecovery.js";
+import { isDoubaoDownloadControl } from "./imageDownload.js";
 import { hasGeneratingText, isGenerationStopControl } from "./inspect.js";
 import { selectMonitorStallRecovery } from "./monitor.js";
 import { shouldCheckEmptyAssistantRecovery, shouldMonitorWithoutSubmit, shouldRetryReloadWithoutJobTurn, waitForEmptyAssistantRecovery } from "./recovery.js";
@@ -1295,6 +1296,12 @@ async function collectImages(images: HTMLImageElement[]): Promise<Array<{ index:
 // quality image without any signal that the real download failed, so a
 // failed capture here must fail the job instead of being masked.
 //
+// Doubao, like Gemini, exposes a per-image download action. The generated
+// image URL is only a rendered page resource, so every requested output
+// must go through that action. Do not fall back to fetch() here: that would
+// make a task look successful while exporting a preview instead of the
+// downloaded image.
+//
 // On GPT, by contrast, the rendered <img src> is the same
 // /backend-api/estuary/content URL the Share-sheet's Download button uses
 // (confirmed by inspecting both), so there's no quality difference between
@@ -1305,6 +1312,9 @@ async function collectImages(images: HTMLImageElement[]): Promise<Array<{ index:
 async function fetchBestImageBlob(image: HTMLImageElement): Promise<Blob> {
   if (activeJob?.platform === "gemini") {
     return downloadGeminiFullSizeImage(image);
+  }
+  if (activeJob?.platform === "doubao") {
+    return downloadDoubaoImage(image);
   }
   if (activeJob?.platform === "gpt") {
     try {
@@ -1401,6 +1411,25 @@ async function downloadGeminiFullSizeImage(image: HTMLImageElement): Promise<Blo
   return requestTrustedClickDownload(point, "Gemini full-size image download");
 }
 
+async function downloadDoubaoImage(image: HTMLImageElement): Promise<Blob> {
+  image.scrollIntoView({ block: "center", inline: "center" });
+  image.click();
+  const saveButton = await waitUntilTruthy(findDoubaoPreviewSaveButton, 5_000);
+  await debugLog("findDoubaoPreviewSaveButton", { found: Boolean(saveButton) });
+  if (!saveButton) throw new Error("Doubao's image preview save button was not found.");
+
+  try {
+    const point = elementCenterPoint(saveButton);
+    await debugLog("doubaoPreviewSaveButtonPoint", { point });
+    if (!point) throw new Error("Doubao's image preview save button has no on-screen position to click.");
+    const blob = await requestTrustedClickDownload(point, "Doubao image download");
+    await debugLog("fetchBestImageBlob:doubao real download succeeded", { size: blob.size, type: blob.type });
+    return blob;
+  } finally {
+    closeDoubaoImagePreview();
+  }
+}
+
 // GPT has no direct "download" affordance on the image itself — the only
 // path is opening the Share sheet (a normal, non-download UI action that a
 // synthetic click handles fine) and then trusted-clicking the "Download"
@@ -1464,6 +1493,21 @@ function findGeminiDownloadButton(image: HTMLImageElement): HTMLElement | null {
     // display:none/visibility:hidden and has real dimensions.
     return isPresentInLayout(element) && /download full|download full-sized image|下载原图|下载完整/i.test(label);
   }) ?? null;
+}
+
+function findDoubaoPreviewSaveButton(): HTMLElement | null {
+  return [...document.querySelectorAll<HTMLElement>("button,[role='button'],a")]
+    .find(element => isPresentInLayout(element) && isDoubaoDownloadControl(element)) ?? null;
+}
+
+function closeDoubaoImagePreview(): void {
+  const closeButton = [...document.querySelectorAll<HTMLElement>("button,[role='button']")]
+    .find(element => isPresentInLayout(element) && /close|\u5173\u95ed/i.test(elementAccessibleLabel(element)));
+  if (closeButton) {
+    closeButton.click();
+    return;
+  }
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
 }
 
 function isPresentInLayout(element: HTMLElement): boolean {
