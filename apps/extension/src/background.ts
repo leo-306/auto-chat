@@ -557,8 +557,9 @@ async function requestDispatch(platform: JobPlatform): Promise<void> {
 // the click that triggered it (there's no correlation id for downloads the
 // page itself initiates), so only one capture can safely be in flight at a
 // time: whichever download fires next while we're listening is assumed to
-// be ours. downloadQueueTail chains requests so concurrent Gemini image
-// jobs wait their turn instead of racing to claim the same onCreated event.
+// be ours. downloadQueueTail chains requests so concurrent image-download
+// jobs (Gemini or GPT) wait their turn instead of racing to claim the same
+// onCreated event.
 //
 // chrome.downloads.onCreated/onChanged are registered ONCE HERE, at the top
 // level of the script, and stay registered for the service worker's entire
@@ -601,7 +602,7 @@ chrome.downloads.onChanged.addListener(delta => {
 });
 
 chrome.runtime.onConnect.addListener(port => {
-  if (port.name !== "gemini-image-download") return;
+  if (port.name !== "image-download-capture") return;
   const tabId = port.sender?.tab?.id;
   port.onMessage.addListener((message: { type?: string; point?: { x: number; y: number } }) => {
     if (message?.type !== "REQUEST_IMAGE_DOWNLOAD" || !message.point || tabId === undefined) return;
@@ -614,10 +615,10 @@ chrome.runtime.onConnect.addListener(port => {
 });
 
 // A synthetic HTMLElement.click() from the content script doesn't carry the
-// browser's "transient user activation" that Gemini's download handler
-// needs to actually trigger a save-to-disk — the click event reaches the
-// button, but empirically the underlying download only fires reliably for
-// the very first such click in a tab's lifetime, then intermittently stops
+// browser's "transient user activation" that these download handlers need
+// to actually trigger a save-to-disk — the click event reaches the button,
+// but empirically Gemini's underlying download only fired reliably for the
+// very first such click in a tab's lifetime, then intermittently stopped
 // working (see the long investigation in git history for this file). Only
 // an OS-level input event can grant that activation, which content scripts
 // have no way to produce. chrome.debugger's Input.dispatchMouseEvent (the

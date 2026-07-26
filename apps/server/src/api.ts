@@ -254,6 +254,16 @@ export async function buildServer(store: JobStore, events = new EventHub()): Pro
     }
   });
 
+  // Temporary diagnostic endpoint: content.ts has no way to surface what
+  // actually happened during the GPT download-capture flow (its
+  // console.log output only reaches the ChatGPT tab's own DevTools, which
+  // isn't accessible while debugging this remotely) — this makes that
+  // visible via the server's own request log instead.
+  app.post("/debug-log", async (request) => {
+    app.log.info({ debugLog: request.body }, "client debug log");
+    return { ok: true };
+  });
+
   return app;
 }
 

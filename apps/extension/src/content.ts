@@ -1294,9 +1294,26 @@ async function collectImages(images: HTMLImageElement[]): Promise<Array<{ index:
 // back to the cropped/downsized <img> source would silently ship a lower-
 // quality image without any signal that the real download failed, so a
 // failed capture here must fail the job instead of being masked.
+//
+// On GPT, by contrast, the rendered <img src> is the same
+// /backend-api/estuary/content URL the Share-sheet's Download button uses
+// (confirmed by inspecting both), so there's no quality difference between
+// them — going through the real download flow is about parity with
+// Gemini's approach, not fixing a quality bug. A failed capture here can
+// safely fall back to the existing fetch(img.src) path instead of failing
+// the job.
 async function fetchBestImageBlob(image: HTMLImageElement): Promise<Blob> {
   if (activeJob?.platform === "gemini") {
     return downloadGeminiFullSizeImage(image);
+  }
+  if (activeJob?.platform === "gpt") {
+    try {
+      const blob = await downloadGptFullSizeImage(image);
+      await debugLog("fetchBestImageBlob:gpt real download succeeded", { size: blob.size, type: blob.type });
+      return blob;
+    } catch (error) {
+      await debugLog("fetchBestImageBlob:gpt real download failed, falling back", { error: String(error) });
+    }
   }
 
   for (const source of imageCandidates(image)) {
@@ -1314,17 +1331,17 @@ async function fetchBestImageBlob(image: HTMLImageElement): Promise<Blob> {
 }
 
 // A programmatic HTMLElement.click() does not carry the browser's
-// "transient user activation" that Gemini's download handler apparently
-// requires to actually trigger a save-to-disk (observed empirically: it
-// reliably works for the first image in a tab but intermittently — and
-// increasingly, for later images — times out with no browser download ever
-// starting, despite the click event visibly reaching the button). A synthetic
-// click can't manufacture that activation; only an OS-level input event can,
-// which content scripts have no access to. background.ts uses
-// chrome.debugger (the same CDP the reference Electron implementation
-// relies on) to dispatch a trusted mouse click at this button's on-screen
-// coordinates instead — that's why this hands off coordinates rather than
-// clicking directly.
+// "transient user activation" that these download handlers apparently
+// require to actually trigger a save-to-disk (observed empirically on
+// Gemini: it reliably works for the first image in a tab but
+// intermittently — and increasingly, for later images — times out with no
+// browser download ever starting, despite the click event visibly reaching
+// the button). A synthetic click can't manufacture that activation; only an
+// OS-level input event can, which content scripts have no access to.
+// background.ts uses chrome.debugger (the same CDP the reference Electron
+// implementation relies on) to dispatch a trusted mouse click at the given
+// on-screen point instead — that's why this hands off coordinates rather
+// than clicking directly.
 //
 // A plain chrome.runtime.sendMessage() only resolves once background.ts has
 // finished the ENTIRE capture (including waiting for the download to
@@ -1336,18 +1353,9 @@ async function fetchBestImageBlob(image: HTMLImageElement): Promise<Blob> {
 // A long-lived port gets background to explicitly ack "listening now"
 // before asking it to click, then deliver the final result as a second
 // message once the download has actually been captured.
-async function downloadGeminiFullSizeImage(image: HTMLImageElement): Promise<Blob> {
-  const button = findGeminiDownloadButton(image);
-  if (!button) throw new Error("Gemini's \"Download full-sized image\" button was not found for this image.");
-  button.scrollIntoView({ block: "center", inline: "center" });
-  const rect = button.getBoundingClientRect();
-  if (rect.width === 0 || rect.height === 0) {
-    throw new Error("Gemini's \"Download full-sized image\" button has no on-screen position to click.");
-  }
-  const point = { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
-
+async function requestTrustedClickDownload(point: { x: number; y: number }, failureLabel: string): Promise<Blob> {
   return new Promise((resolve, reject) => {
-    const port = chrome.runtime.connect({ name: "gemini-image-download" });
+    const port = chrome.runtime.connect({ name: "image-download-capture" });
     let settled = false;
     const finishOk = (blob: Blob) => {
       if (settled) return;
@@ -1367,7 +1375,7 @@ async function downloadGeminiFullSizeImage(image: HTMLImageElement): Promise<Blo
         if (message.ok && message.contentType && message.base64) {
           finishOk(base64ToBlob(message.base64, message.contentType));
         } else {
-          finishError(message.error || "Gemini full-size image download failed for an unknown reason.");
+          finishError(message.error || `${failureLabel} failed for an unknown reason.`);
         }
       }
     });
@@ -1376,6 +1384,70 @@ async function downloadGeminiFullSizeImage(image: HTMLImageElement): Promise<Blo
     });
     port.postMessage({ type: "REQUEST_IMAGE_DOWNLOAD", point });
   });
+}
+
+function elementCenterPoint(element: HTMLElement): { x: number; y: number } | null {
+  element.scrollIntoView({ block: "center", inline: "center" });
+  const rect = element.getBoundingClientRect();
+  if (rect.width === 0 || rect.height === 0) return null;
+  return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+}
+
+async function downloadGeminiFullSizeImage(image: HTMLImageElement): Promise<Blob> {
+  const button = findGeminiDownloadButton(image);
+  if (!button) throw new Error("Gemini's \"Download full-sized image\" button was not found for this image.");
+  const point = elementCenterPoint(button);
+  if (!point) throw new Error("Gemini's \"Download full-sized image\" button has no on-screen position to click.");
+  return requestTrustedClickDownload(point, "Gemini full-size image download");
+}
+
+// GPT has no direct "download" affordance on the image itself — the only
+// path is opening the Share sheet (a normal, non-download UI action that a
+// synthetic click handles fine) and then trusted-clicking the "Download"
+// option inside it, which is the actual download trigger and therefore
+// needs the same chrome.debugger treatment as Gemini's button.
+async function downloadGptFullSizeImage(image: HTMLImageElement): Promise<Blob> {
+  const shareButton = findGptShareButton(image);
+  await debugLog("findGptShareButton", { found: Boolean(shareButton) });
+  if (!shareButton) throw new Error("ChatGPT's \"Share this image\" button was not found for this image.");
+  shareButton.click();
+
+  const dialog = await waitUntilTruthy(() => findVisibleElement<HTMLElement>("[role='dialog'][aria-description='Share sheet']"), 5_000);
+  await debugLog("shareDialog", { found: Boolean(dialog) });
+  if (!dialog) throw new Error("ChatGPT's share sheet did not open.");
+  try {
+    const downloadButton = await waitUntilTruthy(() => findGptShareSheetDownloadButton(dialog), 5_000);
+    await debugLog("shareSheetDownloadButton", { found: Boolean(downloadButton) });
+    if (!downloadButton) throw new Error("ChatGPT's share sheet \"Download\" button was not found.");
+    // The share sheet is a Radix-style modal that animates in (opacity/
+    // transform transition on mount); a coordinate read immediately after
+    // the button is first found in the DOM can be stale by the time the
+    // click actually dispatches (chrome.debugger.attach() alone can take
+    // long enough for that transition to still be moving). Give it a beat
+    // to settle, then re-measure right before dispatching.
+    await sleep(400);
+    const point = elementCenterPoint(downloadButton);
+    await debugLog("downloadButtonPoint", { point });
+    if (!point) throw new Error("ChatGPT's share sheet \"Download\" button has no on-screen position to click.");
+    const blob = await requestTrustedClickDownload(point, "ChatGPT full-size image download");
+    await debugLog("requestTrustedClickDownload", { ok: true, size: blob.size, type: blob.type });
+    return blob;
+  } catch (error) {
+    await debugLog("downloadGptFullSizeImage failed", { error: String(error) });
+    throw error;
+  } finally {
+    dialog.querySelector<HTMLElement>("[data-testid='close-button']")?.click();
+  }
+}
+
+async function waitUntilTruthy<T>(check: () => T | null, timeoutMs: number): Promise<T | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = check();
+    if (value) return value;
+    await sleep(150);
+  }
+  return check();
 }
 
 function findGeminiDownloadButton(image: HTMLImageElement): HTMLElement | null {
@@ -1405,6 +1477,28 @@ function base64ToBlob(base64: string, contentType: string): Blob {
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
   return new Blob([bytes], { type: contentType });
+}
+
+function findGptShareButton(image: HTMLImageElement): HTMLElement | null {
+  const container = image.closest<HTMLElement>(".group\\/imagegen-image, [id^='image-']") ?? image.parentElement;
+  if (!container) return null;
+  const candidates = [...container.querySelectorAll<HTMLElement>("button,[role='button']")];
+  // Like Gemini's download button, GPT's image overlay action bar
+  // (data-testid="image-gen-overlay-*-actions") is opacity:0 by default and
+  // only reaches opacity-100 on real hover/focus — isVisible() (which
+  // requires opacity !== "0") would reject it in a no-hover automation run
+  // even though it's present and clickable. Only require real layout
+  // presence, not full CSS visibility.
+  return candidates.find(element => isPresentInLayout(element) && /share this image/i.test(elementAccessibleLabel(element))) ?? null;
+}
+
+function findGptShareSheetDownloadButton(dialog: HTMLElement): HTMLElement | null {
+  const candidates = [...dialog.querySelectorAll<HTMLElement>("button,[role='button']")];
+  return candidates.find(element => isPresentInLayout(element) && /^download$/i.test((element.innerText ?? "").trim())) ?? null;
+}
+
+function elementAccessibleLabel(element: HTMLElement): string {
+  return `${element.getAttribute("aria-label") ?? ""} ${element.title ?? ""} ${element.innerText ?? ""}`.trim();
 }
 
 function imageCandidates(image: HTMLImageElement): string[] {
@@ -1446,6 +1540,18 @@ async function report(jobId: string, status: JobProgressMessage["status"], error
 
 async function sendProgress(message: JobProgressMessage): Promise<void> {
   await chrome.runtime.sendMessage(message);
+}
+
+async function debugLog(label: string, data: unknown): Promise<void> {
+  try {
+    await fetch("http://127.0.0.1:17321/debug-log", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ label, data, href: location.href })
+    });
+  } catch {
+    // best-effort diagnostic only
+  }
 }
 
 async function setExpectingNavigation(expecting: boolean): Promise<void> {
