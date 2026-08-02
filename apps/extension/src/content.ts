@@ -1,6 +1,7 @@
 import { buildGeminiOutputPrompt, findLatestJobConversationScope } from "auto-chat-shared";
 import type { AppConfig, ConversationTurnRole, Job, JobPlatform } from "auto-chat-shared";
 import { findGeminiSendControl, isGeminiSendDisabled } from "./gemini.js";
+import { answerGptImagePreferenceComparisons } from "./gptPreference.js";
 import { isGptConversationPath, shouldReloadCapturedConversation } from "./homeRedirectRecovery.js";
 import { isDoubaoDownloadControl } from "./imageDownload.js";
 import { hasGeneratingText, isGenerationStopControl } from "./inspect.js";
@@ -35,6 +36,7 @@ const GEMINI_SINGLE_IMAGE_DONE_STABLE_MS = 2000;
 // default. A real multi-image job was observed hitting the 5-minute
 // default stall timeout while still legitimately mid-generation.
 const GEMINI_IMAGE_STALL_MIN_MS = 480_000;
+const answeredGptImagePreferenceComparisons = new WeakSet<HTMLElement>();
 
 class RetryableJobError extends Error {}
 
@@ -330,6 +332,13 @@ async function monitorJob(job: Job, appConfig: AppConfig, signal: AbortSignal): 
         return;
       }
 
+      if (job.platform === "gpt" && job.mode === "image" && answerGptImagePreferences(job.id)) {
+        lastChangedAt = Date.now();
+        maybeDoneAt = 0;
+        await sleep(1000);
+        continue;
+      }
+
       const state = await inspectJob(job.id, job.platform);
       if (state.signature !== lastSignature) {
         lastSignature = state.signature;
@@ -421,6 +430,12 @@ async function monitorJob(job: Job, appConfig: AppConfig, signal: AbortSignal): 
   } catch (error) {
     await report(job.id, "failed_retryable", String(error));
   }
+}
+
+function answerGptImagePreferences(jobId: string): boolean {
+  const assistant = findJobAssistant(jobId);
+  if (!assistant) return false;
+  return answerGptImagePreferenceComparisons(assistant, answeredGptImagePreferenceComparisons);
 }
 
 async function inspectJob(jobId: string, platform?: JobPlatform): Promise<{
