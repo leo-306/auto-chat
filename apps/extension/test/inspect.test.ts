@@ -13,6 +13,7 @@ describe("generation state detection", () => {
   it("recognizes the ChatGPT stop button as active generation", () => {
     expect(isGenerationStopControl("stop-button", "")).toBe(true);
     expect(isGenerationStopControl(null, "Stop generating")).toBe(true);
+    expect(isGenerationStopControl(null, "Stop answering")).toBe(true);
     expect(isGenerationStopControl(null, "停止生成")).toBe(true);
     expect(isGenerationStopControl(null, "Start Voice")).toBe(false);
   });

@@ -16,6 +16,14 @@ export function shouldCompleteImageJob(input: {
   return input.mode === "image" && input.loadedImageCount >= input.expectedImageCount;
 }
 
+export function shouldStopGptImageGeneration(input: {
+  platform: JobPlatform;
+  isGenerating: boolean;
+  imageJobComplete: boolean;
+}): boolean {
+  return input.platform === "gpt" && input.isGenerating && input.imageJobComplete;
+}
+
 export function selectGptErrorRefresh(input: {
   platform: JobPlatform;
   refreshCount: number;

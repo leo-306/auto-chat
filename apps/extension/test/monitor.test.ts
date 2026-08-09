@@ -3,7 +3,8 @@ import {
   GPT_IMAGE_RENDER_STALL_MIN_MS,
   selectGptErrorRefresh,
   selectMonitorStallRecovery,
-  shouldCompleteImageJob
+  shouldCompleteImageJob,
+  shouldStopGptImageGeneration
 } from "../src/monitor.js";
 
 describe("monitor stall recovery", () => {
@@ -17,6 +18,24 @@ describe("monitor stall recovery", () => {
       mode: "image",
       loadedImageCount: 1,
       expectedImageCount: 2
+    })).toBe(false);
+  });
+
+  it("stops a GPT response only after all expected images are available", () => {
+    expect(shouldStopGptImageGeneration({
+      platform: "gpt",
+      isGenerating: true,
+      imageJobComplete: true
+    })).toBe(true);
+    expect(shouldStopGptImageGeneration({
+      platform: "gpt",
+      isGenerating: true,
+      imageJobComplete: false
+    })).toBe(false);
+    expect(shouldStopGptImageGeneration({
+      platform: "gemini",
+      isGenerating: true,
+      imageJobComplete: true
     })).toBe(false);
   });
 

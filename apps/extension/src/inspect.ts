@@ -6,5 +6,5 @@ export function hasGeneratingText(text: string): boolean {
 }
 
 export function isGenerationStopControl(testId: string | null, label: string): boolean {
-  return testId === "stop-button" || /stop generating|停止生成/i.test(label);
+  return testId === "stop-button" || /stop (generating|answering)|停止(生成|回答)/i.test(label);
 }

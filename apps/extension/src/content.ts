@@ -5,7 +5,12 @@ import { answerGptImagePreferenceComparisons } from "./gptPreference.js";
 import { isGptConversationPath, shouldReloadCapturedConversation } from "./homeRedirectRecovery.js";
 import { isDoubaoDownloadControl } from "./imageDownload.js";
 import { hasGeneratingText, isGenerationStopControl } from "./inspect.js";
-import { selectGptErrorRefresh, selectMonitorStallRecovery, shouldCompleteImageJob } from "./monitor.js";
+import {
+  selectGptErrorRefresh,
+  selectMonitorStallRecovery,
+  shouldCompleteImageJob,
+  shouldStopGptImageGeneration
+} from "./monitor.js";
 import { shouldCheckEmptyAssistantRecovery, shouldMonitorWithoutSubmit, shouldRetryReloadWithoutJobTurn, waitForEmptyAssistantRecovery } from "./recovery.js";
 import type { EmptyAssistantRecoveryMode } from "./recovery.js";
 import { waitForStableReadiness } from "./readiness.js";
@@ -329,6 +334,7 @@ async function monitorJob(
   let lastChangedAt = Date.now();
   let maybeDoneAt = 0;
   let retriedInPage = false;
+  let requestedGptStop = false;
 
   try {
     while (!signal.aborted) {
@@ -360,6 +366,16 @@ async function monitorJob(
       // error banner for the preceding user turn. The scoped images are the
       // authoritative result, so finish collecting them before error UI.
       if (enoughImages) {
+        if (!requestedGptStop && shouldStopGptImageGeneration({
+          platform: job.platform,
+          isGenerating: state.isGenerating,
+          imageJobComplete: enoughImages
+        }) && stopActiveGptGeneration()) {
+          requestedGptStop = true;
+          maybeDoneAt = 0;
+          await sleep(500);
+          continue;
+        }
         if (!maybeDoneAt) {
           maybeDoneAt = Date.now();
           await sendProgress({ type: "JOB_PROGRESS", jobId: job.id, status: "maybe_done", signature: state.signature });
@@ -1258,10 +1274,21 @@ function findSendButton(): HTMLButtonElement | null {
 }
 
 function hasActiveGenerationControl(): boolean {
-  return [...document.querySelectorAll<HTMLButtonElement>("button")].some(button => {
+  return Boolean(findActiveGenerationControl());
+}
+
+function stopActiveGptGeneration(): boolean {
+  const button = findActiveGenerationControl();
+  if (!button) return false;
+  button.click();
+  return true;
+}
+
+function findActiveGenerationControl(): HTMLButtonElement | null {
+  return [...document.querySelectorAll<HTMLButtonElement>("button")].find(button => {
     const label = `${button.innerText} ${button.ariaLabel ?? ""} ${button.title ?? ""}`;
     return isVisible(button) && isGenerationStopControl(button.getAttribute("data-testid"), label);
-  });
+  }) ?? null;
 }
 
 function findUploadMenuButton(): HTMLButtonElement | null {
