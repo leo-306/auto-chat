@@ -119,6 +119,15 @@ describe("GPT empty assistant recovery", () => {
     })).toBe(true);
   });
 
+  it("monitors without submitting after a GPT error refresh", () => {
+    expect(shouldMonitorWithoutSubmit({
+      recoveryMode: "retry_after_refresh",
+      reloadOnly: false,
+      hasExistingAssistant: false,
+      isGeminiMultiImage: false
+    })).toBe(true);
+  });
+
   it("never monitors without submitting for a Gemini multi-image job, regardless of other flags", () => {
     expect(shouldMonitorWithoutSubmit({
       recoveryMode: "monitor_only",

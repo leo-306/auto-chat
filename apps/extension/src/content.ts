@@ -5,7 +5,7 @@ import { answerGptImagePreferenceComparisons } from "./gptPreference.js";
 import { isGptConversationPath, shouldReloadCapturedConversation } from "./homeRedirectRecovery.js";
 import { isDoubaoDownloadControl } from "./imageDownload.js";
 import { hasGeneratingText, isGenerationStopControl } from "./inspect.js";
-import { selectMonitorStallRecovery } from "./monitor.js";
+import { selectGptErrorRefresh, selectMonitorStallRecovery, shouldCompleteImageJob } from "./monitor.js";
 import { shouldCheckEmptyAssistantRecovery, shouldMonitorWithoutSubmit, shouldRetryReloadWithoutJobTurn, waitForEmptyAssistantRecovery } from "./recovery.js";
 import type { EmptyAssistantRecoveryMode } from "./recovery.js";
 import { waitForStableReadiness } from "./readiness.js";
@@ -97,10 +97,10 @@ async function startJob(
     hasExistingAssistant: Boolean(existing),
     isGeminiMultiImage
   })) {
-    if (recoveryMode === "monitor_only" || isReloadOnly(job)) {
+    if (recoveryMode || isReloadOnly(job)) {
       await report(job.id, "waiting_generation");
     }
-    void monitorJob(job, nextConfig, controller.signal);
+    void monitorJob(job, nextConfig, controller.signal, recoveryMode === "retry_after_refresh");
     return;
   }
 
@@ -318,7 +318,12 @@ async function startGeminiNewChat(appConfig: AppConfig): Promise<void> {
   }
 }
 
-async function monitorJob(job: Job, appConfig: AppConfig, signal: AbortSignal): Promise<void> {
+async function monitorJob(
+  job: Job,
+  appConfig: AppConfig,
+  signal: AbortSignal,
+  retryAfterRefresh = false
+): Promise<void> {
   const startedAt = Date.now();
   let lastSignature = "";
   let lastChangedAt = Date.now();
@@ -346,7 +351,49 @@ async function monitorJob(job: Job, appConfig: AppConfig, signal: AbortSignal): 
         maybeDoneAt = 0;
       }
 
+      const enoughImages = shouldCompleteImageJob({
+        mode: job.mode,
+        loadedImageCount: state.loadedImages.length,
+        expectedImageCount: job.expectedImageCount
+      });
+      // ChatGPT can render a complete image turn while retaining a stale
+      // error banner for the preceding user turn. The scoped images are the
+      // authoritative result, so finish collecting them before error UI.
+      if (enoughImages) {
+        if (!maybeDoneAt) {
+          maybeDoneAt = Date.now();
+          await sendProgress({ type: "JOB_PROGRESS", jobId: job.id, status: "maybe_done", signature: state.signature });
+        }
+        if (Date.now() - maybeDoneAt > IMAGE_DONE_STABLE_MS) {
+          await sendProgress({
+            type: "JOB_PROGRESS",
+            jobId: job.id,
+            status: "done",
+            signature: state.signature,
+            images: await collectImages(state.loadedImages.slice(0, job.expectedImageCount))
+          });
+          return;
+        }
+        await sleep(MONITOR_INTERVAL_MS);
+        continue;
+      }
+
       if (state.hasError) {
+        const errorRecovery = retryAfterRefresh ? null : selectGptErrorRefresh({
+          platform: job.platform,
+          refreshCount: job.refreshCount,
+          maxRefreshPerJob: appConfig.maxRefreshPerJob
+        });
+        if (errorRecovery) {
+          await sendProgress({
+            type: "JOB_PROGRESS",
+            jobId: job.id,
+            status: "stalled",
+            recoveryMode: errorRecovery.recoveryMode,
+            errorMessage: errorRecovery.errorMessage
+          });
+          return;
+        }
         if ((job.platform === "gpt" || job.platform === "gemini") && !retriedInPage) {
           retriedInPage = true;
           const retryButton = findJobScopeRetryButton(job.id, job.platform);
@@ -402,24 +449,6 @@ async function monitorJob(job: Job, appConfig: AppConfig, signal: AbortSignal): 
             status: "done",
             signature: state.signature,
             text: await collectTextResponse(job.id, state.assistantText)
-          });
-          return;
-        }
-      }
-
-      const enoughImages = state.loadedImages.length >= job.expectedImageCount;
-      if (job.mode === "image" && enoughImages && !state.isGenerating) {
-        if (!maybeDoneAt) {
-          maybeDoneAt = Date.now();
-          await sendProgress({ type: "JOB_PROGRESS", jobId: job.id, status: "maybe_done", signature: state.signature });
-        }
-        if (Date.now() - maybeDoneAt > IMAGE_DONE_STABLE_MS) {
-          await sendProgress({
-            type: "JOB_PROGRESS",
-            jobId: job.id,
-            status: "done",
-            signature: state.signature,
-            images: await collectImages(state.loadedImages.slice(0, job.expectedImageCount))
           });
           return;
         }

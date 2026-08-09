@@ -2,7 +2,7 @@ import type { JobMode, JobPlatform } from "auto-chat-shared";
 
 export const GPT_EMPTY_ASSISTANT_CHECK_DELAY_MS = 15_000;
 
-export type EmptyAssistantRecoveryMode = "monitor_only";
+export type EmptyAssistantRecoveryMode = "monitor_only" | "retry_after_refresh";
 
 export type EmptyAssistantSnapshot = {
   assistantExists: boolean;
@@ -57,7 +57,7 @@ export function shouldMonitorWithoutSubmit(input: {
   // into needs_manual. These jobs must always go back through the
   // per-image flow instead of being monitored in place.
   if (input.isGeminiMultiImage) return false;
-  if (input.recoveryMode === "monitor_only") return true;
+  if (input.recoveryMode) return true;
   return input.reloadOnly || input.hasExistingAssistant;
 }
 

@@ -1,7 +1,49 @@
 import { describe, expect, it } from "vitest";
-import { GPT_IMAGE_RENDER_STALL_MIN_MS, selectMonitorStallRecovery } from "../src/monitor.js";
+import {
+  GPT_IMAGE_RENDER_STALL_MIN_MS,
+  selectGptErrorRefresh,
+  selectMonitorStallRecovery,
+  shouldCompleteImageJob
+} from "../src/monitor.js";
 
 describe("monitor stall recovery", () => {
+  it("prioritizes a complete image result even when the page retains an error banner", () => {
+    expect(shouldCompleteImageJob({
+      mode: "image",
+      loadedImageCount: 1,
+      expectedImageCount: 1
+    })).toBe(true);
+    expect(shouldCompleteImageJob({
+      mode: "image",
+      loadedImageCount: 1,
+      expectedImageCount: 2
+    })).toBe(false);
+  });
+
+  it("refreshes the first GPT error before retrying it in the page", () => {
+    expect(selectGptErrorRefresh({
+      platform: "gpt",
+      refreshCount: 0,
+      maxRefreshPerJob: 2
+    })).toMatchObject({
+      recoveryMode: "retry_after_refresh",
+      errorMessage: expect.stringContaining("refreshing")
+    });
+  });
+
+  it("does not refresh a GPT error again after the refresh budget is used", () => {
+    expect(selectGptErrorRefresh({
+      platform: "gpt",
+      refreshCount: 2,
+      maxRefreshPerJob: 2
+    })).toBeNull();
+    expect(selectGptErrorRefresh({
+      platform: "gemini",
+      refreshCount: 0,
+      maxRefreshPerJob: 2
+    })).toBeNull();
+  });
+
   it("refreshes a non-generating task after the configured stall timeout", () => {
     expect(selectMonitorStallRecovery({
       platform: "gpt",

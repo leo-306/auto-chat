@@ -8,6 +8,27 @@ export type MonitorStallRecovery = {
   recoveryMode: EmptyAssistantRecoveryMode;
 };
 
+export function shouldCompleteImageJob(input: {
+  mode: Job["mode"];
+  loadedImageCount: number;
+  expectedImageCount: number;
+}): boolean {
+  return input.mode === "image" && input.loadedImageCount >= input.expectedImageCount;
+}
+
+export function selectGptErrorRefresh(input: {
+  platform: JobPlatform;
+  refreshCount: number;
+  maxRefreshPerJob: number;
+}): MonitorStallRecovery | null {
+  if (input.platform !== "gpt" || input.refreshCount >= input.maxRefreshPerJob) return null;
+
+  return {
+    errorMessage: "ChatGPT reported an error; refreshing the submitted conversation before retrying.",
+    recoveryMode: "retry_after_refresh"
+  };
+}
+
 export function selectMonitorStallRecovery(input: {
   platform: JobPlatform;
   mode: Job["mode"];

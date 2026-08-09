@@ -420,7 +420,7 @@ stalled / refreshing
 
 常见原因：
 
-- ChatGPT 页面出现 `Something went wrong` / `Retry`。
+- ChatGPT 页面出现 `Something went wrong` / `Retry`。GPT 图片任务若已在当前 `JOB_ID` 范围内发现足量图片，会优先采集并标记成功；否则首次错误会进入一次 `stalled -> refreshing`，刷新已提交的对话后再尝试页内 Retry，仍失败才标记为 `failed_retryable`。
 - Gemini 图片粘贴后发送按钮长期保持禁用，说明图片上传未完成或页面未接受粘贴。
 - 生成状态超过默认的 5 分钟无变化。
 - 总等待超过 15 分钟。
