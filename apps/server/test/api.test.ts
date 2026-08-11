@@ -44,8 +44,13 @@ describe("job assets API", () => {
     expect(response.body).toContain('id="filter-status"');
     expect(response.body).toContain('id="filter-platform"');
     expect(response.body).toContain('id="filter-mode"');
+    expect(response.body).toContain('id="pagination"');
+    expect(response.body).toContain('id="page-size"');
+    expect(response.body).toContain('id="page-prev"');
+    expect(response.body).toContain('id="page-next"');
     expect(response.body).toContain("data-status-update");
     expect(response.body).toContain("updateJobStatus");
+    expect(response.body).toContain("renderPagination");
     await app.close();
     store.close();
   });

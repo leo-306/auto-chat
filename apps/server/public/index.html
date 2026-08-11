@@ -75,6 +75,15 @@
       .filter-field input:focus, .filter-field select:focus, .status-select:focus { outline: 2px solid #c7d2fe; outline-offset: 1px; border-color: #818cf8; }
       .filter-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex: none; }
       .filter-summary { color: var(--muted); font-size: 12px; white-space: nowrap; }
+      .pagination { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 20px; border-top: 1px solid var(--border); background: var(--surface-soft); }
+      .pagination-summary { color: var(--muted); font-size: 12px; }
+      .pagination-controls { display: flex; align-items: center; gap: 8px; }
+      .page-size-label { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+      .page-size-select { height: 31px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface); color: var(--text); font: 600 12px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 0 6px; }
+      .pagination-button { width: 31px; height: 31px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface); color: #334155; cursor: pointer; font-size: 17px; line-height: 1; }
+      .pagination-button:hover:not(:disabled) { border-color: #a5b4fc; background: var(--primary-soft); color: #4338ca; }
+      .pagination-button:disabled { cursor: not-allowed; opacity: 0.45; }
+      .page-indicator { min-width: 72px; color: #475569; font: 650 12px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: center; white-space: nowrap; }
       .secondary-button { border: 1px solid var(--border-strong); border-radius: 8px; padding: 7px 11px; background: var(--surface); color: #334155; cursor: pointer; font-size: 12px; font-weight: 700; white-space: nowrap; }
       .secondary-button:hover { border-color: #a5b4fc; background: var(--primary-soft); color: #4338ca; }
       .notice { min-height: 18px; margin: 0; color: var(--muted); font-size: 12px; text-align: right; }
@@ -170,6 +179,8 @@
         .filter-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
         .filter-field:first-child { grid-column: 1 / -1; }
         .filter-actions { justify-content: space-between; }
+        .pagination { align-items: flex-start; flex-direction: column; }
+        .pagination-controls { width: 100%; justify-content: space-between; }
         .notice { text-align: left; }
       }
     </style>
@@ -256,6 +267,22 @@
               <tbody id="jobs"></tbody>
             </table>
           </div>
+          <nav id="pagination" class="pagination" aria-label="任务分页">
+            <span id="pagination-summary" class="pagination-summary" aria-live="polite"></span>
+            <div class="pagination-controls">
+              <label class="page-size-label" for="page-size">每页
+                <select id="page-size" class="page-size-select">
+                  <option value="25">25</option>
+                  <option value="50" selected>50</option>
+                  <option value="100">100</option>
+                </select>
+                条
+              </label>
+              <button id="page-prev" class="pagination-button" type="button" aria-label="上一页" title="上一页">←</button>
+              <span id="page-indicator" class="page-indicator"></span>
+              <button id="page-next" class="pagination-button" type="button" aria-label="下一页" title="下一页">→</button>
+            </div>
+          </nav>
         </section>
       </section>
 
@@ -306,6 +333,7 @@
       ];
       const PLATFORM_FILTERS = ['gpt', 'gemini', 'doubao'];
       const MODE_FILTERS = ['image', 'text'];
+      const DEFAULT_PAGE_SIZE = 50;
       const GLOBAL_CONFIG_DEFINITIONS = [
         ['maxConcurrency', '插件同时执行的最大任务数（1–8）。'],
         ['stallTimeoutMs', '页面无进展多久后判定为停滞，单位毫秒。'],
@@ -344,6 +372,8 @@
       const statusUpdatingIds = new Set();
       const jobRenderSignatures = new Map();
       let latestJobs = [];
+      let currentPage = 1;
+      let pageSize = DEFAULT_PAGE_SIZE;
 
       renderJobConfigLegend();
       renderFilterOptions();
@@ -426,11 +456,18 @@
           if (event.target === dialog) dialog.close();
         });
 
-        document.querySelector('#filter-id').addEventListener('input', renderFilteredJobs);
+        const applyFilters = () => renderFilteredJobs({ resetPage: true });
+        document.querySelector('#filter-id').addEventListener('input', applyFilters);
         for (const selector of ['#filter-status', '#filter-platform', '#filter-mode']) {
-          document.querySelector(selector).addEventListener('change', renderFilteredJobs);
+          document.querySelector(selector).addEventListener('change', applyFilters);
         }
         document.querySelector('#reset-filters').addEventListener('click', resetFilters);
+        document.querySelector('#page-size').addEventListener('change', event => {
+          pageSize = Number(event.target.value) || DEFAULT_PAGE_SIZE;
+          renderFilteredJobs({ resetPage: true });
+        });
+        document.querySelector('#page-prev').addEventListener('click', () => changePage(-1));
+        document.querySelector('#page-next').addEventListener('click', () => changePage(1));
       }
 
       function activateTab(name) {
@@ -454,10 +491,16 @@
         )].join('');
       }
 
-      function renderFilteredJobs() {
-        const jobs = filterJobs(latestJobs);
-        renderFilterSummary(jobs.length, latestJobs.length);
-        renderJobs(jobs, latestJobs.length);
+      function renderFilteredJobs({ resetPage = false } = {}) {
+        const filteredJobs = filterJobs(latestJobs);
+        const totalPages = Math.max(1, Math.ceil(filteredJobs.length / pageSize));
+        if (resetPage) currentPage = 1;
+        currentPage = Math.min(Math.max(currentPage, 1), totalPages);
+        const firstIndex = (currentPage - 1) * pageSize;
+        const jobs = filteredJobs.slice(firstIndex, firstIndex + pageSize);
+        renderFilterSummary(firstIndex, jobs.length, filteredJobs.length);
+        renderPagination(filteredJobs.length, totalPages);
+        renderJobs(jobs, filteredJobs.length);
         void hydrateTextPreviews(jobs);
         return jobs;
       }
@@ -475,8 +518,27 @@
         );
       }
 
-      function renderFilterSummary(visible, total) {
-        document.querySelector('#filter-summary').textContent = `显示 ${visible} / ${total} 个任务`;
+      function renderFilterSummary(firstIndex, visible, total) {
+        const range = total ? `${firstIndex + 1}-${firstIndex + visible}` : '0';
+        document.querySelector('#filter-summary').textContent = `显示 ${range} / ${total} 个任务`;
+      }
+
+      function renderPagination(total, totalPages) {
+        const hasJobs = total > 0;
+        document.querySelector('#pagination-summary').textContent = hasJobs
+          ? `共 ${total} 个任务`
+          : '没有符合筛选条件的任务';
+        document.querySelector('#page-size').value = String(pageSize);
+        document.querySelector('#page-indicator').textContent = hasJobs
+          ? `第 ${currentPage} / ${totalPages} 页`
+          : '第 0 / 0 页';
+        document.querySelector('#page-prev').disabled = !hasJobs || currentPage <= 1;
+        document.querySelector('#page-next').disabled = !hasJobs || currentPage >= totalPages;
+      }
+
+      function changePage(delta) {
+        currentPage += delta;
+        renderFilteredJobs();
       }
 
       function resetFilters() {
@@ -484,7 +546,7 @@
         document.querySelector('#filter-status').value = '';
         document.querySelector('#filter-platform').value = '';
         document.querySelector('#filter-mode').value = '';
-        renderFilteredJobs();
+        renderFilteredJobs({ resetPage: true });
       }
 
       function renderJobs(jobs, totalJobs) {
