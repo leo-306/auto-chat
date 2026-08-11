@@ -40,6 +40,32 @@ describe("job assets API", () => {
     expect(response.body).toContain("重新检测");
     expect(response.body).toContain("data-copy-id");
     expect(response.body).toContain("已复制任务 ID");
+    expect(response.body).toContain('id="filter-id"');
+    expect(response.body).toContain('id="filter-status"');
+    expect(response.body).toContain('id="filter-platform"');
+    expect(response.body).toContain('id="filter-mode"');
+    expect(response.body).toContain("data-status-update");
+    expect(response.body).toContain("updateJobStatus");
+    await app.close();
+    store.close();
+  });
+
+  it("updates a job status through the status API", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+    store.createJob({ id: "job_status", platform: "gpt", prompt: "hello", sourceImages: [], metadata: {} });
+    const app = await buildServer(store);
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/jobs/job_status/status",
+      payload: { status: "needs_manual" }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ id: "job_status", status: "needs_manual" });
+    expect(fs.readFileSync(path.join(tmp, "data/jobs/job_status/events.jsonl"), "utf8"))
+      .toContain('"status":"needs_manual"');
     await app.close();
     store.close();
   });

@@ -426,15 +426,28 @@ async function stopServer(): Promise<void> {
   }
 
   process.kill(pid, "SIGTERM");
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    if (!isProcessAlive(pid)) {
-      fs.rmSync(activePidFile, { force: true });
-      print("auto-chat 服务已停止。");
-      return;
-    }
+  if (await waitForProcessExit(pid, 20)) {
+    fs.rmSync(activePidFile, { force: true });
+    print("auto-chat 服务已停止。");
+    return;
+  }
+
+  print(`服务未在 5 秒内退出，正在强制停止 pid=${pid}。`);
+  process.kill(pid, "SIGKILL");
+  if (await waitForProcessExit(pid, 20)) {
+    fs.rmSync(activePidFile, { force: true });
+    print("auto-chat 服务已强制停止。");
+    return;
+  }
+  throw new Error(`服务未能停止，请手动检查 pid=${pid}`);
+}
+
+async function waitForProcessExit(pid: number, attempts: number): Promise<boolean> {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (!isProcessAlive(pid)) return true;
     await sleep(250);
   }
-  throw new Error(`服务未在预期时间内退出，请手动检查 pid=${pid}`);
+  return !isProcessAlive(pid);
 }
 
 async function printServerStatus(): Promise<void> {
