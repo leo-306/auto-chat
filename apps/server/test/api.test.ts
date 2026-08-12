@@ -53,6 +53,7 @@ describe("job assets API", () => {
     expect(response.body).toContain("data-status-update");
     expect(response.body).toContain("updateJobStatus");
     expect(response.body).toContain("renderPagination");
+    expect(response.body).toContain(".row-actions { display: flex; flex-wrap: wrap;");
     await app.close();
     store.close();
   });

@@ -139,7 +139,8 @@
       .danger { border: 1px solid #fecdd3; border-radius: 7px; padding: 6px 10px; background: #fff7f7; color: var(--danger); cursor: pointer; font-size: 12px; font-weight: 650; white-space: nowrap; }
       .danger:hover { border-color: #fda4af; background: var(--danger-soft); }
       .danger:disabled { cursor: not-allowed; opacity: 0.55; }
-      .row-actions { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+      .row-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; white-space: normal; }
+      .row-actions > button { flex: 0 0 auto; max-width: 100%; }
       .retry-button { border: 1px solid #c7d2fe; border-radius: 7px; padding: 6px 10px; background: var(--primary-soft); color: #4338ca; cursor: pointer; font-size: 12px; font-weight: 700; white-space: nowrap; }
       .retry-button:hover { border-color: #a5b4fc; background: #e0e7ff; }
       .retry-button:disabled { cursor: not-allowed; opacity: 0.55; }
