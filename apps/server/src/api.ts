@@ -1,4 +1,5 @@
 import Fastify, { FastifyInstance } from "fastify";
+import type { FastifyServerOptions } from "fastify";
 import cors from "@fastify/cors";
 import {
   ArtifactSchema,
@@ -24,8 +25,12 @@ const RECHECKABLE_STATUSES = new Set([
   "collecting_outputs", "downloading"
 ]);
 
-export async function buildServer(store: JobStore, events = new EventHub()): Promise<FastifyInstance> {
-  const app = Fastify({ logger: true, bodyLimit: 50 * 1024 * 1024 });
+export async function buildServer(
+  store: JobStore,
+  events = new EventHub(),
+  logger: FastifyServerOptions["logger"] = true
+): Promise<FastifyInstance> {
+  const app = Fastify({ logger, bodyLimit: 50 * 1024 * 1024 });
   await app.register(cors, { origin: true });
 
   app.get("/health", async () => ({ ok: true, version: readPackageVersion() }));

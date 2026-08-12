@@ -462,7 +462,8 @@ npm test
 开发调试建议：
 
 - 改插件或共享协议后运行 `npm run build`，并在 Chrome 里重新加载 `apps/extension/dist`。
-- 服务必须通过 `auto-chat start` / `auto-chat stop` 管理，不建议直接跑 `node apps/server/dist/index.js`。
+- 服务必须通过 `auto-chat start` / `auto-chat stop` 管理，不建议直接跑 `node apps/server/dist/index.js`。macOS 上，默认服务会由用户级 `launchd` 守护；异常退出、系统登录后会自动重启。`auto-chat stop` 会先卸载守护，再停止服务，避免被立即拉起。
+- 运行日志位于系统数据目录的 `server.log`，单文件达到 10MB 时自动轮转，保留 `server.log.1` 至 `server.log.3`。日志会记录服务启动、收到的退出信号、未捕获异常和未处理 Promise 拒绝。
 - 真实任务流请使用全局 `auto-chat` CLI，不要把浏览器页面当成主状态源。
 - 修改任务协议、状态机或 HTTP API 时，同步更新 [docs/agent-integration.md](docs/agent-integration.md) 和 [skills/auto-chat/SKILL.md](skills/auto-chat/SKILL.md)。
 
