@@ -1,4 +1,4 @@
-import type { AppConfig, Job, JobPlatform, JobStatus } from "auto-chat-shared";
+import type { AppConfig, DispatchState, Job, JobPlatform, JobStatus } from "auto-chat-shared";
 import type { EmptyAssistantRecoveryMode } from "./recovery.js";
 
 export type WorkerRecord = {
@@ -41,6 +41,8 @@ export type PopupState = {
   serverOk: boolean;
   activePlatform: JobPlatform;
   extensionVersion: string;
+  lastAcknowledgedDispatchId: number | null;
+  pendingDispatch: DispatchState | null;
   platforms: Record<JobPlatform, PlatformState>;
 };
 
