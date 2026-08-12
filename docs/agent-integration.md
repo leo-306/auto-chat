@@ -55,6 +55,8 @@ curl http://127.0.0.1:17321/health
 auto-chat stop
 ```
 
+macOS 默认通过当前用户的 `launchd` 运行 `com.auto-chat.server`。服务异常退出时会自动重启，登录后也会自动启动；`auto-chat stop` 会卸载该 LaunchAgent，因此不会被立即重启。日志文件位于数据目录的 `server.log`，达到 10MB 后自动轮转并保留最近三份备份；其中会记录启动、退出信号和未捕获异常，排查时优先查看该文件。
+
 插件默认处于暂停状态，不会自动 claim 队列任务。点击 popup 的“执行一次调度”会执行一次手动调度；点击“开启自动执行”才会持续自动领取队列任务。
 
 agent 需要远程触发插件领取一轮队列时，使用 dispatch：

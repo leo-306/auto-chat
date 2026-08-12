@@ -2,11 +2,17 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import open from "open";
 import { JobPlatformSchema } from "auto-chat-shared";
 import type { AppConfig, Job, JobPlatform, JobStatus } from "auto-chat-shared";
+import {
+  buildLaunchAgentPlist,
+  launchAgentDomain,
+  launchAgentFile,
+  launchAgentTarget
+} from "./launch-agent.js";
 import { migrateLegacyData, resolvePaths, shouldUseLegacyData, workspaceRoot, readPackageVersion } from "./paths.js";
 
 const baseUrl = process.env.JOB_SERVER_URL ?? "http://127.0.0.1:17321";
@@ -290,6 +296,9 @@ async function inspectParentJob(job: Job): Promise<Job | null | undefined> {
 async function startServer(): Promise<void> {
   if (await isServerHealthy()) {
     print(`auto-chat 服务已在后台运行：${baseUrl}`);
+    if (shouldUseLaunchAgent() && !isLaunchAgentLoaded()) {
+      print("当前服务尚未由 launchd 守护；下次执行 auto-chat stop && auto-chat start 后将自动接管。");
+    }
     await printVersionMismatchWarning();
     return;
   }
@@ -306,28 +315,33 @@ async function startServer(): Promise<void> {
   }
   fs.mkdirSync(dataDir, { recursive: true });
 
-  const logFd = fs.openSync(logFile, "a");
+  if (shouldUseLaunchAgent()) {
+    startLaunchAgent();
+    await waitForServerHealth();
+    print(`auto-chat 服务已由 launchd 启动：${baseUrl}`);
+    const serverProcess = readServerProcess();
+    if (serverProcess) print(`pid: ${serverProcess.pid}`);
+    print(`日志: ${displayPath(logFile)}`);
+    return;
+  }
+
   const child = spawn(process.execPath, [path.join(path.dirname(fileURLToPath(import.meta.url)), "index.js")], {
     detached: true,
     env: {
       ...process.env,
+      AUTO_CHAT_DATA_DIR: dataDir,
+      AUTO_CHAT_LOG_FILE: logFile,
       PORT: portFromBaseUrl()
     },
-    stdio: ["ignore", logFd, logFd]
+    stdio: "ignore"
   });
   child.unref();
   fs.writeFileSync(pidFile, `${child.pid}\n`);
 
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    if (await isServerHealthy()) {
-      print(`auto-chat 服务已后台启动：${baseUrl}`);
-      print(`pid: ${child.pid}`);
-      print(`日志: ${displayPath(logFile)}`);
-      return;
-    }
-    await sleep(250);
-  }
-  throw new Error(`服务已启动但健康检查未通过。pid=${child.pid} 日志=${displayPath(logFile)}`);
+  await waitForServerHealth(child.pid);
+  print(`auto-chat 服务已后台启动：${baseUrl}`);
+  print(`pid: ${child.pid}`);
+  print(`日志: ${displayPath(logFile)}`);
 }
 
 async function initAutoChat(): Promise<void> {
@@ -413,6 +427,14 @@ export function readCliVersion(): string {
 }
 
 async function stopServer(): Promise<void> {
+  if (shouldUseLaunchAgent() && isLaunchAgentLoaded()) {
+    unloadLaunchAgent();
+    await waitForServerStopped();
+    fs.rmSync(pidFile, { force: true });
+    print("auto-chat 服务已停止，并已卸载 launchd 守护。");
+    return;
+  }
+
   const serverProcess = readServerProcess();
   if (!serverProcess) {
     print("没有找到 auto-chat 服务 pid 文件。");
@@ -440,6 +462,85 @@ async function stopServer(): Promise<void> {
     return;
   }
   throw new Error(`服务未能停止，请手动检查 pid=${pid}`);
+}
+
+function shouldUseLaunchAgent(): boolean {
+  return process.platform === "darwin" && !process.env.JOB_SERVER_URL?.trim();
+}
+
+function startLaunchAgent(): void {
+  const uid = process.getuid?.();
+  if (uid === undefined) throw new Error("无法读取当前用户 ID，不能启动 launchd 服务。");
+
+  const file = launchAgentFile(os.homedir());
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const serverPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "index.js");
+  const plist = buildLaunchAgentPlist({
+    nodePath: process.execPath,
+    serverPath,
+    workingDirectory: packageRoot(),
+    dataDir,
+    port: portFromBaseUrl(),
+    logFile
+  });
+  writeFileAtomically(file, plist);
+
+  const target = launchAgentTarget(uid);
+  if (isLaunchAgentLoaded()) {
+    runLaunchctl(["kickstart", "-k", target]);
+    return;
+  }
+  runLaunchctl(["bootstrap", launchAgentDomain(uid), file]);
+}
+
+function unloadLaunchAgent(): void {
+  const uid = process.getuid?.();
+  if (uid === undefined) throw new Error("无法读取当前用户 ID，不能停止 launchd 服务。");
+  runLaunchctl(["bootout", launchAgentTarget(uid)]);
+}
+
+function isLaunchAgentLoaded(): boolean {
+  const uid = process.getuid?.();
+  if (uid === undefined) return false;
+  try {
+    execFileSync("launchctl", ["print", launchAgentTarget(uid)], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function runLaunchctl(args: string[]): void {
+  try {
+    execFileSync("launchctl", args, { stdio: "pipe" });
+  } catch (error) {
+    const detail = error instanceof Error && "stderr" in error
+      ? Buffer.from(error.stderr as Uint8Array).toString("utf8").trim()
+      : String(error);
+    throw new Error(`launchctl ${args.join(" ")} 失败${detail ? `：${detail}` : ""}`);
+  }
+}
+
+function writeFileAtomically(file: string, contents: string): void {
+  const temporary = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, contents, { mode: 0o644 });
+  fs.renameSync(temporary, file);
+}
+
+async function waitForServerHealth(pid?: number): Promise<void> {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    if (await isServerHealthy()) return;
+    await sleep(250);
+  }
+  throw new Error(`服务已启动但健康检查未通过。${pid ? `pid=${pid} ` : ""}日志=${displayPath(logFile)}`);
+}
+
+async function waitForServerStopped(): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (!(await isServerHealthy())) return;
+    await sleep(250);
+  }
+  throw new Error("launchd 服务未在 5 秒内停止，请执行 launchctl print gui/$(id -u)/com.auto-chat.server 检查。");
 }
 
 async function waitForProcessExit(pid: number, attempts: number): Promise<boolean> {
