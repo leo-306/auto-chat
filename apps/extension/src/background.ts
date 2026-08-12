@@ -1,5 +1,6 @@
 import type { AppConfig, ArtifactRequest, ClaimJobRequest, DispatchState, Job, JobPlatform, UpdateStatusRequest } from "auto-chat-shared";
 import { DEFAULT_CONFIG } from "auto-chat-shared";
+import { isDispatchPending, shouldAcknowledgeDispatch } from "./dispatch.js";
 import type { EmptyAssistantRecoveryMode } from "./recovery.js";
 import type { DebugInspectMessage, DebugInspectResult, ExpectNavigationMessage, JobProgressMessage, PopupState, RequestImageDownloadResult, StartJobMessage, WorkerRecord } from "./types.js";
 
@@ -16,7 +17,9 @@ let pausedByPlatform: Record<JobPlatform, boolean> = { gpt: true, gemini: true, 
 let config: AppConfig = DEFAULT_CONFIG;
 let serverOk = false;
 let lastDebugByPlatform: Record<JobPlatform, string> = { gpt: "", gemini: "", doubao: "" };
-let lastDispatchId: number | null = null;
+let lastAcknowledgedDispatchId: number | null = null;
+let pendingDispatch: DispatchState | null = null;
+const TERMINAL_STATUSES = new Set<Job["status"]>(["done", "failed_final", "needs_manual"]);
 
 chrome.runtime.onInstalled.addListener(() => {
   void chrome.storage.local.set({ pausedByPlatform });
@@ -172,9 +175,11 @@ async function schedulerTick(options: { force?: boolean; platform?: JobPlatform 
     doubao: stored.pausedByPlatform?.doubao ?? true
   };
   await refreshConfig();
-  const dispatched = await consumeDispatchSignal();
   if (!serverOk) return;
+  await pruneTerminalWorkers();
+  const dispatched = await consumeDispatchSignal();
 
+  let acknowledgeDispatch = dispatched !== false;
   if (dispatched && dispatched.jobId) {
     const requestedJob = await api<Job>(`/jobs/${dispatched.jobId}`).catch(() => null);
     if (requestedJob && RECHECKABLE_STATUSES.has(requestedJob.status)) {
@@ -187,15 +192,25 @@ async function schedulerTick(options: { force?: boolean; platform?: JobPlatform 
           workerId
         });
       }
+      await acknowledgeDispatchSignal(dispatched);
       return;
     }
   }
 
   const targetPlatforms = options.platform ? [options.platform] : PLATFORMS;
+  if (dispatched && dispatched.platform && options.platform && dispatched.platform !== options.platform) {
+    acknowledgeDispatch = false;
+  }
   for (const platform of targetPlatforms) {
     const dispatchMatches = dispatched !== false &&
       (dispatched === null || dispatched.platform === null || dispatched.platform === platform);
     if (!options.force && pausedByPlatform[platform] && !dispatchMatches) continue;
+
+    if (dispatchMatches && workerCount(platform) >= config.maxConcurrency) {
+      acknowledgeDispatch = false;
+      lastDebugByPlatform[platform] = "收到调度请求，但当前并发已满；将保留该请求，等待任务释放后自动领取。";
+      continue;
+    }
 
     while (workerCount(platform) < config.maxConcurrency) {
       const job = await claimJob(platform, dispatchMatches && dispatched && dispatched !== null ? dispatched.jobId : null);
@@ -210,6 +225,10 @@ async function schedulerTick(options: { force?: boolean; platform?: JobPlatform 
         });
       }
     }
+  }
+
+  if (dispatched && shouldAcknowledgeDispatch(!acknowledgeDispatch)) {
+    await acknowledgeDispatchSignal(dispatched);
   }
 }
 
@@ -282,13 +301,18 @@ async function consumeDispatchSignal(): Promise<DispatchState | null | false> {
   if (!serverOk) return false;
   try {
     const dispatch = await api<DispatchState>("/dispatch");
-    if (lastDispatchId === null) {
-      const stored = await chrome.storage.local.get(["lastDispatchId"]);
-      lastDispatchId = Number(stored.lastDispatchId ?? 0);
+    if (lastAcknowledgedDispatchId === null) {
+      const stored = await chrome.storage.local.get(["lastAcknowledgedDispatchId", "lastDispatchId"]);
+      const acknowledged = Number(stored.lastAcknowledgedDispatchId);
+      if (Number.isInteger(acknowledged) && acknowledged >= -1) {
+        lastAcknowledgedDispatchId = acknowledged;
+      } else {
+        const legacy = Number(stored.lastDispatchId ?? -1);
+        lastAcknowledgedDispatchId = await migratedDispatchId(dispatch, legacy);
+      }
     }
-    if (dispatch.id <= lastDispatchId) return false;
-    lastDispatchId = dispatch.id;
-    await chrome.storage.local.set({ lastDispatchId });
+    if (!isDispatchPending(dispatch, lastAcknowledgedDispatchId)) return false;
+    pendingDispatch = dispatch;
     const targets = dispatch.platform ? [dispatch.platform] : PLATFORMS;
     for (const platform of targets) {
       lastDebugByPlatform[platform] = `收到外部调度请求：${dispatch.requestedAt ?? "未知时间"}。`;
@@ -299,6 +323,24 @@ async function consumeDispatchSignal(): Promise<DispatchState | null | false> {
   }
 }
 
+async function migratedDispatchId(dispatch: DispatchState, legacyId: number): Promise<number> {
+  if (!Number.isInteger(legacyId) || legacyId < -1) return -1;
+  // Older extension versions marked a dispatch handled before attempting a
+  // claim. Preserve their acknowledgement except for the exact queued job
+  // that exposes that bug, which must be retried after this upgrade.
+  if (dispatch.id === legacyId && dispatch.jobId) {
+    const job = await api<Job>(`/jobs/${dispatch.jobId}`).catch(() => null);
+    if (job?.status === "queued") return -1;
+  }
+  return legacyId;
+}
+
+async function acknowledgeDispatchSignal(dispatch: DispatchState): Promise<void> {
+  lastAcknowledgedDispatchId = dispatch.id;
+  pendingDispatch = null;
+  await chrome.storage.local.set({ lastAcknowledgedDispatchId });
+}
+
 async function claimJob(platform: JobPlatform, jobId?: string | null): Promise<Job | null> {
   const body: ClaimJobRequest = {
     workerId,
@@ -307,6 +349,15 @@ async function claimJob(platform: JobPlatform, jobId?: string | null): Promise<J
     runningJobIds: [...workers.values()].map(worker => worker.jobId)
   };
   return api<Job | null>(`/jobs/claim`, { method: "POST", body });
+}
+
+async function pruneTerminalWorkers(): Promise<void> {
+  await Promise.all([...workers.entries()].map(async ([tabId, worker]) => {
+    const job = await api<Job>(`/jobs/${worker.jobId}`).catch(() => null);
+    if (!job || TERMINAL_STATUSES.has(job.status)) {
+      if (workers.get(tabId) === worker) workers.delete(tabId);
+    }
+  }));
 }
 
 async function launchJob(job: Job): Promise<void> {
@@ -720,6 +771,8 @@ function state(activePlatform: JobPlatform): PopupState {
     serverOk,
     activePlatform,
     extensionVersion: chrome.runtime.getManifest().version,
+    lastAcknowledgedDispatchId,
+    pendingDispatch,
     platforms: {
       gpt: {
         paused: pausedByPlatform.gpt,
