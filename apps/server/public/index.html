@@ -566,6 +566,7 @@
           Array.from(target.querySelectorAll('tr[data-job-id]')).map(row => [row.dataset.jobId, row])
         );
         const visibleIds = new Set();
+        let previousRow = null;
 
         for (const job of jobs) {
           visibleIds.add(job.id);
@@ -575,13 +576,15 @@
             row = document.createElement('tr');
             row.dataset.jobId = job.id;
           }
-          if (jobRenderSignatures.get(job.id) !== signature) {
+          if (jobRenderSignatures.get(job.id) !== signature && !isStatusSelectActive(row)) {
             const wasConfigOpen = row.querySelector('details')?.open === true;
             row.innerHTML = renderJobCells(job);
             if (wasConfigOpen) row.querySelector('details').open = true;
             jobRenderSignatures.set(job.id, signature);
           }
-          target.appendChild(row);
+          const nextRow = previousRow ? previousRow.nextElementSibling : target.firstElementChild;
+          if (row !== nextRow) target.insertBefore(row, nextRow);
+          previousRow = row;
         }
 
         for (const [id, row] of existingRows) {
@@ -589,6 +592,13 @@
           row.remove();
           jobRenderSignatures.delete(id);
         }
+      }
+
+      function isStatusSelectActive(row) {
+        const activeElement = document.activeElement;
+        return activeElement instanceof HTMLSelectElement &&
+          activeElement.matches('select[data-status-select]') &&
+          row.contains(activeElement);
       }
 
       function renderJobCells(job) {
