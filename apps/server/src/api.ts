@@ -10,7 +10,7 @@ import {
   JobPlatformSchema,
   UpdateStatusSchema
 } from "auto-chat-shared";
-import { DuplicateJobError, InvalidParentJobError, JobStore } from "./store.js";
+import { DuplicateJobError, InvalidParentJobError, JobNotQueuedError, JobStore } from "./store.js";
 import { publicDir, readPackageVersion } from "./paths.js";
 import fs from "node:fs";
 import os from "node:os";
@@ -190,6 +190,18 @@ export async function buildServer(
     try {
       return store.retryJob(id);
     } catch (error) {
+      return reply.code(404).send({ error: String(error) });
+    }
+  });
+
+  app.post("/jobs/:id/dispatch/reset", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    try {
+      return store.resetDispatchBlock(id);
+    } catch (error) {
+      if (error instanceof JobNotQueuedError) {
+        return reply.code(409).send({ error: "job_not_queued", status: error.status });
+      }
       return reply.code(404).send({ error: String(error) });
     }
   });

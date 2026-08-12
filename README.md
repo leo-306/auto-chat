@@ -173,6 +173,14 @@ curl -X POST http://127.0.0.1:17321/dispatch \
   --data '{"platform":"gemini","jobId":"gemini_text_test_001"}'
 ```
 
+当任务保持 `queued` 且已多次定向派发仍未出现 `job_claimed` 事件时，可解除该任务遗留的领取阻塞并重新发出定向调度信号：
+
+```bash
+curl -X POST http://127.0.0.1:17321/jobs/<jobId>/dispatch/reset
+```
+
+该接口只接受 `queued` 任务；管理页同一行的“解除阻塞”按钮调用相同接口。更多排查条件见 [docs/agent-integration.md](docs/agent-integration.md)。
+
 监听事件流：
 
 ```text

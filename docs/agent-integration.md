@@ -92,11 +92,24 @@ curl -X POST http://127.0.0.1:17321/dispatch \
 ```json
 {
   "id": 1,
+  "token": "每次派发生成的新 UUID",
   "platform": "gemini",
   "jobId": "gemini_text_test_001",
   "requestedAt": "2026-06-23T00:00:00.000Z"
 }
 ```
+
+### 排队任务未被领取
+
+`queued` 仅表示服务端允许领取，不表示插件已经接管。插件不会领取的常见原因是：目标平台仍暂停、插件未运行或无法连接本地服务、该平台已达到 `maxConcurrency`，或者插件内存中残留了一个服务端已经不处于运行态的 worker。后者通常发生在手工把运行中任务改回 `queued`、服务/插件重载、或旧版本状态不同步之后。
+
+先用 `auto-chat doctor <jobId>` 和插件 popup 确认平台、暂停状态及正在处理的 worker。对于仍为 `queued` 且多次定向 dispatch 后没有 `job_claimed` 事件的任务，可以调用以下恢复接口。它只清理该任务遗留的 `tabId`、`workerId`、错误信息并生成新的定向调度信号；不会修改提示词、输出或尝试次数：
+
+```bash
+curl -X POST http://127.0.0.1:17321/jobs/<jobId>/dispatch/reset
+```
+
+非 `queued` 任务会返回 `409 job_not_queued`，避免中断正在执行的工作。管理页的排队任务行也提供“解除阻塞”按钮；它等价于该接口。完整过程会写入 `job_dispatch_reset` 事件。
 
 ## 创建任务
 

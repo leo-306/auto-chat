@@ -149,6 +149,9 @@
       .dispatch-button { border: 1px solid #bbf7d0; border-radius: 7px; padding: 6px 10px; background: #f0fdf4; color: #15803d; cursor: pointer; font-size: 12px; font-weight: 700; white-space: nowrap; }
       .dispatch-button:hover { border-color: #86efac; background: #dcfce7; }
       .dispatch-button:disabled { cursor: not-allowed; opacity: 0.55; }
+      .reset-dispatch-button { border: 1px solid #fcd34d; border-radius: 7px; padding: 6px 10px; background: #fffbeb; color: #a16207; cursor: pointer; font-size: 12px; font-weight: 700; white-space: nowrap; }
+      .reset-dispatch-button:hover { border-color: #fbbf24; background: #fef3c7; }
+      .reset-dispatch-button:disabled { cursor: not-allowed; opacity: 0.55; }
       .empty-row { padding: 42px 16px; color: var(--muted); text-align: center; }
       .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
@@ -369,6 +372,7 @@
       const retryingIds = new Set();
       const recheckingIds = new Set();
       const dispatchingIds = new Set();
+      const resettingDispatchIds = new Set();
       const statusUpdatingIds = new Set();
       const jobRenderSignatures = new Map();
       let latestJobs = [];
@@ -564,7 +568,7 @@
 
         for (const job of jobs) {
           visibleIds.add(job.id);
-          const signature = JSON.stringify([job, deletingId === job.id, retryingIds.has(job.id), recheckingIds.has(job.id), dispatchingIds.has(job.id), statusUpdatingIds.has(job.id)]);
+          const signature = JSON.stringify([job, deletingId === job.id, retryingIds.has(job.id), recheckingIds.has(job.id), dispatchingIds.has(job.id), resettingDispatchIds.has(job.id), statusUpdatingIds.has(job.id)]);
           let row = existingRows.get(job.id);
           if (!row) {
             row = document.createElement('tr');
@@ -615,13 +619,16 @@
                 <button class="dispatch-button" data-dispatch="${escapeAttribute(job.id)}" data-platform="${escapeAttribute(job.platform)}" ${dispatchingIds.has(job.id) || statusUpdatingIds.has(job.id) ? 'disabled' : ''}>
                   ${dispatchingIds.has(job.id) ? '触发中…' : '手动派发'}
                 </button>
+                <button class="reset-dispatch-button" data-reset-dispatch="${escapeAttribute(job.id)}" title="清除遗留的标签页/worker 归属并发出新的定向调度信号" ${resettingDispatchIds.has(job.id) || statusUpdatingIds.has(job.id) ? 'disabled' : ''}>
+                  ${resettingDispatchIds.has(job.id) ? '解除中…' : '解除阻塞'}
+                </button>
               ` : ''}
               ${FAILED_STATUSES.has(job.status) ? `
                 <button class="retry-button" data-retry="${escapeAttribute(job.id)}" data-platform="${escapeAttribute(job.platform)}" ${retryingIds.has(job.id) || recheckingIds.has(job.id) || statusUpdatingIds.has(job.id) ? 'disabled' : ''}>
                   ${retryingIds.has(job.id) ? '触发中…' : '重试'}
                 </button>
               ` : ''}
-              <button class="danger" data-delete="${escapeAttribute(job.id)}" ${deletingId === job.id || retryingIds.has(job.id) || recheckingIds.has(job.id) || dispatchingIds.has(job.id) || statusUpdatingIds.has(job.id) ? 'disabled' : ''}>
+              <button class="danger" data-delete="${escapeAttribute(job.id)}" ${deletingId === job.id || retryingIds.has(job.id) || recheckingIds.has(job.id) || dispatchingIds.has(job.id) || resettingDispatchIds.has(job.id) || statusUpdatingIds.has(job.id) ? 'disabled' : ''}>
                 ${deletingId === job.id ? '删除中…' : '删除'}
               </button>
             </div>
@@ -654,6 +661,11 @@
         const dispatchButton = event.target.closest('button[data-dispatch]');
         if (dispatchButton) {
           await dispatchJob(dispatchButton.dataset.dispatch, dispatchButton.dataset.platform);
+          return;
+        }
+        const resetDispatchButton = event.target.closest('button[data-reset-dispatch]');
+        if (resetDispatchButton) {
+          await resetDispatchBlock(resetDispatchButton.dataset.resetDispatch);
           return;
         }
         const button = event.target.closest('button[data-delete]');
@@ -786,6 +798,22 @@
           setNotice(`手动派发失败：${error}`, true);
         } finally {
           dispatchingIds.delete(id);
+          await refresh();
+        }
+      }
+
+      async function resetDispatchBlock(id) {
+        resettingDispatchIds.add(id);
+        setNotice(`正在解除 ${id} 的领取阻塞…`);
+        await refresh();
+        try {
+          const response = await fetch(`/jobs/${encodeURIComponent(id)}/dispatch/reset`, { method: 'POST' });
+          if (!response.ok) throw new Error(`${response.status} ${await response.text()}`);
+          setNotice(`已解除 ${id} 的领取阻塞，并发出新的定向调度信号`);
+        } catch (error) {
+          setNotice(`解除领取阻塞失败：${error}`, true);
+        } finally {
+          resettingDispatchIds.delete(id);
           await refresh();
         }
       }

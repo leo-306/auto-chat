@@ -18,8 +18,8 @@ let config: AppConfig = DEFAULT_CONFIG;
 let serverOk = false;
 let lastDebugByPlatform: Record<JobPlatform, string> = { gpt: "", gemini: "", doubao: "" };
 let lastAcknowledgedDispatchId: number | null = null;
+let lastAcknowledgedDispatchToken: string | null = null;
 let pendingDispatch: DispatchState | null = null;
-const TERMINAL_STATUSES = new Set<Job["status"]>(["done", "failed_final", "needs_manual"]);
 
 chrome.runtime.onInstalled.addListener(() => {
   void chrome.storage.local.set({ pausedByPlatform });
@@ -302,16 +302,27 @@ async function consumeDispatchSignal(): Promise<DispatchState | null | false> {
   try {
     const dispatch = await api<DispatchState>("/dispatch");
     if (lastAcknowledgedDispatchId === null) {
-      const stored = await chrome.storage.local.get(["lastAcknowledgedDispatchId", "lastDispatchId"]);
+      const stored = await chrome.storage.local.get([
+        "lastAcknowledgedDispatchId",
+        "lastAcknowledgedDispatchToken",
+        "lastDispatchId"
+      ]);
       const acknowledged = Number(stored.lastAcknowledgedDispatchId);
+      const acknowledgedToken = typeof stored.lastAcknowledgedDispatchToken === "string"
+        ? stored.lastAcknowledgedDispatchToken
+        : null;
       if (Number.isInteger(acknowledged) && acknowledged >= -1) {
         lastAcknowledgedDispatchId = acknowledged;
+        lastAcknowledgedDispatchToken = acknowledgedToken;
       } else {
         const legacy = Number(stored.lastDispatchId ?? -1);
         lastAcknowledgedDispatchId = await migratedDispatchId(dispatch, legacy);
       }
     }
-    if (!isDispatchPending(dispatch, lastAcknowledgedDispatchId)) return false;
+    if (!isDispatchPending(dispatch, {
+      id: lastAcknowledgedDispatchId ?? -1,
+      token: lastAcknowledgedDispatchToken
+    })) return false;
     pendingDispatch = dispatch;
     const targets = dispatch.platform ? [dispatch.platform] : PLATFORMS;
     for (const platform of targets) {
@@ -337,8 +348,9 @@ async function migratedDispatchId(dispatch: DispatchState, legacyId: number): Pr
 
 async function acknowledgeDispatchSignal(dispatch: DispatchState): Promise<void> {
   lastAcknowledgedDispatchId = dispatch.id;
+  lastAcknowledgedDispatchToken = dispatch.token;
   pendingDispatch = null;
-  await chrome.storage.local.set({ lastAcknowledgedDispatchId });
+  await chrome.storage.local.set({ lastAcknowledgedDispatchId, lastAcknowledgedDispatchToken });
 }
 
 async function claimJob(platform: JobPlatform, jobId?: string | null): Promise<Job | null> {
@@ -354,7 +366,7 @@ async function claimJob(platform: JobPlatform, jobId?: string | null): Promise<J
 async function pruneTerminalWorkers(): Promise<void> {
   await Promise.all([...workers.entries()].map(async ([tabId, worker]) => {
     const job = await api<Job>(`/jobs/${worker.jobId}`).catch(() => null);
-    if (!job || TERMINAL_STATUSES.has(job.status)) {
+    if (!job || !RECHECKABLE_STATUSES.has(job.status)) {
       if (workers.get(tabId) === worker) workers.delete(tabId);
     }
   }));
@@ -772,6 +784,7 @@ function state(activePlatform: JobPlatform): PopupState {
     activePlatform,
     extensionVersion: chrome.runtime.getManifest().version,
     lastAcknowledgedDispatchId,
+    lastAcknowledgedDispatchToken,
     pendingDispatch,
     platforms: {
       gpt: {

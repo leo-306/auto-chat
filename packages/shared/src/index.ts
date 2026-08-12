@@ -155,6 +155,7 @@ export type ClaimJobRequest = z.input<typeof ClaimJobSchema>;
 
 export const DispatchStateSchema = z.object({
   id: z.number().int().min(0),
+  token: z.string().min(1).nullable().default(null),
   platform: JobPlatformSchema.nullable().default(null),
   jobId: z.string().nullable().default(null),
   requestedAt: z.string().nullable()

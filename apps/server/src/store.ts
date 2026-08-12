@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import initSqlJs, { Database, SqlJsStatic, SqlValue } from "sql.js";
 import {
   AppConfig,
@@ -48,7 +49,7 @@ export class JobStore {
   private sql!: SqlJsStatic;
   private db!: Database;
   private config: AppConfig = DEFAULT_CONFIG;
-  private dispatch: DispatchState = { id: 0, platform: null, jobId: null, requestedAt: null };
+  private dispatch: DispatchState = { id: 0, token: null, platform: null, jobId: null, requestedAt: null };
   private paths: ResolvedPaths;
   private events?: EventHub;
 
@@ -305,6 +306,7 @@ export class JobStore {
   requestDispatch(platform: JobPlatform | null = null, jobId: string | null = null): DispatchState {
     this.dispatch = {
       id: this.dispatch.id + 1,
+      token: randomUUID(),
       platform,
       jobId,
       requestedAt: new Date().toISOString()
@@ -314,6 +316,29 @@ export class JobStore {
     ]);
     this.persist();
     return this.dispatch;
+  }
+
+  resetDispatchBlock(id: string): { job: Job; dispatch: DispatchState } {
+    const existing = this.mustGet(id);
+    if (existing.status !== "queued") throw new JobNotQueuedError(id, existing.status);
+
+    const now = new Date().toISOString();
+    this.run(
+      "update jobs set tab_id = null, worker_id = null, error_message = null, updated_at = ? where id = ? and status = 'queued'",
+      [now, id]
+    );
+    const job = this.mustGet(id);
+    this.appendEvent(id, {
+      type: "job_dispatch_reset",
+      payload: {
+        previousTabId: existing.tabId,
+        previousWorkerId: existing.workerId,
+        previousErrorMessage: existing.errorMessage
+      }
+    });
+    this.writeMeta(id);
+    const dispatch = this.requestDispatch(job.platform, job.id);
+    return { job: this.mustGet(id), dispatch };
   }
 
   resolveAssetPath(id: string, folder: string, file: string): string | null {
@@ -388,7 +413,7 @@ export class JobStore {
   private loadDispatch(): void {
     const rows = this.query<{ value: string }>("select value from config where key = 'dispatch'");
     if (rows[0]) {
-      this.dispatch = { ...this.dispatch, platform: null, jobId: null, ...JSON.parse(rows[0].value) };
+      this.dispatch = { ...this.dispatch, token: null, platform: null, jobId: null, ...JSON.parse(rows[0].value) };
     }
   }
 
@@ -556,5 +581,12 @@ export class InvalidParentJobError extends Error {
       ? `Parent job not found: ${parentJobId}`
       : `A job cannot use itself as parent: ${parentJobId}`);
     this.name = "InvalidParentJobError";
+  }
+}
+
+export class JobNotQueuedError extends Error {
+  constructor(public readonly jobId: string, public readonly status: JobStatus) {
+    super(`Job is not queued: ${jobId} (${status})`);
+    this.name = "JobNotQueuedError";
   }
 }

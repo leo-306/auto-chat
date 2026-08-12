@@ -38,6 +38,8 @@ describe("job assets API", () => {
     expect(response.body).toContain("data-retry");
     expect(response.body).toContain("data-recheck");
     expect(response.body).toContain("重新检测");
+    expect(response.body).toContain("data-reset-dispatch");
+    expect(response.body).toContain("解除阻塞");
     expect(response.body).toContain("data-copy-id");
     expect(response.body).toContain("已复制任务 ID");
     expect(response.body).toContain('id="filter-id"');
@@ -95,6 +97,36 @@ describe("job assets API", () => {
 
     expect(dispatchResponse.statusCode).toBe(200);
     expect(dispatchResponse.json()).toMatchObject({ platform: "gpt", jobId: "job_retry" });
+    await app.close();
+    store.close();
+  });
+
+  it("resets only queued jobs with a fresh targeted dispatch signal", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+    store.createJob({ id: "job_dispatch_reset", platform: "gemini", prompt: "hello", sourceImages: [], metadata: {} });
+    store.updateStatus("job_dispatch_reset", {
+      status: "queued",
+      tabId: 123,
+      workerId: "stale_worker",
+      errorMessage: "stale claim"
+    });
+    const app = await buildServer(store);
+
+    const response = await app.inject({ method: "POST", url: "/jobs/job_dispatch_reset/dispatch/reset" });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      job: { id: "job_dispatch_reset", status: "queued", tabId: null, workerId: null, errorMessage: null },
+      dispatch: { platform: "gemini", jobId: "job_dispatch_reset", token: expect.any(String) }
+    });
+    expect(fs.readFileSync(path.join(tmp, "data/jobs/job_dispatch_reset/events.jsonl"), "utf8"))
+      .toContain("job_dispatch_reset");
+
+    store.updateStatus("job_dispatch_reset", { status: "waiting_generation" });
+    const rejected = await app.inject({ method: "POST", url: "/jobs/job_dispatch_reset/dispatch/reset" });
+    expect(rejected.statusCode).toBe(409);
+    expect(rejected.json()).toMatchObject({ error: "job_not_queued", status: "waiting_generation" });
     await app.close();
     store.close();
   });

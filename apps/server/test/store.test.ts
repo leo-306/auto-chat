@@ -238,15 +238,18 @@ describe("JobStore", () => {
   it("persists dispatch requests", async () => {
     const store = new JobStore(tmp);
     await store.init();
-    expect(store.getDispatch()).toEqual({ id: 0, requestedAt: null, platform: null, jobId: null });
+    expect(store.getDispatch()).toEqual({ id: 0, token: null, requestedAt: null, platform: null, jobId: null });
 
     const requested = store.requestDispatch();
     expect(requested.id).toBe(1);
+    expect(requested.token).toEqual(expect.any(String));
     expect(requested.requestedAt).toEqual(expect.any(String));
     expect(requested.platform).toBeNull();
     expect(requested.jobId).toBeNull();
     const geminiRequested = store.requestDispatch("gemini", "job_gemini");
     expect(geminiRequested.id).toBe(2);
+    expect(geminiRequested.token).toEqual(expect.any(String));
+    expect(geminiRequested.token).not.toBe(requested.token);
     expect(geminiRequested.platform).toBe("gemini");
     expect(geminiRequested.jobId).toBe("job_gemini");
     store.close();
@@ -255,6 +258,35 @@ describe("JobStore", () => {
     await restored.init();
     expect(restored.getDispatch()).toEqual(geminiRequested);
     restored.close();
+  });
+
+  it("resets a queued job's stale claim fields and creates a fresh targeted dispatch", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+    store.createJob({ id: "dispatch_reset", platform: "gpt", prompt: "hello", sourceImages: [], metadata: {} });
+    store.updateStatus("dispatch_reset", {
+      status: "queued",
+      tabId: 123,
+      workerId: "stale_worker",
+      errorMessage: "stale claim"
+    });
+    const before = store.requestDispatch("gpt", "dispatch_reset");
+
+    const result = store.resetDispatchBlock("dispatch_reset");
+
+    expect(result.job).toMatchObject({
+      id: "dispatch_reset",
+      status: "queued",
+      tabId: null,
+      workerId: null,
+      errorMessage: null
+    });
+    expect(result.dispatch).toMatchObject({ platform: "gpt", jobId: "dispatch_reset" });
+    expect(result.dispatch.id).toBe(before.id + 1);
+    expect(result.dispatch.token).not.toBe(before.token);
+    expect(fs.readFileSync(path.join(tmp, "data/jobs/dispatch_reset/events.jsonl"), "utf8"))
+      .toContain("job_dispatch_reset");
+    store.close();
   });
 
   it("claims the requested queued job when a job id is provided", async () => {

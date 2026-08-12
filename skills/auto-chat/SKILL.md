@@ -74,6 +74,14 @@ Use `auto-chat listen <jobId> --json` when raw SSE event shape matters. Prefer p
 
 Use `auto-chat concurrency` to inspect the current plugin scheduler max concurrency, and `auto-chat concurrency <1-8>` to update it. The default is 1.
 
+If a task remains `queued` after targeted dispatch and its `events.jsonl` has no `job_claimed`, check the extension's popup for a paused platform or an occupied concurrency slot. For a queued task with stale plugin ownership, reset only its dispatch state and issue a fresh targeted signal:
+
+```bash
+curl -X POST http://127.0.0.1:17321/jobs/<jobId>/dispatch/reset
+```
+
+This endpoint accepts only `queued` tasks. It preserves the prompt, outputs, and attempt count, records `job_dispatch_reset`, and returns `409 job_not_queued` for running tasks.
+
 Text output lives at `data/jobs/<jobId>/outputs/output-01.txt`. Image output lives under `data/jobs/<jobId>/outputs/`; use `image_order` events to confirm image order.
 
 Gemini image jobs should use `prompts: string[]` for multi-image tasks. Each array entry must describe exactly one image; the extension sends entries one by one because Gemini generates one image per conversation. GPT image jobs may still use a single multi-image prompt.

@@ -42,6 +42,7 @@ export type PopupState = {
   activePlatform: JobPlatform;
   extensionVersion: string;
   lastAcknowledgedDispatchId: number | null;
+  lastAcknowledgedDispatchToken: string | null;
   pendingDispatch: DispatchState | null;
   platforms: Record<JobPlatform, PlatformState>;
 };
