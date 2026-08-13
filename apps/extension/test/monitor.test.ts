@@ -4,6 +4,7 @@ import {
   selectGptErrorRefresh,
   selectMonitorStallRecovery,
   shouldCompleteImageJob,
+  shouldResubmitEmptyGptImage,
   shouldStopGptImageGeneration
 } from "../src/monitor.js";
 
@@ -113,5 +114,25 @@ describe("monitor stall recovery", () => {
       idleMs: 600_000,
       stallTimeoutMs: 120_000
     })).toBeNull();
+  });
+
+  it("resends a GPT image prompt when an empty completed turn leaves only More actions and a usable composer", () => {
+    const snapshot = {
+      platform: "gpt" as const,
+      mode: "image" as const,
+      sourceImageCount: 0,
+      assistantExists: true,
+      assistantText: "",
+      loadedImageCount: 0,
+      isGenerating: false,
+      composerInteractive: true,
+      hasOnlyResponseActionMenu: true
+    };
+
+    expect(shouldResubmitEmptyGptImage(snapshot)).toBe(true);
+    expect(shouldResubmitEmptyGptImage({ ...snapshot, isGenerating: true })).toBe(false);
+    expect(shouldResubmitEmptyGptImage({ ...snapshot, hasOnlyResponseActionMenu: false })).toBe(false);
+    expect(shouldResubmitEmptyGptImage({ ...snapshot, sourceImageCount: 1 })).toBe(false);
+    expect(shouldResubmitEmptyGptImage({ ...snapshot, loadedImageCount: 1 })).toBe(false);
   });
 });

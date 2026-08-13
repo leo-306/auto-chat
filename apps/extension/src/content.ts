@@ -9,6 +9,7 @@ import {
   selectGptErrorRefresh,
   selectMonitorStallRecovery,
   shouldCompleteImageJob,
+  shouldResubmitEmptyGptImage,
   shouldStopGptImageGeneration
 } from "./monitor.js";
 import { shouldCheckEmptyAssistantRecovery, shouldMonitorWithoutSubmit, shouldRetryReloadWithoutJobTurn, waitForEmptyAssistantRecovery } from "./recovery.js";
@@ -35,6 +36,7 @@ const MONITOR_INTERVAL_MS = 5000;
 const TEXT_DONE_STABLE_MS = 1000;
 const IMAGE_DONE_STABLE_MS = 2000;
 const GEMINI_SINGLE_IMAGE_DONE_STABLE_MS = 2000;
+const EMPTY_GPT_IMAGE_RESUBMIT_DELAY_MS = 10_000;
 // Mirrors GPT_IMAGE_RENDER_STALL_MIN_MS's role in monitor.ts: a floor on
 // the effective stall timeout so genuinely slow-but-still-progressing
 // image generation isn't cut off by the general-purpose stallTimeoutMs
@@ -335,6 +337,7 @@ async function monitorJob(
   let maybeDoneAt = 0;
   let retriedInPage = false;
   let requestedGptStop = false;
+  let resubmittedEmptyGptImage = hasResubmittedEmptyGptImage(job.id);
 
   try {
     while (!signal.aborted) {
@@ -428,6 +431,32 @@ async function monitorJob(
       if (state.isInterrupted) {
         await report(job.id, "stalled", state.interruptedText || "Connection interrupted while waiting for the complete answer.");
         return;
+      }
+
+      if (
+        !resubmittedEmptyGptImage &&
+        Date.now() - lastChangedAt >= EMPTY_GPT_IMAGE_RESUBMIT_DELAY_MS &&
+        shouldResubmitEmptyGptImage({
+          platform: job.platform,
+          mode: job.mode,
+          sourceImageCount: job.sourceImages.length,
+          assistantExists: state.assistantExists,
+          assistantText: state.assistantText,
+          loadedImageCount: state.loadedImages.length,
+          isGenerating: state.isGenerating,
+          composerInteractive: isComposerReadyForNextPrompt(),
+          hasOnlyResponseActionMenu: hasOnlyResponseActionMenu(job.id)
+        })
+      ) {
+        resubmittedEmptyGptImage = true;
+        markEmptyGptImageResubmitted(job.id);
+        await report(job.id, "sending_prompt");
+        await fillPromptAndSendGpt(job, true);
+        await report(job.id, "waiting_generation");
+        lastSignature = "";
+        lastChangedAt = Date.now();
+        maybeDoneAt = 0;
+        continue;
       }
 
       if (Date.now() - startedAt > appConfig.hardTimeoutMs) {
@@ -597,6 +626,25 @@ function findJobAssistant(jobId: string): HTMLElement | null {
   return findJobConversationScope(jobId)?.assistant ?? null;
 }
 
+function countJobUserTurns(jobId: string): number {
+  return findConversationTurns()
+    .filter(isUserTurn)
+    .filter(turn => (turn.innerText || "").includes(`JOB_ID: ${jobId}`))
+    .length;
+}
+
+function emptyGptImageResubmitKey(jobId: string): string {
+  return `auto-chat:empty-gpt-image-resubmit:${jobId}`;
+}
+
+function hasResubmittedEmptyGptImage(jobId: string): boolean {
+  return sessionStorage.getItem(emptyGptImageResubmitKey(jobId)) === "1";
+}
+
+function markEmptyGptImageResubmitted(jobId: string): void {
+  sessionStorage.setItem(emptyGptImageResubmitKey(jobId), "1");
+}
+
 function findJobScopedImages(jobId: string): HTMLImageElement[] {
   const scope = findJobConversationScope(jobId);
   if (!scope) return [];
@@ -737,13 +785,16 @@ function findGeneratedImageElements(root: ParentNode): HTMLImageElement[] {
 }
 
 function extractAssistantText(assistant: HTMLElement): string {
-  const message = assistant.querySelector<HTMLElement>("[data-message-author-role='assistant']");
-  const geminiMessage = assistant.querySelector<HTMLElement>("message-content .markdown, .model-response-text .markdown");
+  const content = assistant.cloneNode(true) as HTMLElement;
+  content.querySelectorAll('[aria-label="Response actions"], h4.sr-only, button, [role="button"]')
+    .forEach(control => control.remove());
+  const message = content.querySelector<HTMLElement>("[data-message-author-role='assistant']");
+  const geminiMessage = content.querySelector<HTMLElement>("message-content .markdown, .model-response-text .markdown");
   const markdown = message?.querySelector<HTMLElement>(".markdown") ?? geminiMessage;
   return (
     (markdown ? serializeRichText(markdown) : "") ||
     message?.innerText ||
-    assistant.innerText ||
+    content.innerText ||
     ""
   ).trim();
 }
@@ -980,6 +1031,11 @@ function isComposerInteractive(composer: HTMLElement | HTMLTextAreaElement): boo
   return composer.getAttribute("contenteditable") !== "false";
 }
 
+function isComposerReadyForNextPrompt(): boolean {
+  const composer = findComposer();
+  return Boolean(composer && isComposerInteractive(composer));
+}
+
 async function uploadSources(job: Job): Promise<void> {
   if (job.sourceImages.length === 0) return;
   let input = document.querySelector<HTMLInputElement>('input[type="file"]');
@@ -1018,10 +1074,11 @@ async function pasteGeminiSources(job: Job, composer: HTMLElement | HTMLTextArea
   await sleep(500);
 }
 
-async function fillPromptAndSendGpt(job: Job): Promise<void> {
+async function fillPromptAndSendGpt(job: Job, requireNewUserTurn = false): Promise<void> {
   const { prompt } = job;
   const isNewConversation = !hasRecordedConversation(job);
   const capture = isNewConversation ? startGptConversationUrlCapture() : null;
+  const existingUserTurnCount = requireNewUserTurn ? countJobUserTurns(job.id) : 0;
 
   try {
     const composer = fillPrompt(prompt);
@@ -1031,7 +1088,9 @@ async function fillPromptAndSendGpt(job: Job): Promise<void> {
       composer,
       sendButton,
       getSendButton: findSendButton,
-      isSubmitted: () => isPromptSubmitted(prompt),
+      isSubmitted: async () => requireNewUserTurn
+        ? countJobUserTurns(job.id) > existingUserTurnCount
+        : isPromptSubmitted(prompt),
       onWaitingForSubmitReady: () => report(job.id, "waiting_upload_ready"),
       sleep
     })) return;
@@ -1271,6 +1330,14 @@ function findSendButton(): HTMLButtonElement | null {
       !/stop|microphone|麦克风/i.test(label) &&
       testId !== "stop-button";
   }) ?? null;
+}
+
+function hasOnlyResponseActionMenu(jobId: string): boolean {
+  const assistant = findJobAssistant(jobId);
+  if (!assistant) return false;
+  const actions = [...assistant.querySelectorAll<HTMLButtonElement>('[aria-label="Response actions"] button')]
+    .filter(isVisible);
+  return actions.length === 1 && actions[0]?.getAttribute("aria-haspopup") === "menu";
 }
 
 function hasActiveGenerationControl(): boolean {

@@ -24,6 +24,28 @@ export function shouldStopGptImageGeneration(input: {
   return input.platform === "gpt" && input.isGenerating && input.imageJobComplete;
 }
 
+export function shouldResubmitEmptyGptImage(input: {
+  platform: JobPlatform;
+  mode: Job["mode"];
+  sourceImageCount: number;
+  assistantExists: boolean;
+  assistantText: string;
+  loadedImageCount: number;
+  isGenerating: boolean;
+  composerInteractive: boolean;
+  hasOnlyResponseActionMenu: boolean;
+}): boolean {
+  return input.platform === "gpt" &&
+    input.mode === "image" &&
+    input.sourceImageCount === 0 &&
+    input.assistantExists &&
+    !input.assistantText.trim() &&
+    input.loadedImageCount === 0 &&
+    !input.isGenerating &&
+    input.composerInteractive &&
+    input.hasOnlyResponseActionMenu;
+}
+
 export function selectGptErrorRefresh(input: {
   platform: JobPlatform;
   refreshCount: number;
