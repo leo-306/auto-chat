@@ -36,7 +36,7 @@ const MONITOR_INTERVAL_MS = 5000;
 const TEXT_DONE_STABLE_MS = 1000;
 const IMAGE_DONE_STABLE_MS = 2000;
 const GEMINI_SINGLE_IMAGE_DONE_STABLE_MS = 2000;
-const EMPTY_GPT_IMAGE_RESUBMIT_DELAY_MS = 10_000;
+const EMPTY_GPT_IMAGE_RECOVERY_DELAY_MS = 10_000;
 // Mirrors GPT_IMAGE_RENDER_STALL_MIN_MS's role in monitor.ts: a floor on
 // the effective stall timeout so genuinely slow-but-still-progressing
 // image generation isn't cut off by the general-purpose stallTimeoutMs
@@ -126,10 +126,30 @@ async function startJob(
   await waitForComposer();
   await waitForConversationPageReady(job);
   if (job.platform === "gpt") {
+    if (recoveryMode === "resubmit_after_refresh") {
+      // A refresh can reveal a late image or a real response. Only resend
+      // when the stable page still has the exact empty-turn failure shape.
+      const state = await inspectJob(job.id, job.platform);
+      if (!shouldResubmitEmptyGptImage({
+        platform: job.platform,
+        mode: job.mode,
+        sourceImageCount: job.sourceImages.length,
+        assistantExists: state.assistantExists,
+        assistantText: state.assistantText,
+        loadedImageCount: state.loadedImages.length,
+        isGenerating: state.isGenerating,
+        composerInteractive: isComposerReadyForNextPrompt(),
+        hasOnlyResponseActionMenu: hasOnlyResponseActionMenu(job.id)
+      })) {
+        await report(job.id, "waiting_generation");
+        void monitorJob(job, nextConfig, controller.signal).finally(() => controller.abort());
+        return;
+      }
+    }
     await report(job.id, "uploading");
     await uploadSources(job);
     await report(job.id, "sending_prompt");
-    await fillPromptAndSendGpt(job);
+    await fillPromptAndSendGpt(job, recoveryMode === "resubmit_after_refresh");
   } else if (job.platform === "doubao") {
     if (job.sourceImages.length > 0) {
       await report(job.id, "uploading");
@@ -435,7 +455,7 @@ async function monitorJob(
 
       if (
         !resubmittedEmptyGptImage &&
-        Date.now() - lastChangedAt >= EMPTY_GPT_IMAGE_RESUBMIT_DELAY_MS &&
+        Date.now() - lastChangedAt >= EMPTY_GPT_IMAGE_RECOVERY_DELAY_MS &&
         shouldResubmitEmptyGptImage({
           platform: job.platform,
           mode: job.mode,
@@ -450,13 +470,14 @@ async function monitorJob(
       ) {
         resubmittedEmptyGptImage = true;
         markEmptyGptImageResubmitted(job.id);
-        await report(job.id, "sending_prompt");
-        await fillPromptAndSendGpt(job, true);
-        await report(job.id, "waiting_generation");
-        lastSignature = "";
-        lastChangedAt = Date.now();
-        maybeDoneAt = 0;
-        continue;
+        await sendProgress({
+          type: "JOB_PROGRESS",
+          jobId: job.id,
+          status: "stalled",
+          recoveryMode: "resubmit_after_refresh",
+          errorMessage: "GPT returned an empty image response; refreshing the conversation before one resubmission."
+        });
+        return;
       }
 
       if (Date.now() - startedAt > appConfig.hardTimeoutMs) {
@@ -1009,7 +1030,7 @@ async function waitForConversationPageReady(
   job: Job,
   requireConversationContent = hasRecordedConversation(job)
 ): Promise<void> {
-  await waitForStableReadiness({
+  const readiness = await waitForStableReadiness({
     inspect: () => {
       const composer = findComposer();
       return document.readyState === "complete" &&
@@ -1018,6 +1039,9 @@ async function waitForConversationPageReady(
     },
     sleep
   });
+  if (readiness === "timeout") {
+    throw new RetryableJobError(`${platformLabel()} conversation did not become stable before prompt submission.`);
+  }
 }
 
 function hasRecordedConversation(job: Job): boolean {

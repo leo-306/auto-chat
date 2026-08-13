@@ -2,7 +2,10 @@ import type { JobMode, JobPlatform } from "auto-chat-shared";
 
 export const GPT_EMPTY_ASSISTANT_CHECK_DELAY_MS = 15_000;
 
-export type EmptyAssistantRecoveryMode = "monitor_only" | "retry_after_refresh";
+export type EmptyAssistantRecoveryMode =
+  | "monitor_only"
+  | "retry_after_refresh"
+  | "resubmit_after_refresh";
 
 export type EmptyAssistantSnapshot = {
   assistantExists: boolean;
@@ -57,6 +60,10 @@ export function shouldMonitorWithoutSubmit(input: {
   // into needs_manual. These jobs must always go back through the
   // per-image flow instead of being monitored in place.
   if (input.isGeminiMultiImage) return false;
+  // An empty GPT image response must refresh the conversation first, then
+  // submit exactly once from the stable post-refresh page. The stale empty
+  // assistant turn would otherwise make this look like monitor-only work.
+  if (input.recoveryMode === "resubmit_after_refresh") return false;
   if (input.recoveryMode) return true;
   return input.reloadOnly || input.hasExistingAssistant;
 }

@@ -116,7 +116,7 @@ describe("monitor stall recovery", () => {
     })).toBeNull();
   });
 
-  it("resends a GPT image prompt when an empty completed turn leaves only More actions and a usable composer", () => {
+  it("identifies the empty GPT image response that must refresh before one resend", () => {
     const snapshot = {
       platform: "gpt" as const,
       mode: "image" as const,
