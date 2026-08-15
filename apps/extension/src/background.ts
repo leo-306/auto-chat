@@ -1,6 +1,7 @@
 import type { AppConfig, ArtifactRequest, ClaimJobRequest, DispatchState, Job, JobPlatform, UpdateStatusRequest } from "auto-chat-shared";
 import { DEFAULT_CONFIG } from "auto-chat-shared";
 import { isDispatchPending, shouldAcknowledgeDispatch } from "./dispatch.js";
+import { shouldRestoreGptConversation } from "./homeRedirectRecovery.js";
 import type { EmptyAssistantRecoveryMode } from "./recovery.js";
 import type { DebugInspectMessage, DebugInspectResult, ExpectNavigationMessage, JobProgressMessage, PopupState, RequestImageDownloadResult, StartJobMessage, WorkerRecord } from "./types.js";
 
@@ -71,7 +72,24 @@ async function recoverFromUnexpectedReload(tabId: number, worker: WorkerRecord):
     if (workers.get(tabId) !== worker) return;
     const job = await api<Job>(`/jobs/${worker.jobId}`);
     if (!RECHECKABLE_STATUSES.has(job.status)) return;
+    const tab = await getTab(tabId);
+    if (shouldRestoreGptConversation({
+      conversationUrl: job.conversationUrl,
+      currentUrl: tab?.url
+    })) {
+      worker.expectingReload = true;
+      await postStatus(worker.jobId, {
+        status: "waiting_generation",
+        tabId,
+        conversationUrl: job.conversationUrl!,
+        workerId
+      });
+      await chrome.tabs.update(tabId, { url: job.conversationUrl! });
+      await waitForTabComplete(tabId);
+      if (workers.get(tabId) !== worker) return;
+    }
     await sendStartMessage(tabId, job, "monitor_only");
+    worker.expectingReload = false;
   } catch (error) {
     await postStatus(worker.jobId, {
       status: "needs_manual",

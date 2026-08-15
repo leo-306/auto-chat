@@ -73,18 +73,5 @@ export function selectMonitorStallRecovery(input: {
     };
   }
 
-  const renderStallTimeoutMs = Math.max(input.stallTimeoutMs, GPT_IMAGE_RENDER_STALL_MIN_MS);
-  if (
-    input.platform === "gpt" &&
-    input.mode === "image" &&
-    input.isGenerating &&
-    input.idleMs > renderStallTimeoutMs
-  ) {
-    return {
-      errorMessage: "GPT image generation made no visible rendering progress; refreshing to load the completed image.",
-      recoveryMode: "monitor_only"
-    };
-  }
-
   return null;
 }

@@ -37,11 +37,8 @@ const TEXT_DONE_STABLE_MS = 1000;
 const IMAGE_DONE_STABLE_MS = 2000;
 const GEMINI_SINGLE_IMAGE_DONE_STABLE_MS = 2000;
 const EMPTY_GPT_IMAGE_RECOVERY_DELAY_MS = 10_000;
-// Mirrors GPT_IMAGE_RENDER_STALL_MIN_MS's role in monitor.ts: a floor on
-// the effective stall timeout so genuinely slow-but-still-progressing
-// image generation isn't cut off by the general-purpose stallTimeoutMs
-// default. A real multi-image job was observed hitting the 5-minute
-// default stall timeout while still legitimately mid-generation.
+// Gemini can take longer than the generic stall threshold to render a
+// single image, so its dedicated loop keeps a larger lower bound.
 const GEMINI_IMAGE_STALL_MIN_MS = 480_000;
 const answeredGptImagePreferenceComparisons = new WeakSet<HTMLElement>();
 
@@ -413,6 +410,15 @@ async function monitorJob(
           });
           return;
         }
+        await sleep(MONITOR_INTERVAL_MS);
+        continue;
+      }
+
+      // ChatGPT can show a transient error banner while the response below it
+      // still says "Thinking / Generating a more detailed image" and exposes
+      // the stop control. That is active work, not a failed generation: keep
+      // this tab and monitor until the platform stops generating.
+      if (state.isGenerating) {
         await sleep(MONITOR_INTERVAL_MS);
         continue;
       }

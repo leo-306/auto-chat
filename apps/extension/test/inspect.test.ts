@@ -10,6 +10,10 @@ describe("generation state detection", () => {
     expect(hasGeneratingText("Thinking")).toBe(true);
   });
 
+  it("treats ChatGPT's detailed-image placeholder as active generation", () => {
+    expect(hasGeneratingText("Thinking\nGenerating a more detailed image — hang tight.")).toBe(true);
+  });
+
   it("recognizes the ChatGPT stop button as active generation", () => {
     expect(isGenerationStopControl("stop-button", "")).toBe(true);
     expect(isGenerationStopControl(null, "Stop generating")).toBe(true);
