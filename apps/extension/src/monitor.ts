@@ -2,6 +2,7 @@ import type { Job, JobPlatform } from "auto-chat-shared";
 import type { EmptyAssistantRecoveryMode } from "./recovery.js";
 
 export const GPT_IMAGE_RENDER_STALL_MIN_MS = 180_000;
+export const GPT_IMAGE_STOP_CONFIRM_TIMEOUT_MS = 4_000;
 
 export type MonitorStallRecovery = {
   errorMessage: string;
@@ -22,6 +23,29 @@ export function shouldStopGptImageGeneration(input: {
   imageJobComplete: boolean;
 }): boolean {
   return input.platform === "gpt" && input.isGenerating && input.imageJobComplete;
+}
+
+export function selectStuckGptImageStopRecovery(input: {
+  platform: JobPlatform;
+  imageJobComplete: boolean;
+  isGenerating: boolean;
+  stopRequestedAt: number;
+  now: number;
+}): MonitorStallRecovery | null {
+  if (
+    input.platform !== "gpt" ||
+    !input.imageJobComplete ||
+    !input.isGenerating ||
+    !input.stopRequestedAt ||
+    input.now - input.stopRequestedAt < GPT_IMAGE_STOP_CONFIRM_TIMEOUT_MS
+  ) {
+    return null;
+  }
+
+  return {
+    errorMessage: "ChatGPT stop control remained loading for 4 seconds after a complete image was found; refreshing the conversation before collecting the image.",
+    recoveryMode: "monitor_only"
+  };
 }
 
 export function shouldResubmitEmptyGptImage(input: {

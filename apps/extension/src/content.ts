@@ -8,6 +8,7 @@ import { hasGeneratingText, isGenerationStopControl } from "./inspect.js";
 import {
   selectGptErrorRefresh,
   selectMonitorStallRecovery,
+  selectStuckGptImageStopRecovery,
   shouldCompleteImageJob,
   shouldResubmitEmptyGptImage,
   shouldStopGptImageGeneration
@@ -353,7 +354,7 @@ async function monitorJob(
   let lastChangedAt = Date.now();
   let maybeDoneAt = 0;
   let retriedInPage = false;
-  let requestedGptStop = false;
+  let gptStopRequestedAt = 0;
   let resubmittedEmptyGptImage = hasResubmittedEmptyGptImage(job.id);
 
   try {
@@ -386,13 +387,38 @@ async function monitorJob(
       // error banner for the preceding user turn. The scoped images are the
       // authoritative result, so finish collecting them before error UI.
       if (enoughImages) {
-        if (!requestedGptStop && shouldStopGptImageGeneration({
+        if (!gptStopRequestedAt && shouldStopGptImageGeneration({
           platform: job.platform,
           isGenerating: state.isGenerating,
           imageJobComplete: enoughImages
-        }) && stopActiveGptGeneration()) {
-          requestedGptStop = true;
+        })) {
+          // Record the request even if ChatGPT has already replaced its active
+          // stop control with a disabled spinner. That state must settle within
+          // four seconds; otherwise the next prompt cannot be submitted.
+          stopActiveGptGeneration();
+          gptStopRequestedAt = Date.now();
           maybeDoneAt = 0;
+          await sleep(500);
+          continue;
+        }
+        const stuckStopRecovery = selectStuckGptImageStopRecovery({
+          platform: job.platform,
+          imageJobComplete: enoughImages,
+          isGenerating: state.isGenerating,
+          stopRequestedAt: gptStopRequestedAt,
+          now: Date.now()
+        });
+        if (stuckStopRecovery) {
+          await sendProgress({
+            type: "JOB_PROGRESS",
+            jobId: job.id,
+            status: "stalled",
+            recoveryMode: stuckStopRecovery.recoveryMode,
+            errorMessage: stuckStopRecovery.errorMessage
+          });
+          return;
+        }
+        if (gptStopRequestedAt && state.isGenerating) {
           await sleep(500);
           continue;
         }
@@ -1376,7 +1402,7 @@ function hasActiveGenerationControl(): boolean {
 
 function stopActiveGptGeneration(): boolean {
   const button = findActiveGenerationControl();
-  if (!button) return false;
+  if (!button || button.disabled || button.getAttribute("aria-disabled") === "true") return false;
   button.click();
   return true;
 }

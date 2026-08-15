@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   GPT_IMAGE_RENDER_STALL_MIN_MS,
+  GPT_IMAGE_STOP_CONFIRM_TIMEOUT_MS,
   selectGptErrorRefresh,
   selectMonitorStallRecovery,
+  selectStuckGptImageStopRecovery,
   shouldCompleteImageJob,
   shouldResubmitEmptyGptImage,
   shouldStopGptImageGeneration
@@ -38,6 +40,29 @@ describe("monitor stall recovery", () => {
       isGenerating: true,
       imageJobComplete: true
     })).toBe(false);
+  });
+
+  it("refreshes a completed GPT image when its stop control keeps loading for four seconds", () => {
+    const snapshot = {
+      platform: "gpt" as const,
+      imageJobComplete: true,
+      isGenerating: true,
+      stopRequestedAt: 10_000
+    };
+
+    expect(selectStuckGptImageStopRecovery({
+      ...snapshot,
+      now: 10_000 + GPT_IMAGE_STOP_CONFIRM_TIMEOUT_MS - 1
+    })).toBeNull();
+    expect(selectStuckGptImageStopRecovery({
+      ...snapshot,
+      now: 10_000 + GPT_IMAGE_STOP_CONFIRM_TIMEOUT_MS
+    })).toMatchObject({ recoveryMode: "monitor_only" });
+    expect(selectStuckGptImageStopRecovery({
+      ...snapshot,
+      platform: "gemini",
+      now: 10_000 + GPT_IMAGE_STOP_CONFIRM_TIMEOUT_MS
+    })).toBeNull();
   });
 
   it("refreshes the first GPT error before retrying it in the page", () => {
