@@ -2,7 +2,7 @@ import { buildGeminiOutputPrompt, findLatestJobConversationScope } from "auto-ch
 import type { AppConfig, ConversationTurnRole, Job, JobPlatform } from "auto-chat-shared";
 import { findGeminiSendControl, isGeminiSendDisabled } from "./gemini.js";
 import { answerGptImagePreferenceComparisons } from "./gptPreference.js";
-import { isGptConversationPath, shouldReloadCapturedConversation } from "./homeRedirectRecovery.js";
+import { isGptConversationPath, normalizeGptConversationUrl, shouldReloadCapturedConversation } from "./homeRedirectRecovery.js";
 import { isDoubaoDownloadControl } from "./imageDownload.js";
 import { hasGeneratingText, isGenerationStopControl } from "./inspect.js";
 import {
@@ -33,6 +33,16 @@ const EMPTY_GPT_IMAGE_RECOVERY_DELAY_MS = 10_000;
 // single image, so its dedicated loop keeps a larger lower bound.
 const GEMINI_IMAGE_STALL_MIN_MS = 480_000;
 const answeredGptImagePreferenceComparisons = new WeakSet<HTMLElement>();
+
+type CollectedImage = {
+  index: number;
+  sourceId: string;
+  dataUrl: string;
+  contentType: string;
+  byteLength: number;
+  sha256: string;
+  acquisition: "gpt_direct" | "gpt_share_sheet" | "gemini_download" | "doubao_download" | "element_url";
+};
 
 class RetryableJobError extends Error {}
 
@@ -369,6 +379,7 @@ async function monitorJob(
   let maybeDoneAt = 0;
   let retriedInPage = false;
   let gptStopRequestedAt = 0;
+  let capturedGptImages: CollectedImage[] | null = null;
   let resubmittedEmptyGptImage = hasResubmittedEmptyGptImage(job.id);
   let lastTraceSignature = "";
   await traceJob(job.id, "monitor_started", {
@@ -406,11 +417,23 @@ async function monitorJob(
         await traceJob(job.id, "monitor_snapshot", monitorSnapshot(job, state));
       }
 
-      const enoughImages = shouldCompleteImageJob({
+      const visibleEnoughImages = shouldCompleteImageJob({
         mode: job.mode,
         loadedImageCount: state.loadedImages.length,
         expectedImageCount: job.expectedImageCount
       });
+      if (
+        visibleEnoughImages &&
+        !capturedGptImages &&
+        job.platform === "gpt" &&
+        state.isGenerating
+      ) {
+        // Stopping an in-progress GPT response can remove its assistant turn.
+        // Fetch the assistant's completed image before requesting that stop.
+        capturedGptImages = await collectImages(state.loadedImages.slice(0, job.expectedImageCount));
+        await traceJob(job.id, "gpt_image_captured_before_stop", { imageCount: capturedGptImages.length });
+      }
+      const enoughImages = visibleEnoughImages || capturedGptImages !== null;
       // ChatGPT can render a complete image turn while retaining a stale
       // error banner for the preceding user turn. The scoped images are the
       // authoritative result, so finish collecting them before error UI.
@@ -468,7 +491,7 @@ async function monitorJob(
             jobId: job.id,
             status: "done",
             signature: state.signature,
-            images: await collectImages(state.loadedImages.slice(0, job.expectedImageCount))
+            images: capturedGptImages ?? await collectImages(state.loadedImages.slice(0, job.expectedImageCount))
           });
           return;
         }
@@ -757,6 +780,7 @@ function findJobScopedImages(jobId: string): HTMLImageElement[] {
   if (!scope) return [];
 
   return findLoadedImages(document).filter(img =>
+    !scope.user.contains(img) &&
     isAfter(img, scope.user) && (!scope.nextUser || isBefore(img, scope.nextUser))
   );
 }
@@ -1242,7 +1266,8 @@ async function fillPromptAndSendGpt(job: Job, requireNewUserTurn = false): Promi
 function startGptConversationUrlCapture(): { getUrl: () => string | null; stop: () => void } {
   let capturedUrl: string | null = null;
   const capture = () => {
-    if (!capturedUrl && isGptConversationPath(location.pathname)) capturedUrl = location.href;
+    const normalizedUrl = normalizeGptConversationUrl(location.href);
+    if (!capturedUrl && normalizedUrl && isGptConversationPath(location.pathname)) capturedUrl = normalizedUrl;
   };
 
   const originalPushState = history.pushState.bind(history);
@@ -1542,15 +1567,7 @@ async function sourceToFile(source: string, index: number): Promise<File> {
   return new File([blob], `source-${index + 1}.${ext}`, { type: blob.type || "image/png" });
 }
 
-async function collectImages(images: HTMLImageElement[]): Promise<Array<{
-  index: number;
-  sourceId: string;
-  dataUrl: string;
-  contentType: string;
-  byteLength: number;
-  sha256: string;
-  acquisition: "gpt_direct" | "gpt_share_sheet" | "gemini_download" | "doubao_download" | "element_url";
-}>> {
+async function collectImages(images: HTMLImageElement[]): Promise<CollectedImage[]> {
   const result = [];
   for (const [index, image] of images.entries()) {
     const { blob, acquisition } = await fetchBestImageBlob(image);

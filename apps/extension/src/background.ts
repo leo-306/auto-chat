@@ -1,7 +1,7 @@
 import type { AppConfig, ArtifactRequest, ClaimJobRequest, DispatchState, Job, JobPlatform, UpdateStatusRequest } from "auto-chat-shared";
 import { DEFAULT_CONFIG } from "auto-chat-shared";
 import { isDispatchPending, shouldAcknowledgeDispatch } from "./dispatch.js";
-import { shouldRestoreGptConversation } from "./homeRedirectRecovery.js";
+import { normalizeGptConversationUrl, shouldRestoreGptConversation } from "./homeRedirectRecovery.js";
 import type { EmptyAssistantRecoveryMode } from "./recovery.js";
 import type { DebugInspectMessage, DebugInspectResult, ExpectNavigationMessage, JobProgressMessage, JobTraceMessage, PopupState, RequestImageDownloadResult, StartJobMessage, WorkerRecord } from "./types.js";
 
@@ -49,10 +49,11 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   // or lands somewhere unrelated (e.g. a login redirect), so it won't match.
   const isEnteringConversation = Boolean(changeInfo.url && isConversationUrl(worker.platform, changeInfo.url));
   if (isEnteringConversation) {
+    const conversationUrl = normalizedConversationUrl(worker.platform, changeInfo.url!);
     void postStatus(worker.jobId, {
       status: "waiting_generation",
       tabId,
-      conversationUrl: changeInfo.url,
+      conversationUrl,
       workerId
     });
   }
@@ -78,14 +79,15 @@ async function recoverFromUnexpectedReload(tabId: number, worker: WorkerRecord):
       conversationUrl: job.conversationUrl,
       currentUrl: tab?.url
     })) {
+      const conversationUrl = normalizedConversationUrl(worker.platform, job.conversationUrl!);
       worker.expectingReload = true;
       await postStatus(worker.jobId, {
         status: "waiting_generation",
         tabId,
-        conversationUrl: job.conversationUrl!,
+        conversationUrl,
         workerId
       });
-      await chrome.tabs.update(tabId, { url: job.conversationUrl! });
+      await chrome.tabs.update(tabId, { url: conversationUrl });
       await waitForTabComplete(tabId);
       if (workers.get(tabId) !== worker) return;
     }
@@ -272,13 +274,16 @@ async function recheckJob(job: Job): Promise<void> {
     ? await getTab(activeWorker.tabId)
     : job.tabId === null ? null : await getTab(job.tabId);
   let tabId: number;
+  const conversationUrl = job.conversationUrl
+    ? normalizedConversationUrl(job.platform, job.conversationUrl)
+    : null;
 
   if (recordedTab?.id) {
     tabId = recordedTab.id;
     await chrome.tabs.update(tabId, { active: true });
   } else {
-    if (!job.conversationUrl) throw new Error(`Job has no recorded conversation URL: ${job.id}`);
-    const tab = await chrome.tabs.create({ url: job.conversationUrl, active: true });
+    if (!conversationUrl) throw new Error(`Job has no recorded conversation URL: ${job.id}`);
+    const tab = await chrome.tabs.create({ url: conversationUrl, active: true });
     if (!tab.id) throw new Error("Chrome did not return a tab id");
     tabId = tab.id;
   }
@@ -310,7 +315,7 @@ async function recheckJob(job: Job): Promise<void> {
     await postStatus(job.id, {
       status: "refreshing",
       tabId,
-      ...(job.conversationUrl ? { conversationUrl: job.conversationUrl } : {}),
+      ...(conversationUrl ? { conversationUrl } : {}),
       refreshCount: job.refreshCount,
       workerId
     });
@@ -422,7 +427,9 @@ async function pruneTerminalWorkers(): Promise<void> {
 async function launchJob(job: Job): Promise<void> {
   let tabId: number;
   let needsLoad = true;
-  let conversationUrl = job.conversationUrl;
+  let conversationUrl = job.conversationUrl
+    ? normalizedConversationUrl(job.platform, job.conversationUrl)
+    : null;
   const reloadOnly = job.metadata.autoChatReloadOnly === true;
   const activateTab = job.platform === "gpt" || job.mode === "image" || reloadOnly;
 
@@ -435,7 +442,7 @@ async function launchJob(job: Job): Promise<void> {
       needsLoad = false;
       if (activateTab) await chrome.tabs.update(tabId, { active: true });
       conversationUrl = parentTab.url && isConversationUrl(job.platform, parentTab.url)
-        ? parentTab.url
+        ? normalizedConversationUrl(job.platform, parentTab.url)
         : await findRecordedConversationUrl(parentJob);
     } else {
       conversationUrl = await findRecordedConversationUrl(parentJob);
@@ -446,7 +453,7 @@ async function launchJob(job: Job): Promise<void> {
     }
   } else {
     const tab = await chrome.tabs.create({
-      url: job.conversationUrl ?? urlForPlatform(job.platform),
+      url: conversationUrl ?? urlForPlatform(job.platform),
       active: activateTab
     });
     if (!tab.id) throw new Error("Chrome did not return a tab id");
@@ -1030,7 +1037,11 @@ function platformName(platform: JobPlatform): string {
 function isConversationUrl(platform: JobPlatform, url: string): boolean {
   if (platform === "gemini") return url.includes("gemini.google.com/app");
   if (platform === "doubao") return /doubao\.com\/chat\/\d+/.test(url);
-  return url.includes("/c/");
+  return normalizeGptConversationUrl(url) !== null;
+}
+
+function normalizedConversationUrl(platform: JobPlatform, url: string): string {
+  return platform === "gpt" ? normalizeGptConversationUrl(url) ?? url : url;
 }
 
 function debugImage(): { index: number; sourceId: string; dataUrl: string; contentType: string } {
@@ -1073,7 +1084,7 @@ async function findRecordedConversationUrl(job: Job): Promise<string | null> {
   let current: Job | null = job;
   while (current && !visited.has(current.id)) {
     visited.add(current.id);
-    if (current.conversationUrl) return current.conversationUrl;
+    if (current.conversationUrl) return normalizedConversationUrl(current.platform, current.conversationUrl);
     current = current.parentJobId
       ? await api<Job>(`/jobs/${current.parentJobId}`)
       : null;
