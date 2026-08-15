@@ -6,6 +6,7 @@ import { isGptConversationPath, shouldReloadCapturedConversation } from "./homeR
 import { isDoubaoDownloadControl } from "./imageDownload.js";
 import { hasGeneratingText, isGenerationStopControl } from "./inspect.js";
 import {
+  hasExplicitGenerationError,
   selectGptErrorRefresh,
   selectMonitorStallRecovery,
   selectStuckGptImageStopRecovery,
@@ -17,21 +18,11 @@ import { shouldCheckEmptyAssistantRecovery, shouldMonitorWithoutSubmit, shouldRe
 import type { EmptyAssistantRecoveryMode } from "./recovery.js";
 import { waitForStableReadiness } from "./readiness.js";
 import { submitPromptWithFallback } from "./submit.js";
-import type { DebugInspectMessage, DebugInspectResult, JobProgressMessage, StartJobMessage } from "./types.js";
+import type { DebugInspectMessage, DebugInspectResult, JobProgressMessage, JobTraceMessage, StartJobMessage } from "./types.js";
 
 let activeJob: Job | null = null;
 let config: AppConfig | null = null;
 let monitorAbort: AbortController | null = null;
-const ERROR_TEXT_PATTERN = /Something went wrong|Retry|Try again|出错|重试/i;
-// Bare "Retry"/"重试" (used above for GPT/豆包) false-positives on Gemini:
-// every completed response has a persistent "Redo" regenerate control in
-// its actions bar, and its accessible label/tooltip text can read as
-// "重试" in a Chinese-language UI — so a fully-successful response with its
-// image already collected would still be flagged as an error. The
-// reference implementation avoids this entirely by matching only full
-// error phrases, never the bare word alone; mirror that for Gemini here.
-const GEMINI_ERROR_TEXT_PATTERN =
-  /Something went wrong|There was a problem generating|Failed to generate|rate limit|too many requests|try again later|出了点问题|生成失败|请求过多|稍后再试/i;
 const INTERRUPTED_TEXT_PATTERN = /Connection interrupted|Waiting for the complete answer|连接中断|等待完整回答/i;
 const MONITOR_INTERVAL_MS = 5000;
 const TEXT_DONE_STABLE_MS = 1000;
@@ -82,6 +73,13 @@ async function startJob(
   monitorAbort?.abort();
   const controller = new AbortController();
   monitorAbort = controller;
+  await traceJob(job.id, "content_start", {
+    platform: job.platform,
+    mode: job.mode,
+    expectedImageCount: job.expectedImageCount,
+    recoveryMode: recoveryMode ?? "initial",
+    reloadOnly: isReloadOnly(job)
+  });
 
   if (isReloadOnly(job)) {
     const hasJobUserTurn = await waitForReloadConversation(job.id);
@@ -102,6 +100,10 @@ async function startJob(
     hasExistingAssistant: Boolean(existing),
     isGeminiMultiImage
   })) {
+    await traceJob(job.id, "monitor_only_selected", {
+      recoveryMode: recoveryMode ?? "existing_conversation",
+      hasExistingAssistant: Boolean(existing)
+    });
     if (recoveryMode || isReloadOnly(job)) {
       await report(job.id, "waiting_generation");
     }
@@ -110,6 +112,10 @@ async function startJob(
   }
 
   if (job.platform === "gemini" && job.mode === "image") {
+    await traceJob(job.id, "gemini_image_flow_selected", {
+      recoveryMode: recoveryMode ?? "initial",
+      startFromFreshChat: Boolean(recoveryMode) && Boolean(existing)
+    });
     // A restart triggered by recovery (stall/unexpected-reload) can land back
     // here mid-conversation, with a previous attempt's image still on the
     // page. runGeminiImageJob always starts counting from output 1 without
@@ -159,6 +165,11 @@ async function startJob(
   } else {
     await fillPromptPasteSourcesAndSendGemini(job, job.prompt);
   }
+  await traceJob(job.id, "prompt_submitted", {
+    platform: job.platform,
+    mode: job.mode,
+    recoveryMode: recoveryMode ?? "initial"
+  });
   await report(job.id, "waiting_generation");
   void monitorJob(job, nextConfig, controller.signal).finally(() => controller.abort());
   if (shouldCheckEmptyAssistantRecovery(job.platform, job.mode)) {
@@ -210,6 +221,7 @@ async function runGeminiImageJob(
   try {
     for (let outputIndex = 1; outputIndex <= total; outputIndex += 1) {
       if (signal.aborted) return;
+      await traceJob(job.id, "gemini_image_turn_started", { outputIndex, total });
       if (outputIndex > 1 || startFromFreshChat) await startGeminiNewChat(appConfig);
 
       const prompt = total > 1
@@ -223,6 +235,7 @@ async function runGeminiImageJob(
 
       const image = await waitForGeminiSingleImage(job, appConfig, signal);
       images.push({ ...image, index: outputIndex - 1 });
+      await traceJob(job.id, "gemini_image_turn_collected", { outputIndex, total });
       await sendProgress({ type: "JOB_PROGRESS", jobId: job.id, status: "maybe_done", images: [...images] });
     }
 
@@ -233,6 +246,7 @@ async function runGeminiImageJob(
       images
     });
   } catch (error) {
+    await traceJob(job.id, "gemini_image_flow_failed", { message: String(error) });
     await report(job.id, "failed_retryable", String(error));
   }
 }
@@ -356,15 +370,25 @@ async function monitorJob(
   let retriedInPage = false;
   let gptStopRequestedAt = 0;
   let resubmittedEmptyGptImage = hasResubmittedEmptyGptImage(job.id);
+  let lastTraceSignature = "";
+  await traceJob(job.id, "monitor_started", {
+    platform: job.platform,
+    mode: job.mode,
+    retryAfterRefresh,
+    stallTimeoutMs: appConfig.stallTimeoutMs,
+    hardTimeoutMs: appConfig.hardTimeoutMs
+  });
 
   try {
     while (!signal.aborted) {
       if (job.platform === "gpt" && dismissRateLimitModal()) {
+        await traceJob(job.id, "rate_limit_modal_detected", { platform: job.platform });
         await report(job.id, "rate_limited");
         return;
       }
 
       if (job.platform === "gpt" && job.mode === "image" && answerGptImagePreferences(job.id)) {
+        await traceJob(job.id, "gpt_image_preference_answered", { platform: job.platform });
         lastChangedAt = Date.now();
         maybeDoneAt = 0;
         await sleep(1000);
@@ -377,6 +401,10 @@ async function monitorJob(
         lastChangedAt = Date.now();
         maybeDoneAt = 0;
       }
+      if (state.signature !== lastTraceSignature) {
+        lastTraceSignature = state.signature;
+        await traceJob(job.id, "monitor_snapshot", monitorSnapshot(job, state));
+      }
 
       const enoughImages = shouldCompleteImageJob({
         mode: job.mode,
@@ -387,6 +415,7 @@ async function monitorJob(
       // error banner for the preceding user turn. The scoped images are the
       // authoritative result, so finish collecting them before error UI.
       if (enoughImages) {
+        await traceJob(job.id, "expected_images_detected", monitorSnapshot(job, state));
         if (!gptStopRequestedAt && shouldStopGptImageGeneration({
           platform: job.platform,
           isGenerating: state.isGenerating,
@@ -397,6 +426,7 @@ async function monitorJob(
           // four seconds; otherwise the next prompt cannot be submitted.
           stopActiveGptGeneration();
           gptStopRequestedAt = Date.now();
+          await traceJob(job.id, "gpt_stop_requested_after_image", monitorSnapshot(job, state));
           maybeDoneAt = 0;
           await sleep(500);
           continue;
@@ -409,6 +439,11 @@ async function monitorJob(
           now: Date.now()
         });
         if (stuckStopRecovery) {
+          await traceJob(job.id, "monitor_recovery_selected", {
+            ...monitorSnapshot(job, state),
+            reason: stuckStopRecovery.errorMessage,
+            recoveryMode: stuckStopRecovery.recoveryMode
+          });
           await sendProgress({
             type: "JOB_PROGRESS",
             jobId: job.id,
@@ -427,6 +462,7 @@ async function monitorJob(
           await sendProgress({ type: "JOB_PROGRESS", jobId: job.id, status: "maybe_done", signature: state.signature });
         }
         if (Date.now() - maybeDoneAt > IMAGE_DONE_STABLE_MS) {
+          await traceJob(job.id, "image_collection_started", monitorSnapshot(job, state));
           await sendProgress({
             type: "JOB_PROGRESS",
             jobId: job.id,
@@ -450,12 +486,18 @@ async function monitorJob(
       }
 
       if (state.hasError) {
+        await traceJob(job.id, "explicit_error_detected", monitorSnapshot(job, state));
         const errorRecovery = retryAfterRefresh ? null : selectGptErrorRefresh({
           platform: job.platform,
           refreshCount: job.refreshCount,
           maxRefreshPerJob: appConfig.maxRefreshPerJob
         });
         if (errorRecovery) {
+          await traceJob(job.id, "monitor_recovery_selected", {
+            ...monitorSnapshot(job, state),
+            reason: errorRecovery.errorMessage,
+            recoveryMode: errorRecovery.recoveryMode
+          });
           await sendProgress({
             type: "JOB_PROGRESS",
             jobId: job.id,
@@ -481,6 +523,7 @@ async function monitorJob(
       }
 
       if (state.isInterrupted) {
+        await traceJob(job.id, "interrupted_response_detected", monitorSnapshot(job, state));
         await report(job.id, "stalled", state.interruptedText || "Connection interrupted while waiting for the complete answer.");
         return;
       }
@@ -502,6 +545,11 @@ async function monitorJob(
       ) {
         resubmittedEmptyGptImage = true;
         markEmptyGptImageResubmitted(job.id);
+        await traceJob(job.id, "monitor_recovery_selected", {
+          ...monitorSnapshot(job, state),
+          reason: "GPT returned an empty image response.",
+          recoveryMode: "resubmit_after_refresh"
+        });
         await sendProgress({
           type: "JOB_PROGRESS",
           jobId: job.id,
@@ -513,6 +561,7 @@ async function monitorJob(
       }
 
       if (Date.now() - startedAt > appConfig.hardTimeoutMs) {
+        await traceJob(job.id, "hard_timeout", monitorSnapshot(job, state));
         await report(job.id, "needs_manual", "Job exceeded hard timeout.");
         return;
       }
@@ -525,6 +574,11 @@ async function monitorJob(
         stallTimeoutMs: appConfig.stallTimeoutMs
       });
       if (stallRecovery) {
+        await traceJob(job.id, "monitor_recovery_selected", {
+          ...monitorSnapshot(job, state),
+          reason: stallRecovery.errorMessage,
+          recoveryMode: stallRecovery.recoveryMode
+        });
         await sendProgress({
           type: "JOB_PROGRESS",
           jobId: job.id,
@@ -555,6 +609,7 @@ async function monitorJob(
       await sleep(MONITOR_INTERVAL_MS);
     }
   } catch (error) {
+    await traceJob(job.id, "monitor_failed", { message: String(error) });
     await report(job.id, "failed_retryable", String(error));
   }
 }
@@ -578,14 +633,13 @@ async function inspectJob(jobId: string, platform?: JobPlatform): Promise<{
   pageImages: HTMLImageElement[];
   signature: string;
 }> {
-  const errorPattern = platform === "gemini" ? GEMINI_ERROR_TEXT_PATTERN : ERROR_TEXT_PATTERN;
   const assistant = findJobAssistant(jobId);
   const scopedImages = findJobScopedImages(jobId);
   const pageImages = findLoadedImages(document);
   if (!assistant) {
     const text = document.body.innerText;
     const jobText = findJobScopeText(jobId);
-    const hasError = errorPattern.test(jobText);
+    const hasError = hasExplicitGenerationError(jobText);
     const isInterrupted = INTERRUPTED_TEXT_PATTERN.test(jobText);
     return {
       assistantExists: false,
@@ -604,7 +658,7 @@ async function inspectJob(jobId: string, platform?: JobPlatform): Promise<{
 
   const text = assistant.innerText || "";
   const jobText = findJobScopeText(jobId);
-  const hasError = errorPattern.test(`${text}\n${jobText}`);
+  const hasError = hasExplicitGenerationError(`${text}\n${jobText}`);
   const isInterrupted = INTERRUPTED_TEXT_PATTERN.test(`${text}\n${jobText}`);
   const isGenerating =
     hasGeneratingText(text) ||
@@ -835,6 +889,28 @@ function findGeneratedImageElements(root: ParentNode): HTMLImageElement[] {
       return Boolean(src) && !isDecorative &&
         (hasEstuarySource || hasGeminiBlob || hasDoubaoGenSource || inGeneratedContainer || ((hasGeneratedAlt || hasGeminiGeneratedAlt) && largeEnough));
     });
+}
+
+function monitorSnapshot(
+  job: Pick<Job, "platform" | "mode" | "expectedImageCount">,
+  state: Awaited<ReturnType<typeof inspectJob>>
+): Record<string, unknown> {
+  return {
+    platform: job.platform,
+    mode: job.mode,
+    expectedImageCount: job.expectedImageCount,
+    assistantExists: state.assistantExists,
+    loadedImageCount: state.loadedImages.length,
+    scopedImageCount: state.scopedImages.length,
+    pageImageCount: state.pageImages.length,
+    isGenerating: state.isGenerating,
+    hasError: state.hasError,
+    errorText: state.errorText || null,
+    isInterrupted: state.isInterrupted,
+    interruptedText: state.interruptedText || null,
+    assistantTextLength: state.assistantText.length,
+    signature: state.signature
+  };
 }
 
 function extractAssistantText(assistant: HTMLElement): string {
@@ -1466,18 +1542,47 @@ async function sourceToFile(source: string, index: number): Promise<File> {
   return new File([blob], `source-${index + 1}.${ext}`, { type: blob.type || "image/png" });
 }
 
-async function collectImages(images: HTMLImageElement[]): Promise<Array<{ index: number; sourceId: string; dataUrl: string; contentType: string }>> {
+async function collectImages(images: HTMLImageElement[]): Promise<Array<{
+  index: number;
+  sourceId: string;
+  dataUrl: string;
+  contentType: string;
+  byteLength: number;
+  sha256: string;
+  acquisition: "gpt_direct" | "gpt_share_sheet" | "gemini_download" | "doubao_download" | "element_url";
+}>> {
   const result = [];
   for (const [index, image] of images.entries()) {
-    const blob = await fetchBestImageBlob(image);
+    const { blob, acquisition } = await fetchBestImageBlob(image);
+    const sourceId = imageKey(image);
+    const sha256 = await sha256Blob(blob);
+    const contentType = blob.type || "image/png";
+    if (activeJob) {
+      await traceJob(activeJob.id, "image_asset_collected", {
+        index: index + 1,
+        sourceId,
+        acquisition,
+        byteLength: blob.size,
+        contentType,
+        sha256
+      });
+    }
     result.push({
       index,
-      sourceId: imageKey(image),
-      contentType: blob.type || "image/png",
+      sourceId,
+      contentType,
+      byteLength: blob.size,
+      sha256,
+      acquisition,
       dataUrl: await blobToDataUrl(blob)
     });
   }
   return result;
+}
+
+async function sha256Blob(blob: Blob): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
+  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("");
 }
 
 // <img src> is often a resized/cropped preview render, not the original
@@ -1503,23 +1608,37 @@ async function collectImages(images: HTMLImageElement[]): Promise<Array<{ index:
 // Gemini's approach, not fixing a quality bug. A failed capture here can
 // safely fall back to the existing fetch(img.src) path instead of failing
 // the job.
-async function fetchBestImageBlob(image: HTMLImageElement): Promise<Blob> {
+async function fetchBestImageBlob(image: HTMLImageElement): Promise<{
+  blob: Blob;
+  acquisition: "gpt_direct" | "gpt_share_sheet" | "gemini_download" | "doubao_download" | "element_url";
+}> {
   if (activeJob?.platform === "gemini") {
-    return downloadGeminiFullSizeImage(image);
+    return { blob: await downloadGeminiFullSizeImage(image), acquisition: "gemini_download" };
   }
   if (activeJob?.platform === "doubao") {
-    return downloadDoubaoImage(image);
+    return { blob: await downloadDoubaoImage(image), acquisition: "doubao_download" };
   }
   if (activeJob?.platform === "gpt") {
     try {
-      const blob = await downloadGptFullSizeImage(image);
-      await debugLog("fetchBestImageBlob:gpt real download succeeded", { size: blob.size, type: blob.type });
-      return blob;
+      const blob = await fetchImageElementBlob(image);
+      await debugLog("fetchBestImageBlob:gpt direct image fetch succeeded", { sourceId: imageKey(image), size: blob.size, type: blob.type });
+      return { blob, acquisition: "gpt_direct" };
     } catch (error) {
-      await debugLog("fetchBestImageBlob:gpt real download failed, falling back", { error: String(error) });
+      await debugLog("fetchBestImageBlob:gpt direct image fetch failed, trying share sheet", { sourceId: imageKey(image), error: String(error) });
+    }
+    try {
+      const blob = await downloadGptFullSizeImage(image);
+      await debugLog("fetchBestImageBlob:gpt share sheet download succeeded", { sourceId: imageKey(image), size: blob.size, type: blob.type });
+      return { blob, acquisition: "gpt_share_sheet" };
+    } catch (error) {
+      await debugLog("fetchBestImageBlob:gpt share sheet download failed, falling back", { sourceId: imageKey(image), error: String(error) });
     }
   }
 
+  return { blob: await fetchImageElementBlob(image), acquisition: "element_url" };
+}
+
+async function fetchImageElementBlob(image: HTMLImageElement): Promise<Blob> {
   for (const source of imageCandidates(image)) {
     try {
       const response = await fetch(source);
@@ -1531,7 +1650,9 @@ async function fetchBestImageBlob(image: HTMLImageElement): Promise<Blob> {
     }
   }
   const response = await fetch(image.currentSrc || image.src);
-  return response.blob();
+  const blob = await response.blob();
+  if (blob.size === 0) throw new Error("Image element source returned an empty response.");
+  return blob;
 }
 
 // A programmatic HTMLElement.click() does not carry the browser's
@@ -1778,6 +1899,15 @@ async function report(jobId: string, status: JobProgressMessage["status"], error
 
 async function sendProgress(message: JobProgressMessage): Promise<void> {
   await chrome.runtime.sendMessage(message);
+}
+
+async function traceJob(jobId: string, stage: string, data: Record<string, unknown> = {}): Promise<void> {
+  const message: JobTraceMessage = { type: "JOB_TRACE", jobId, stage, data };
+  try {
+    await chrome.runtime.sendMessage(message);
+  } catch {
+    // Diagnostics must not disrupt image generation when the MV3 worker restarts.
+  }
 }
 
 async function debugLog(label: string, data: unknown): Promise<void> {

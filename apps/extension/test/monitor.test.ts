@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   GPT_IMAGE_RENDER_STALL_MIN_MS,
   GPT_IMAGE_STOP_CONFIRM_TIMEOUT_MS,
+  hasExplicitGenerationError,
   selectGptErrorRefresh,
   selectMonitorStallRecovery,
   selectStuckGptImageStopRecovery,
@@ -11,6 +12,13 @@ import {
 } from "../src/monitor.js";
 
 describe("monitor stall recovery", () => {
+  it("does not mistake ordinary Retry controls for an explicit generation error", () => {
+    expect(hasExplicitGenerationError("Copy\nRetry\nShare")).toBe(false);
+    expect(hasExplicitGenerationError("重试\n复制\n分享")).toBe(false);
+    expect(hasExplicitGenerationError("Something went wrong. Retry")).toBe(true);
+    expect(hasExplicitGenerationError("生成失败，请稍后再试")).toBe(true);
+  });
+
   it("prioritizes a complete image result even when the page retains an error banner", () => {
     expect(shouldCompleteImageJob({
       mode: "image",

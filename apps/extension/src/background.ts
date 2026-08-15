@@ -3,7 +3,7 @@ import { DEFAULT_CONFIG } from "auto-chat-shared";
 import { isDispatchPending, shouldAcknowledgeDispatch } from "./dispatch.js";
 import { shouldRestoreGptConversation } from "./homeRedirectRecovery.js";
 import type { EmptyAssistantRecoveryMode } from "./recovery.js";
-import type { DebugInspectMessage, DebugInspectResult, ExpectNavigationMessage, JobProgressMessage, PopupState, RequestImageDownloadResult, StartJobMessage, WorkerRecord } from "./types.js";
+import type { DebugInspectMessage, DebugInspectResult, ExpectNavigationMessage, JobProgressMessage, JobTraceMessage, PopupState, RequestImageDownloadResult, StartJobMessage, WorkerRecord } from "./types.js";
 
 const SERVER_URL = "http://127.0.0.1:17321";
 const PLATFORMS: JobPlatform[] = ["gpt", "gemini", "doubao"];
@@ -68,6 +68,7 @@ async function recoverFromUnexpectedReload(tabId: number, worker: WorkerRecord):
   if (unexpectedReloadInFlight.has(tabId)) return;
   unexpectedReloadInFlight.add(tabId);
   try {
+    await writeTrace(worker.jobId, "background", "unexpected_reload_detected", { tabId });
     await waitForTabComplete(tabId);
     if (workers.get(tabId) !== worker) return;
     const job = await api<Job>(`/jobs/${worker.jobId}`);
@@ -89,8 +90,16 @@ async function recoverFromUnexpectedReload(tabId: number, worker: WorkerRecord):
       if (workers.get(tabId) !== worker) return;
     }
     await sendStartMessage(tabId, job, "monitor_only");
+    await writeTrace(worker.jobId, "background", "monitor_restart_sent", {
+      tabId,
+      recoveryMode: "monitor_only"
+    });
     worker.expectingReload = false;
   } catch (error) {
+    await writeTrace(worker.jobId, "background", "unexpected_reload_recovery_failed", {
+      tabId,
+      message: String(error)
+    });
     await postStatus(worker.jobId, {
       status: "needs_manual",
       tabId,
@@ -124,6 +133,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 async function handleMessage(message: unknown, sender: chrome.runtime.MessageSender): Promise<unknown> {
   if (isProgress(message)) {
     await handleProgress(message, sender.tab?.id);
+    return { ok: true };
+  }
+  if (isTrace(message)) {
+    const tabId = sender.tab?.id;
+    const worker = tabId === undefined ? undefined : workers.get(tabId);
+    if (!worker || worker.jobId !== message.jobId) return { ok: false, error: "trace_worker_mismatch" };
+    await writeTrace(message.jobId, "content", message.stage, message.data);
     return { ok: true };
   }
   if (isExpectNavigation(message)) {
@@ -281,6 +297,14 @@ async function recheckJob(job: Job): Promise<void> {
     expectingReload: true
   };
   workers.set(tabId, worker);
+  await writeTrace(job.id, "background", "worker_started", {
+    tabId,
+    platform: job.platform,
+    mode: job.mode,
+    parentJobId: job.parentJobId ?? null,
+    recheck: true,
+    reusedExistingTab: Boolean(recordedTab?.id)
+  });
 
   try {
     await postStatus(job.id, {
@@ -294,6 +318,11 @@ async function recheckJob(job: Job): Promise<void> {
     await waitForTabComplete(tabId);
     const latest = await api<Job>(`/jobs/${job.id}`);
     await sendStartMessage(tabId, latest, "monitor_only");
+    await writeTrace(job.id, "background", "monitor_restart_sent", {
+      tabId,
+      recoveryMode: "monitor_only",
+      recheck: true
+    });
     worker.expectingReload = false;
   } catch (error) {
     workers.delete(tabId);
@@ -442,6 +471,15 @@ async function launchJob(job: Job): Promise<void> {
     expectingReload: needsLoad
   };
   workers.set(tabId, worker);
+  await writeTrace(job.id, "background", "worker_started", {
+    tabId,
+    platform: job.platform,
+    mode: job.mode,
+    parentJobId: job.parentJobId ?? null,
+    reloadOnly,
+    needsLoad,
+    reusedParentTab: Boolean(job.parentJobId && !needsLoad)
+  });
   await postStatus(job.id, {
     status: "opening_tab",
     tabId,
@@ -450,6 +488,10 @@ async function launchJob(job: Job): Promise<void> {
   });
   if (needsLoad) await waitForTabComplete(tabId);
   await sendStartMessage(tabId, job);
+  await writeTrace(job.id, "background", "start_message_sent", {
+    tabId,
+    recoveryMode: "initial"
+  });
   worker.expectingReload = false;
 }
 
@@ -475,6 +517,13 @@ async function handleProgress(message: JobProgressMessage, tabId?: number): Prom
   const worker = workers.get(tabId);
   if (!worker || worker.jobId !== message.jobId) return;
   worker.lastStateAt = Date.now();
+  await writeTrace(message.jobId, "background", "progress_received", {
+    tabId,
+    status: message.status,
+    recoveryMode: message.recoveryMode ?? null,
+    errorMessage: message.errorMessage ?? null,
+    imageCount: message.images?.length ?? 0
+  });
 
   if (message.status === "maybe_done") {
     return;
@@ -486,6 +535,11 @@ async function handleProgress(message: JobProgressMessage, tabId?: number): Prom
 
   if (message.status === "rate_limited") {
     if (worker.rateLimitRefreshCount >= config.maxRefreshPerJob) {
+      await writeTrace(worker.jobId, "background", "rate_limit_refresh_exhausted", {
+        tabId,
+        rateLimitRefreshCount: worker.rateLimitRefreshCount,
+        maxRefreshPerJob: config.maxRefreshPerJob
+      });
       await postStatus(worker.jobId, {
         status: "needs_manual",
         tabId,
@@ -498,17 +552,32 @@ async function handleProgress(message: JobProgressMessage, tabId?: number): Prom
     }
     worker.rateLimitRefreshCount += 1;
     worker.expectingReload = true;
+    await writeTrace(worker.jobId, "background", "rate_limit_refresh_requested", {
+      tabId,
+      rateLimitRefreshCount: worker.rateLimitRefreshCount,
+      maxRefreshPerJob: config.maxRefreshPerJob
+    });
     await postStatus(worker.jobId, { status: "refreshing", tabId, refreshCount: worker.refreshCount, workerId });
     await chrome.tabs.reload(tabId);
     await waitForTabComplete(tabId);
     const job = await api<Job>(`/jobs/${worker.jobId}`);
     await sendStartMessage(tabId, job, "monitor_only");
+    await writeTrace(worker.jobId, "background", "monitor_restart_sent", {
+      tabId,
+      recoveryMode: "monitor_only"
+    });
     worker.expectingReload = false;
     return;
   }
 
   if (message.status === "stalled") {
     if (worker.refreshCount >= config.maxRefreshPerJob) {
+      await writeTrace(worker.jobId, "background", "stall_refresh_exhausted", {
+        tabId,
+        refreshCount: worker.refreshCount,
+        maxRefreshPerJob: config.maxRefreshPerJob,
+        reason: message.errorMessage ?? null
+      });
       await postStatus(worker.jobId, {
         status: "needs_manual",
         tabId,
@@ -521,6 +590,13 @@ async function handleProgress(message: JobProgressMessage, tabId?: number): Prom
     }
     worker.refreshCount += 1;
     worker.expectingReload = true;
+    await writeTrace(worker.jobId, "background", "stall_refresh_requested", {
+      tabId,
+      refreshCount: worker.refreshCount,
+      maxRefreshPerJob: config.maxRefreshPerJob,
+      recoveryMode: message.recoveryMode ?? "monitor_only",
+      reason: message.errorMessage ?? null
+    });
     await postStatus(worker.jobId, {
       status: "refreshing",
       tabId,
@@ -531,6 +607,10 @@ async function handleProgress(message: JobProgressMessage, tabId?: number): Prom
     await waitForTabComplete(tabId);
     const job = await api<Job>(`/jobs/${worker.jobId}`);
     await sendStartMessage(tabId, job, message.recoveryMode ?? "monitor_only");
+    await writeTrace(worker.jobId, "background", "monitor_restart_sent", {
+      tabId,
+      recoveryMode: message.recoveryMode ?? "monitor_only"
+    });
     worker.expectingReload = false;
     return;
   }
@@ -538,6 +618,11 @@ async function handleProgress(message: JobProgressMessage, tabId?: number): Prom
   if (message.status === "done") {
     try {
       const job = await api<Job>(`/jobs/${message.jobId}`);
+      await writeTrace(message.jobId, "background", "artifact_collection_started", {
+        tabId,
+        mode: job.mode,
+        imageCount: message.images?.length ?? 0
+      });
       if (job.mode === "text") {
         await saveArtifact(message.jobId, {
           kind: "text_output",
@@ -565,7 +650,10 @@ async function handleProgress(message: JobProgressMessage, tabId?: number): Prom
           payload: {
             images: (message.images ?? []).map(image => ({
               index: image.index + 1,
-              sourceId: image.sourceId
+              sourceId: image.sourceId,
+              acquisition: image.acquisition ?? null,
+              byteLength: image.byteLength ?? null,
+              sha256: image.sha256 ?? null
             }))
           }
         });
@@ -574,6 +662,11 @@ async function handleProgress(message: JobProgressMessage, tabId?: number): Prom
         status: "done",
         tabId,
         workerId
+      });
+      await writeTrace(message.jobId, "background", "job_completed", {
+        tabId,
+        mode: job.mode,
+        imageCount: message.images?.length ?? 0
       });
       workers.delete(tabId);
       if (!job.persistTab && !job.parentJobId) {
@@ -585,6 +678,10 @@ async function handleProgress(message: JobProgressMessage, tabId?: number): Prom
         }
       }
     } catch (error) {
+      await writeTrace(message.jobId, "background", "artifact_collection_failed", {
+        tabId,
+        message: String(error)
+      });
       await postStatus(message.jobId, {
         status: "needs_manual",
         tabId,
@@ -604,6 +701,11 @@ async function handleProgress(message: JobProgressMessage, tabId?: number): Prom
   });
 
   if (["failed_retryable", "failed_final", "needs_manual"].includes(message.status)) {
+    await writeTrace(message.jobId, "background", "job_terminal_without_output", {
+      tabId,
+      status: message.status,
+      reason: message.errorMessage ?? null
+    });
     workers.delete(tabId);
   }
 }
@@ -614,6 +716,22 @@ async function postStatus(jobId: string, body: UpdateStatusRequest): Promise<voi
 
 async function postEvent(jobId: string, body: { type: string; message?: string; payload?: Record<string, unknown> }): Promise<void> {
   await api(`/jobs/${jobId}/events`, { method: "POST", body });
+}
+
+async function writeTrace(
+  jobId: string,
+  component: "background" | "content",
+  stage: string,
+  data: Record<string, unknown> = {}
+): Promise<void> {
+  try {
+    await postEvent(jobId, {
+      type: "extension_trace",
+      payload: { component, stage, ...data }
+    });
+  } catch {
+    // A failed diagnostic write must never interrupt the active browser task.
+  }
 }
 
 async function saveArtifact(jobId: string, body: ArtifactRequest): Promise<void> {
@@ -790,6 +908,16 @@ async function waitForTabComplete(tabId: number): Promise<void> {
 
 function isProgress(message: unknown): message is JobProgressMessage {
   return Boolean(message && typeof message === "object" && (message as { type?: string }).type === "JOB_PROGRESS");
+}
+
+function isTrace(message: unknown): message is JobTraceMessage {
+  return Boolean(
+    message &&
+    typeof message === "object" &&
+    (message as { type?: string }).type === "JOB_TRACE" &&
+    typeof (message as { jobId?: unknown }).jobId === "string" &&
+    typeof (message as { stage?: unknown }).stage === "string"
+  );
 }
 
 function isExpectNavigation(message: unknown): message is ExpectNavigationMessage {

@@ -25,10 +25,25 @@ export type JobProgressMessage = {
   status: JobStatus | "maybe_done" | "rate_limited";
   signature?: string;
   errorMessage?: string;
-  images?: Array<{ index: number; sourceId: string; dataUrl: string; contentType: string }>;
+  images?: Array<{
+    index: number;
+    sourceId: string;
+    dataUrl: string;
+    contentType: string;
+    byteLength?: number;
+    sha256?: string;
+    acquisition?: "gpt_direct" | "gpt_share_sheet" | "gemini_download" | "doubao_download" | "element_url";
+  }>;
   imageOrderComplete?: boolean;
   text?: string;
   recoveryMode?: EmptyAssistantRecoveryMode;
+};
+
+export type JobTraceMessage = {
+  type: "JOB_TRACE";
+  jobId: string;
+  stage: string;
+  data?: Record<string, unknown>;
 };
 
 export type PlatformState = {

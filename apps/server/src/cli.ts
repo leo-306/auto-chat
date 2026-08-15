@@ -819,6 +819,12 @@ export function formatSseEvent(
   if (event?.type === "text_output") return `${prefix} 已复制文本响应`;
   if (event?.type === "output_copied") return `${prefix} 已复制图片到指定输出目录：${displayPath(String(event.payload?.path ?? ""))}`;
   if (event?.type === "output_copy_failed") return `${prefix} 复制到指定输出目录失败（${String(event.payload?.outputDir ?? "")}）：${String(event.payload?.message ?? "")}`;
+  if (event?.type === "extension_trace") {
+    const component = String(event.payload?.component ?? "extension");
+    const stage = String(event.payload?.stage ?? "unknown");
+    const reason = event.payload?.reason ?? event.payload?.errorMessage ?? null;
+    return `${prefix} 追踪 ${component}.${stage}${reason ? `：${String(reason)}` : ""}`;
+  }
   if (event?.type === "job_retry") return `${prefix} 已重新入队`;
   if (event?.type === "job_reload") return `${prefix} 已重新加载对话（仅检查已有对话，不会重新发送提示词）`;
   if (event?.type === "job_recheck_requested") return `${prefix} 已请求打开原会话并重新检测页面状态`;

@@ -309,6 +309,19 @@ GET http://127.0.0.1:17321/events
 }
 ```
 
+### 扩展诊断追踪
+
+每个任务的重要插件决策都会额外写入 `extension_trace` 事件，包括 content script 的首个监控快照、显式错误/中断判断、恢复选择，以及后台的刷新、重启和产物采集。追踪数据只记录状态、图片计数、签名和错误摘要，不重复写入提示词。
+
+排查图片任务时先查看：
+
+```bash
+auto-chat listen <jobId>
+rg 'extension_trace' ~/Library/Application\ Support/auto-chat/jobs/<jobId>/events.jsonl
+```
+
+其中 `component` 为 `content` 或 `background`，`stage` 表示具体决策点；例如 `content.monitor_recovery_selected` 会记录触发恢复的页面快照和原因，`background.stall_refresh_requested` 会记录消耗的刷新额度。
+
 ## Webhook
 
 配置回调：
