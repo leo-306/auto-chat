@@ -1,6 +1,6 @@
 import type { AppConfig, ArtifactRequest, ClaimJobRequest, DispatchState, Job, JobPlatform, UpdateStatusRequest } from "auto-chat-shared";
 import { DEFAULT_CONFIG } from "auto-chat-shared";
-import { isDispatchPending, shouldAcknowledgeDispatch } from "./dispatch.js";
+import { isDispatchPending, shouldAcknowledgeDispatch, targetedDispatchAction } from "./dispatch.js";
 import { normalizeGptConversationUrl, shouldRestoreGptConversation } from "./homeRedirectRecovery.js";
 import type { EmptyAssistantRecoveryMode } from "./recovery.js";
 import type { DebugInspectMessage, DebugInspectResult, ExpectNavigationMessage, JobProgressMessage, JobTraceMessage, PopupState, RequestImageDownloadResult, StartJobMessage, WorkerRecord } from "./types.js";
@@ -218,7 +218,23 @@ async function schedulerTick(options: { force?: boolean; platform?: JobPlatform 
   let acknowledgeDispatch = dispatched !== false;
   if (dispatched && dispatched.jobId) {
     const requestedJob = await api<Job>(`/jobs/${dispatched.jobId}`).catch(() => null);
-    if (requestedJob && RECHECKABLE_STATUSES.has(requestedJob.status)) {
+    const activeWorker = requestedJob
+      ? [...workers.values()].find(worker => worker.jobId === requestedJob.id)
+      : undefined;
+    const action = requestedJob
+      ? targetedDispatchAction(RECHECKABLE_STATUSES.has(requestedJob.status), Boolean(activeWorker))
+      : "claim";
+
+    if (requestedJob && action === "acknowledge_active_worker") {
+      await writeTrace(requestedJob.id, "background", "dispatch_recheck_skipped_active_worker", {
+        tabId: activeWorker!.tabId,
+        status: requestedJob.status
+      });
+      await acknowledgeDispatchSignal(dispatched);
+      return;
+    }
+
+    if (requestedJob && action === "recheck") {
       try {
         await recheckJob(requestedJob);
       } catch (error) {

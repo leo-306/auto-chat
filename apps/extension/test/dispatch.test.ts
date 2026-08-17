@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isDispatchPending, shouldAcknowledgeDispatch } from "../src/dispatch.js";
+import { isDispatchPending, shouldAcknowledgeDispatch, targetedDispatchAction } from "../src/dispatch.js";
 
 describe("dispatch acknowledgement", () => {
   it("ignores only the exact dispatch that was already acknowledged", () => {
@@ -25,5 +25,17 @@ describe("dispatch acknowledgement", () => {
 
   it("acknowledges after the dispatcher had a chance to claim or recheck", () => {
     expect(shouldAcknowledgeDispatch(false)).toBe(true);
+  });
+
+  it("keeps a queued targeted job on the normal claim path", () => {
+    expect(targetedDispatchAction(false, false)).toBe("claim");
+  });
+
+  it("rechecks a recoverable targeted job when its worker is absent", () => {
+    expect(targetedDispatchAction(true, false)).toBe("recheck");
+  });
+
+  it("acknowledges a repeated targeted signal while its worker is active", () => {
+    expect(targetedDispatchAction(true, true)).toBe("acknowledge_active_worker");
   });
 });
