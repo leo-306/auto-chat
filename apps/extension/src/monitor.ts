@@ -98,6 +98,18 @@ export function selectMonitorStallRecovery(input: {
   idleMs: number;
   stallTimeoutMs: number;
 }): MonitorStallRecovery | null {
+  if (
+    input.platform === "gpt" &&
+    input.mode === "image" &&
+    input.isGenerating &&
+    input.idleMs >= GPT_IMAGE_RENDER_STALL_MIN_MS
+  ) {
+    return {
+      errorMessage: "ChatGPT image generation showed no visible progress for 3 minutes; refreshing the conversation and checking whether the submitted prompt remains.",
+      recoveryMode: "resubmit_if_prompt_missing_after_refresh"
+    };
+  }
+
   if (!input.isGenerating && input.idleMs > input.stallTimeoutMs) {
     return {
       errorMessage: "No visible progress before stall timeout.",

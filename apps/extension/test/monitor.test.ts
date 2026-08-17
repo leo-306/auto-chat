@@ -107,14 +107,14 @@ describe("monitor stall recovery", () => {
     })).toMatchObject({ recoveryMode: "monitor_only" });
   });
 
-  it("keeps an active GPT image placeholder waiting past the render timeout", () => {
+  it("refreshes an active GPT image placeholder at the three-minute render timeout", () => {
     expect(selectMonitorStallRecovery({
       platform: "gpt",
       mode: "image",
       isGenerating: true,
-      idleMs: GPT_IMAGE_RENDER_STALL_MIN_MS + 1,
+      idleMs: GPT_IMAGE_RENDER_STALL_MIN_MS,
       stallTimeoutMs: 120_000
-    })).toBeNull();
+    })).toMatchObject({ recoveryMode: "resubmit_if_prompt_missing_after_refresh" });
   });
 
   it("does not refresh an actively generating GPT image too early", () => {

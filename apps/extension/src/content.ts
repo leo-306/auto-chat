@@ -14,7 +14,13 @@ import {
   shouldResubmitEmptyGptImage,
   shouldStopGptImageGeneration
 } from "./monitor.js";
-import { shouldCheckEmptyAssistantRecovery, shouldMonitorWithoutSubmit, shouldRetryReloadWithoutJobTurn, waitForEmptyAssistantRecovery } from "./recovery.js";
+import {
+  selectPostRefreshPromptAction,
+  shouldCheckEmptyAssistantRecovery,
+  shouldMonitorWithoutSubmit,
+  shouldRetryReloadWithoutJobTurn,
+  waitForEmptyAssistantRecovery
+} from "./recovery.js";
 import type { EmptyAssistantRecoveryMode } from "./recovery.js";
 import { waitForStableReadiness } from "./readiness.js";
 import { submitPromptWithFallback } from "./submit.js";
@@ -102,6 +108,21 @@ async function startJob(
       return;
     }
   }
+  const postRefreshPromptAction = selectPostRefreshPromptAction({
+    recoveryMode,
+    hasJobUserTurn: recoveryMode === "resubmit_if_prompt_missing_after_refresh"
+      ? await waitForReloadConversation(job.id)
+      : false
+  });
+  if (postRefreshPromptAction === "monitor") {
+    await traceJob(job.id, "post_refresh_prompt_found", { recoveryMode });
+    await report(job.id, "waiting_generation");
+    void monitorJob(job, nextConfig, controller.signal);
+    return;
+  }
+  if (postRefreshPromptAction === "resubmit") {
+    await traceJob(job.id, "post_refresh_prompt_missing", { recoveryMode });
+  }
   const existing = findJobAssistant(job.id);
   const isGeminiMultiImage = job.platform === "gemini" && job.mode === "image" && job.expectedImageCount > 1;
   if (shouldMonitorWithoutSubmit({
@@ -163,7 +184,10 @@ async function startJob(
     await report(job.id, "uploading");
     await uploadSources(job);
     await report(job.id, "sending_prompt");
-    await fillPromptAndSendGpt(job, recoveryMode === "resubmit_after_refresh");
+    await fillPromptAndSendGpt(
+      job,
+      recoveryMode === "resubmit_after_refresh" || postRefreshPromptAction === "resubmit"
+    );
   } else if (job.platform === "doubao") {
     if (job.sourceImages.length > 0) {
       await report(job.id, "uploading");
@@ -504,6 +528,28 @@ async function monitorJob(
       // the stop control. That is active work, not a failed generation: keep
       // this tab and monitor until the platform stops generating.
       if (state.isGenerating) {
+        const renderStallRecovery = selectMonitorStallRecovery({
+          platform: job.platform,
+          mode: job.mode,
+          isGenerating: state.isGenerating,
+          idleMs: Date.now() - lastChangedAt,
+          stallTimeoutMs: appConfig.stallTimeoutMs
+        });
+        if (renderStallRecovery) {
+          await traceJob(job.id, "monitor_recovery_selected", {
+            ...monitorSnapshot(job, state),
+            reason: renderStallRecovery.errorMessage,
+            recoveryMode: renderStallRecovery.recoveryMode
+          });
+          await sendProgress({
+            type: "JOB_PROGRESS",
+            jobId: job.id,
+            status: "stalled",
+            recoveryMode: renderStallRecovery.recoveryMode,
+            errorMessage: renderStallRecovery.errorMessage
+          });
+          return;
+        }
         await sleep(MONITOR_INTERVAL_MS);
         continue;
       }

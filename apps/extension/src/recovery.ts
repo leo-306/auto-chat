@@ -5,7 +5,10 @@ export const GPT_EMPTY_ASSISTANT_CHECK_DELAY_MS = 15_000;
 export type EmptyAssistantRecoveryMode =
   | "monitor_only"
   | "retry_after_refresh"
-  | "resubmit_after_refresh";
+  | "resubmit_after_refresh"
+  | "resubmit_if_prompt_missing_after_refresh";
+
+export type PostRefreshPromptAction = "monitor" | "resubmit";
 
 export type EmptyAssistantSnapshot = {
   assistantExists: boolean;
@@ -63,9 +66,20 @@ export function shouldMonitorWithoutSubmit(input: {
   // An empty GPT image response must refresh the conversation first, then
   // submit exactly once from the stable post-refresh page. The stale empty
   // assistant turn would otherwise make this look like monitor-only work.
-  if (input.recoveryMode === "resubmit_after_refresh") return false;
+  if (
+    input.recoveryMode === "resubmit_after_refresh" ||
+    input.recoveryMode === "resubmit_if_prompt_missing_after_refresh"
+  ) return false;
   if (input.recoveryMode) return true;
   return input.reloadOnly || input.hasExistingAssistant;
+}
+
+export function selectPostRefreshPromptAction(input: {
+  recoveryMode?: EmptyAssistantRecoveryMode;
+  hasJobUserTurn: boolean;
+}): PostRefreshPromptAction | null {
+  if (input.recoveryMode !== "resubmit_if_prompt_missing_after_refresh") return null;
+  return input.hasJobUserTurn ? "monitor" : "resubmit";
 }
 
 export function shouldRetryReloadWithoutJobTurn(input: {

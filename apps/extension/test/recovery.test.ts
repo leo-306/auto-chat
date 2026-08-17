@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   selectEmptyAssistantRecovery,
+  selectPostRefreshPromptAction,
   shouldCheckEmptyAssistantRecovery,
   shouldMonitorWithoutSubmit,
   shouldRetryReloadWithoutJobTurn,
@@ -131,6 +132,26 @@ describe("GPT empty assistant recovery", () => {
   it("submits once after refreshing an empty GPT image response", () => {
     expect(shouldMonitorWithoutSubmit({
       recoveryMode: "resubmit_after_refresh",
+      reloadOnly: false,
+      hasExistingAssistant: true,
+      isGeminiMultiImage: false
+    })).toBe(false);
+  });
+
+  it("checks for the submitted prompt after a stalled GPT image refresh", () => {
+    expect(selectPostRefreshPromptAction({
+      recoveryMode: "resubmit_if_prompt_missing_after_refresh",
+      hasJobUserTurn: true
+    })).toBe("monitor");
+    expect(selectPostRefreshPromptAction({
+      recoveryMode: "resubmit_if_prompt_missing_after_refresh",
+      hasJobUserTurn: false
+    })).toBe("resubmit");
+  });
+
+  it("does not submit before a stalled GPT image refresh checks for its prompt", () => {
+    expect(shouldMonitorWithoutSubmit({
+      recoveryMode: "resubmit_if_prompt_missing_after_refresh",
       reloadOnly: false,
       hasExistingAssistant: true,
       isGeminiMultiImage: false
