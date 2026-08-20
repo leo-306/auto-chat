@@ -2,7 +2,12 @@ import { buildGeminiOutputPrompt, findLatestJobConversationScope } from "auto-ch
 import type { AppConfig, ConversationTurnRole, Job, JobPlatform } from "auto-chat-shared";
 import { findGeminiSendControl, isGeminiSendDisabled } from "./gemini.js";
 import { answerGptImagePreferenceComparisons } from "./gptPreference.js";
-import { isGptConversationPath, normalizeGptConversationUrl, shouldReloadCapturedConversation } from "./homeRedirectRecovery.js";
+import {
+  hasGptUnavailableContentMessage,
+  isGptConversationPath,
+  normalizeGptConversationUrl,
+  shouldReloadCapturedConversation
+} from "./homeRedirectRecovery.js";
 import { isDoubaoDownloadControl } from "./imageDownload.js";
 import { hasGeneratingText, isGenerationStopControl } from "./inspect.js";
 import {
@@ -24,7 +29,15 @@ import {
 import type { EmptyAssistantRecoveryMode } from "./recovery.js";
 import { waitForStableReadiness } from "./readiness.js";
 import { submitPromptWithFallback } from "./submit.js";
-import type { DebugInspectMessage, DebugInspectResult, JobProgressMessage, JobTraceMessage, StartJobMessage } from "./types.js";
+import type {
+  DebugInspectMessage,
+  DebugInspectResult,
+  GptExistingConversationRedirectCheckMessage,
+  GptExistingConversationRedirectCheckResult,
+  JobProgressMessage,
+  JobTraceMessage,
+  StartJobMessage
+} from "./types.js";
 
 let activeJob: Job | null = null;
 let config: AppConfig | null = null;
@@ -59,7 +72,7 @@ function platformLabel(): string {
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  const typed = message as StartJobMessage | DebugInspectMessage;
+  const typed = message as StartJobMessage | DebugInspectMessage | GptExistingConversationRedirectCheckMessage;
   if (typed.type === "START_JOB") {
     const start = typed;
     void startJob(start.job, start.config, start.recoveryMode)
@@ -75,6 +88,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       sendResponse({ ok: false, error: String(error) });
     });
     return true;
+  }
+  if (typed.type === "CHECK_GPT_EXISTING_CONVERSATION_REDIRECT") {
+    const result: GptExistingConversationRedirectCheckResult = {
+      hasUnavailableContent: hasGptUnavailableContentMessage(document.body?.innerText ?? "")
+    };
+    sendResponse(result);
+    return false;
   }
   return false;
 });

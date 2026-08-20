@@ -1,9 +1,26 @@
 import type { AppConfig, ArtifactRequest, ClaimJobRequest, DispatchState, Job, JobPlatform, UpdateStatusRequest } from "auto-chat-shared";
 import { DEFAULT_CONFIG } from "auto-chat-shared";
 import { isDispatchPending, shouldAcknowledgeDispatch, targetedDispatchAction } from "./dispatch.js";
-import { normalizeGptConversationUrl, shouldRestoreGptConversation } from "./homeRedirectRecovery.js";
+import {
+  isGptHomeUrl,
+  normalizeGptConversationUrl,
+  shouldRestoreGptConversation,
+  shouldRetryOpenedGptImageConversation
+} from "./homeRedirectRecovery.js";
 import type { EmptyAssistantRecoveryMode } from "./recovery.js";
-import type { DebugInspectMessage, DebugInspectResult, ExpectNavigationMessage, JobProgressMessage, JobTraceMessage, PopupState, RequestImageDownloadResult, StartJobMessage, WorkerRecord } from "./types.js";
+import type {
+  DebugInspectMessage,
+  DebugInspectResult,
+  ExpectNavigationMessage,
+  GptExistingConversationRedirectCheckMessage,
+  GptExistingConversationRedirectCheckResult,
+  JobProgressMessage,
+  JobTraceMessage,
+  PopupState,
+  RequestImageDownloadResult,
+  StartJobMessage,
+  WorkerRecord
+} from "./types.js";
 
 const SERVER_URL = "http://127.0.0.1:17321";
 const PLATFORMS: JobPlatform[] = ["gpt", "gemini", "doubao"];
@@ -13,6 +30,8 @@ const RECHECKABLE_STATUSES = new Set<Job["status"]>([
   "collecting_outputs", "downloading"
 ]);
 const workerId = `ext_${crypto.randomUUID()}`;
+const GPT_OPENED_CONVERSATION_REDIRECT_OBSERVATION_MS = 5_000;
+const GPT_OPENED_CONVERSATION_REDIRECT_POLL_MS = 500;
 const workers = new Map<number, WorkerRecord>();
 let pausedByPlatform: Record<JobPlatform, boolean> = { gpt: true, gemini: true, doubao: true };
 let config: AppConfig = DEFAULT_CONFIG;
@@ -509,13 +528,73 @@ async function launchJob(job: Job): Promise<void> {
     ...(conversationUrl ? { conversationUrl } : {}),
     workerId
   });
-  if (needsLoad) await waitForTabComplete(tabId);
+  if (needsLoad) {
+    await waitForTabComplete(tabId);
+    await retryOpenedGptImageConversationAfterHomeRedirect(tabId, worker, job, conversationUrl);
+  }
   await sendStartMessage(tabId, job);
   await writeTrace(job.id, "background", "start_message_sent", {
     tabId,
     recoveryMode: "initial"
   });
   worker.expectingReload = false;
+}
+
+async function retryOpenedGptImageConversationAfterHomeRedirect(
+  tabId: number,
+  worker: WorkerRecord,
+  job: Job,
+  conversationUrl: string | null
+): Promise<void> {
+  const recordedConversationUrl = normalizeGptConversationUrl(conversationUrl);
+  if (job.platform !== "gpt" || job.mode !== "image" || !recordedConversationUrl) return;
+
+  const deadline = Date.now() + GPT_OPENED_CONVERSATION_REDIRECT_OBSERVATION_MS;
+  while (Date.now() < deadline) {
+    if (workers.get(tabId) !== worker) return;
+
+    const tab = await getTab(tabId);
+    const hasUnavailableContent = tab?.url && isGptHomeUrl(tab.url)
+      ? await hasGptExistingConversationUnavailableContent(tabId)
+      : false;
+    if (shouldRetryOpenedGptImageConversation({
+      platform: job.platform,
+      mode: job.mode,
+      conversationUrl: recordedConversationUrl,
+      currentUrl: tab?.url,
+      hasUnavailableContent
+    })) {
+      await writeTrace(job.id, "background", "opened_gpt_conversation_home_redirect_detected", {
+        tabId,
+        conversationUrl: recordedConversationUrl,
+        currentUrl: tab?.url
+      });
+      // Reloading the current tab would only reload ChatGPT's home page. Go
+      // back to the recorded conversation URL once, then preserve the normal
+      // initial START_JOB behavior so the pending prompt is still submitted.
+      await chrome.tabs.update(tabId, { url: recordedConversationUrl });
+      await waitForTabComplete(tabId);
+      await writeTrace(job.id, "background", "opened_gpt_conversation_reopened", {
+        tabId,
+        conversationUrl: recordedConversationUrl
+      });
+      return;
+    }
+
+    await sleep(GPT_OPENED_CONVERSATION_REDIRECT_POLL_MS);
+  }
+}
+
+async function hasGptExistingConversationUnavailableContent(tabId: number): Promise<boolean> {
+  try {
+    const message: GptExistingConversationRedirectCheckMessage = {
+      type: "CHECK_GPT_EXISTING_CONVERSATION_REDIRECT"
+    };
+    const result = await chrome.tabs.sendMessage(tabId, message) as GptExistingConversationRedirectCheckResult;
+    return result.hasUnavailableContent;
+  } catch {
+    return false;
+  }
 }
 
 async function sendStartMessage(

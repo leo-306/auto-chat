@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  hasGptUnavailableContentMessage,
   isGptConversationPath,
   isGptHomeUrl,
   normalizeGptConversationUrl,
   shouldReloadCapturedConversation,
+  shouldRetryOpenedGptImageConversation,
   shouldRestoreGptConversation
 } from "../src/homeRedirectRecovery.js";
 
@@ -75,5 +77,38 @@ describe("shouldRestoreGptConversation", () => {
       conversationUrl: "not-a-url",
       currentUrl: "https://chatgpt.com/"
     })).toBe(false);
+  });
+});
+
+describe("shouldRetryOpenedGptImageConversation", () => {
+  const conversationUrl = "https://chatgpt.com/c/12345678-1234-1234-1234-123456789abc";
+  const unavailableText = "This content is unavailable or could not be found.";
+
+  it("reopens a recorded GPT image conversation only after the unavailable home redirect", () => {
+    expect(hasGptUnavailableContentMessage(unavailableText)).toBe(true);
+    expect(shouldRetryOpenedGptImageConversation({
+      platform: "gpt",
+      mode: "image",
+      conversationUrl,
+      currentUrl: "https://chatgpt.com/",
+      hasUnavailableContent: true
+    })).toBe(true);
+  });
+
+  it("does not apply the recovery to other jobs or ordinary ChatGPT pages", () => {
+    const base = {
+      platform: "gpt" as const,
+      mode: "image" as const,
+      conversationUrl,
+      currentUrl: "https://chatgpt.com/",
+      hasUnavailableContent: true
+    };
+
+    expect(shouldRetryOpenedGptImageConversation({ ...base, mode: "text" })).toBe(false);
+    expect(shouldRetryOpenedGptImageConversation({ ...base, platform: "gemini" })).toBe(false);
+    expect(shouldRetryOpenedGptImageConversation({ ...base, currentUrl: conversationUrl })).toBe(false);
+    expect(shouldRetryOpenedGptImageConversation({ ...base, hasUnavailableContent: false })).toBe(false);
+    expect(shouldRetryOpenedGptImageConversation({ ...base, conversationUrl: "https://chatgpt.com/" })).toBe(false);
+    expect(hasGptUnavailableContentMessage("Copy\nRetry\nShare")).toBe(false);
   });
 });

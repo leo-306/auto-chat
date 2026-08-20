@@ -72,6 +72,14 @@ export type ExpectNavigationMessage = {
   expecting: boolean;
 };
 
+export type GptExistingConversationRedirectCheckMessage = {
+  type: "CHECK_GPT_EXISTING_CONVERSATION_REDIRECT";
+};
+
+export type GptExistingConversationRedirectCheckResult = {
+  hasUnavailableContent: boolean;
+};
+
 // Both Gemini's "Download full-sized image" button and GPT's Share-sheet
 // "Download" button are the only reliable way to reach a platform's
 // original generated image asset — clicking them for real and letting

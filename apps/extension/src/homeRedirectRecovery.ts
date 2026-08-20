@@ -1,4 +1,7 @@
+import type { JobMode, JobPlatform } from "auto-chat-shared";
+
 const GPT_CONVERSATION_ID = /^(?:WEB:)?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+const GPT_UNAVAILABLE_CONTENT_PATTERN = /This\s+content\s+is\s+unavailable\s+or\s+could\s+not\s+be\s+found\.?/i;
 
 function gptConversationId(pathname: string): string | null {
   const candidate = pathname.match(/^\/c\/([^/]+)$/)?.[1] ?? "";
@@ -46,4 +49,28 @@ export function shouldRestoreGptConversation(input: {
 }): boolean {
   if (!input.conversationUrl || !isGptHomeUrl(input.currentUrl)) return false;
   return normalizeGptConversationUrl(input.conversationUrl) !== null;
+}
+
+export function hasGptUnavailableContentMessage(text: string): boolean {
+  return GPT_UNAVAILABLE_CONTENT_PATTERN.test(text);
+}
+
+// This is intentionally narrower than the generic home-redirect recovery.
+// It protects only a newly opened, recorded GPT image conversation before
+// the first START_JOB message is sent, so a retry/continuation still submits
+// its pending prompt after the original conversation URL is reopened.
+export function shouldRetryOpenedGptImageConversation(input: {
+  platform: JobPlatform;
+  mode: JobMode;
+  conversationUrl: string | null;
+  currentUrl: string | undefined;
+  hasUnavailableContent: boolean;
+}): boolean {
+  return input.platform === "gpt" &&
+    input.mode === "image" &&
+    input.hasUnavailableContent &&
+    shouldRestoreGptConversation({
+      conversationUrl: input.conversationUrl,
+      currentUrl: input.currentUrl
+    });
 }
