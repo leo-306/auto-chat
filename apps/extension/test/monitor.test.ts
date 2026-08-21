@@ -7,6 +7,7 @@ import {
   selectMonitorStallRecovery,
   selectStuckGptImageStopRecovery,
   shouldCompleteImageJob,
+  shouldRetryGptImageGenerationInPage,
   shouldResubmitEmptyGptImage,
   shouldStopGptImageGeneration
 } from "../src/monitor.js";
@@ -16,7 +17,25 @@ describe("monitor stall recovery", () => {
     expect(hasExplicitGenerationError("Copy\nRetry\nShare")).toBe(false);
     expect(hasExplicitGenerationError("重试\n复制\n分享")).toBe(false);
     expect(hasExplicitGenerationError("Something went wrong. Retry")).toBe(true);
+    expect(hasExplicitGenerationError("Image generation failed\nTry again")).toBe(true);
     expect(hasExplicitGenerationError("生成失败，请稍后再试")).toBe(true);
+  });
+
+  it("prefers the scoped Try again button for a failed GPT image generation", () => {
+    const snapshot = {
+      platform: "gpt" as const,
+      mode: "image" as const,
+      errorText: "Image generation failed",
+      retriedInPage: false,
+      hasRetryButton: true
+    };
+
+    expect(shouldRetryGptImageGenerationInPage(snapshot)).toBe(true);
+    expect(shouldRetryGptImageGenerationInPage({ ...snapshot, hasRetryButton: false })).toBe(false);
+    expect(shouldRetryGptImageGenerationInPage({ ...snapshot, retriedInPage: true })).toBe(false);
+    expect(shouldRetryGptImageGenerationInPage({ ...snapshot, errorText: "Something went wrong" })).toBe(false);
+    expect(shouldRetryGptImageGenerationInPage({ ...snapshot, mode: "text" })).toBe(false);
+    expect(shouldRetryGptImageGenerationInPage({ ...snapshot, platform: "gemini" })).toBe(false);
   });
 
   it("prioritizes a complete image result even when the page retains an error banner", () => {

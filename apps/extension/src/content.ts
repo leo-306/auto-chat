@@ -16,6 +16,7 @@ import {
   selectMonitorStallRecovery,
   selectStuckGptImageStopRecovery,
   shouldCompleteImageJob,
+  shouldRetryGptImageGenerationInPage,
   shouldResubmitEmptyGptImage,
   shouldStopGptImageGeneration
 } from "./monitor.js";
@@ -576,6 +577,26 @@ async function monitorJob(
 
       if (state.hasError) {
         await traceJob(job.id, "explicit_error_detected", monitorSnapshot(job, state));
+        const retryButton = job.platform === "gpt" && job.mode === "image"
+          ? findJobScopeRetryButton(job.id, job.platform)
+          : null;
+        if (shouldRetryGptImageGenerationInPage({
+          platform: job.platform,
+          mode: job.mode,
+          errorText: state.errorText,
+          retriedInPage,
+          hasRetryButton: Boolean(retryButton)
+        })) {
+          retriedInPage = true;
+          await traceJob(job.id, "gpt_retry_button_clicked", {
+            errorText: state.errorText.slice(0, 200)
+          });
+          retryButton!.click();
+          lastChangedAt = Date.now();
+          maybeDoneAt = 0;
+          await sleep(MONITOR_INTERVAL_MS);
+          continue;
+        }
         const errorRecovery = retryAfterRefresh ? null : selectGptErrorRefresh({
           platform: job.platform,
           refreshCount: job.refreshCount,

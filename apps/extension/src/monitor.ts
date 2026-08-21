@@ -4,7 +4,8 @@ import type { EmptyAssistantRecoveryMode } from "./recovery.js";
 export const GPT_IMAGE_RENDER_STALL_MIN_MS = 180_000;
 export const GPT_IMAGE_STOP_CONFIRM_TIMEOUT_MS = 4_000;
 const EXPLICIT_GENERATION_ERROR_PATTERN =
-  /Something went wrong|There was a problem generating|Failed to generate|rate limit|too many requests|try again later|出了点问题|生成失败|请求过多|稍后再试/i;
+  /Image generation failed|Something went wrong|There was a problem generating|Failed to generate|rate limit|too many requests|try again later|出了点问题|生成失败|请求过多|稍后再试/i;
+const GPT_IMAGE_GENERATION_FAILED_PATTERN = /Image generation failed/i;
 
 export type MonitorStallRecovery = {
   errorMessage: string;
@@ -15,6 +16,20 @@ export type MonitorStallRecovery = {
 // Only match an explicit error sentence when deciding to consume a refresh.
 export function hasExplicitGenerationError(text: string): boolean {
   return EXPLICIT_GENERATION_ERROR_PATTERN.test(text);
+}
+
+export function shouldRetryGptImageGenerationInPage(input: {
+  platform: JobPlatform;
+  mode: Job["mode"];
+  errorText: string;
+  retriedInPage: boolean;
+  hasRetryButton: boolean;
+}): boolean {
+  return input.platform === "gpt" &&
+    input.mode === "image" &&
+    !input.retriedInPage &&
+    input.hasRetryButton &&
+    GPT_IMAGE_GENERATION_FAILED_PATTERN.test(input.errorText);
 }
 
 export function shouldCompleteImageJob(input: {
