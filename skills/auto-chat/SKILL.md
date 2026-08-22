@@ -107,7 +107,7 @@ auto-chat dispatch --platform gpt img_output_dir_test_001 && auto-chat listen im
 
 ## Persistent Tabs and Follow-up Jobs
 
-Set `persistTab: true` to keep the browser tab open after a job finishes. Set `parentJobId` on a follow-up job to reuse the parent's existing tab (or fall back to its `conversationUrl` if the tab is closed). Both GPT and Gemini support this.
+Set `persistTab: true` to keep the browser tab open after a job finishes. Set `parentJobId` on a follow-up job to reuse the parent's existing tab (or fall back to its `conversationUrl` if the tab is closed). If the follow-up is the final step, keep its `parentJobId` for tab reuse, set `persistTab: false`, and set `metadata.closeTab: true`; the extension closes the shared tab after saving the result. Both GPT and Gemini support this.
 
 Example flow:
 

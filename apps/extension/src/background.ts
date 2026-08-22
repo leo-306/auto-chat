@@ -771,7 +771,11 @@ async function handleProgress(message: JobProgressMessage, tabId?: number): Prom
         imageCount: message.images?.length ?? 0
       });
       workers.delete(tabId);
-      if (!job.persistTab && !job.parentJobId) {
+      // A final follow-up job may retain parentJobId to reuse the same tab.
+      // metadata.closeTab is the explicit opt-in for closing that shared tab;
+      // independent jobs keep the existing persistTab=false behavior.
+      const closeTabRequested = job.metadata.closeTab === true;
+      if (closeTabRequested || (!job.persistTab && !job.parentJobId)) {
         try {
           await chrome.tabs.remove(tabId);
         } catch {
