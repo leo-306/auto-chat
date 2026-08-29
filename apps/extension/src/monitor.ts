@@ -40,6 +40,37 @@ export function shouldCompleteImageJob(input: {
   return input.mode === "image" && input.loadedImageCount >= input.expectedImageCount;
 }
 
+// 豆包可能在图片没有渲染出来时先结束助手回复。对图片任务来说，
+// 已完成的非空回复不能被当作成功，避免一直等待到通用停滞超时。
+export function shouldFailCompletedDoubaoImageJob(input: {
+  platform: JobPlatform;
+  mode: Job["mode"];
+  assistantExists: boolean;
+  assistantText: string;
+  loadedImageCount: number;
+  isGenerating: boolean;
+}): boolean {
+  return input.platform === "doubao" &&
+    input.mode === "image" &&
+    input.assistantExists &&
+    Boolean(input.assistantText.trim()) &&
+    input.loadedImageCount === 0 &&
+    !input.isGenerating;
+}
+
+// 豆包会先把文字回复标成完成（isGenerating 转 false），图片卡片晚一步才渲染。
+// 原来这里共用 2 秒的图片稳定期，加一次 5 秒轮询也就 6 秒就判失败，
+// 线上实测会把图片确实生成成功的任务误杀，所以单独给一个长得多的等待窗口。
+export const DOUBAO_IMAGE_RENDER_GRACE_MS = 120_000;
+
+export function shouldGiveUpOnMissingDoubaoImages(input: {
+  completedWithoutImagesAt: number;
+  now: number;
+}): boolean {
+  return input.completedWithoutImagesAt > 0 &&
+    input.now - input.completedWithoutImagesAt >= DOUBAO_IMAGE_RENDER_GRACE_MS;
+}
+
 export function shouldStopGptImageGeneration(input: {
   platform: JobPlatform;
   isGenerating: boolean;

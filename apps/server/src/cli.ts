@@ -32,6 +32,7 @@ type CliOptions = {
   replace: boolean;
   autoId: boolean;
   platform?: JobPlatform;
+  model?: string;
 };
 
 type ListRow = {
@@ -104,6 +105,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     const body = JSON.parse(fs.readFileSync(resolveInputFile(file), "utf8"));
     if (options.autoId) delete body.id;
     if (options.platform) body.platform = options.platform;
+    if (options.model) {
+      body.metadata = { ...(body.metadata ?? {}), doubaoModel: options.model };
+    }
     if (typeof body.outputDir === "string" && body.outputDir.trim()) {
       body.outputDir = path.resolve(process.cwd(), body.outputDir.trim());
     }
@@ -650,11 +654,13 @@ function portFromBaseUrl(): string {
 
 function parseOptions(args: string[]): CliOptions {
   const rawPlatform = readFlag(args, "--platform");
+  const rawModel = readFlag(args, "--model")?.trim();
   return {
     json: args.includes("--json"),
     replace: args.includes("--replace"),
     autoId: args.includes("--auto-id"),
-    platform: rawPlatform ? JobPlatformSchema.parse(rawPlatform) : undefined
+    platform: rawPlatform ? JobPlatformSchema.parse(rawPlatform) : undefined,
+    model: rawModel ? rawModel : undefined
   };
 }
 
@@ -664,7 +670,7 @@ function readFlag(args: string[], flag: string): string | undefined {
 }
 
 export function positionalArgs(args: string[]): string[] {
-  const flagsWithValues = new Set(["--file", "--platform"]);
+  const flagsWithValues = new Set(["--file", "--platform", "--model"]);
   const values: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -1127,6 +1133,7 @@ Usage:
   auto-chat status
   auto-chat add <job.json> [--replace] [--auto-id] [--json]
   auto-chat add <job.json> [--platform gpt|gemini|doubao]
+  auto-chat add <job.json> [--model "Seedream 4.5"]（仅豆包图片模式，等价于 metadata.doubaoModel）
   (job.json 可选 "outputDir": "<dir>"，图片任务完成后会额外复制一份到该目录)
   auto-chat list [--json]
   auto-chat show <jobId> [--json]

@@ -3,12 +3,23 @@ import type { AppConfig, ConversationTurnRole, Job, JobPlatform } from "auto-cha
 import { findGeminiSendControl, isGeminiSendDisabled } from "./gemini.js";
 import { answerGptImagePreferenceComparisons } from "./gptPreference.js";
 import {
+  doubaoModelTriggerName,
+  isDoubaoModelSelected,
+  matchDoubaoModelOption,
+  readDoubaoModel
+} from "./doubaoModel.js";
+import {
   hasGptUnavailableContentMessage,
   isGptConversationPath,
   normalizeGptConversationUrl,
   shouldReloadCapturedConversation
 } from "./homeRedirectRecovery.js";
-import { isDoubaoDownloadControl } from "./imageDownload.js";
+import {
+  DOUBAO_BRAND_BLUE,
+  DOUBAO_PREVIEW_MARKER_SELECTOR,
+  hasDoubaoDownloadIcon,
+  isDoubaoDownloadControl
+} from "./imageDownload.js";
 import { hasGeneratingText, isGenerationStopControl } from "./inspect.js";
 import {
   hasExplicitGenerationError,
@@ -16,6 +27,8 @@ import {
   selectMonitorStallRecovery,
   selectStuckGptImageStopRecovery,
   shouldCompleteImageJob,
+  shouldFailCompletedDoubaoImageJob,
+  shouldGiveUpOnMissingDoubaoImages,
   shouldRetryGptImageGenerationInPage,
   shouldResubmitEmptyGptImage,
   shouldStopGptImageGeneration
@@ -425,6 +438,7 @@ async function monitorJob(
   let retriedInPage = false;
   let gptStopRequestedAt = 0;
   let capturedGptImages: CollectedImage[] | null = null;
+  let doubaoNoImageDoneAt = 0;
   let resubmittedEmptyGptImage = hasResubmittedEmptyGptImage(job.id);
   let lastTraceSignature = "";
   await traceJob(job.id, "monitor_started", {
@@ -456,6 +470,7 @@ async function monitorJob(
         lastSignature = state.signature;
         lastChangedAt = Date.now();
         maybeDoneAt = 0;
+        doubaoNoImageDoneAt = 0;
       }
       if (state.signature !== lastTraceSignature) {
         lastTraceSignature = state.signature;
@@ -636,6 +651,37 @@ async function monitorJob(
         await traceJob(job.id, "interrupted_response_detected", monitorSnapshot(job, state));
         await report(job.id, "stalled", state.interruptedText || "Connection interrupted while waiting for the complete answer.");
         return;
+      }
+
+      if (shouldFailCompletedDoubaoImageJob({
+        platform: job.platform,
+        mode: job.mode,
+        assistantExists: state.assistantExists,
+        assistantText: state.assistantText,
+        loadedImageCount: state.loadedImages.length,
+        isGenerating: state.isGenerating
+      })) {
+        if (!doubaoNoImageDoneAt) {
+          doubaoNoImageDoneAt = Date.now();
+          await sendProgress({
+            type: "JOB_PROGRESS",
+            jobId: job.id,
+            status: "maybe_done",
+            signature: state.signature
+          });
+        }
+        if (shouldGiveUpOnMissingDoubaoImages({ completedWithoutImagesAt: doubaoNoImageDoneAt, now: Date.now() })) {
+          const errorMessage = "豆包会话已结束，但未检测到生成图片。";
+          await traceJob(job.id, "doubao_image_missing_after_completed_response", {
+            ...monitorSnapshot(job, state),
+            waitedMs: Date.now() - doubaoNoImageDoneAt,
+            reason: errorMessage
+          });
+          await report(job.id, "failed_retryable", errorMessage);
+          return;
+        }
+        await sleep(MONITOR_INTERVAL_MS);
+        continue;
       }
 
       if (
@@ -1389,7 +1435,11 @@ async function fillPromptAndSendDoubao(job: Job): Promise<void> {
   const capture = isNewConversation ? startGptConversationUrlCapture() : null;
 
   try {
-    if (job.mode === "image") await enterDoubaoImageMode();
+    if (job.mode === "image") {
+      await enterDoubaoImageMode();
+      const model = readDoubaoModel(job.metadata);
+      if (model) await selectDoubaoModel(model);
+    }
 
     const composer = fillPrompt(prompt);
     await sleep(300);
@@ -1434,6 +1484,62 @@ function isDoubaoImageModeActive(): boolean {
   return placeholderEl?.getAttribute("data-placeholder") === "描述你想要的图片";
 }
 
+// 豆包 actionbar 上的控件是 radix dropdown，data-* 属性比 class 稳定得多。
+const DOUBAO_MODEL_TRIGGER_SELECTOR = "[data-input-engine-actionbar-control-key='model']";
+const DOUBAO_MENU_SELECTOR = "[role='menu'][data-slot='dropdown-menu-content']";
+const DOUBAO_MENU_ITEM_SELECTOR = "[role='menuitem'][data-slot='dropdown-menu-item']";
+
+async function selectDoubaoModel(model: string): Promise<void> {
+  const trigger = document.querySelector<HTMLElement>(DOUBAO_MODEL_TRIGGER_SELECTOR);
+  if (!trigger) throw new Error("豆包「模型」按钮未找到，可能不在图片生成模式。");
+  if (isDoubaoModelSelected(trigger.innerText ?? "", model)) return;
+
+  clickDoubaoDropdown(trigger);
+  const menu = await waitUntilTruthy(() => {
+    const element = document.querySelector<HTMLElement>(DOUBAO_MENU_SELECTOR);
+    return element && isPresentInLayout(element) ? element : null;
+  }, 5_000);
+  if (!menu) throw new Error("点击「模型」后下拉菜单未出现。");
+
+  try {
+    const options = [...menu.querySelectorAll<HTMLElement>(DOUBAO_MENU_ITEM_SELECTOR)];
+    const match = matchDoubaoModelOption(options.map(option => option.innerText ?? ""), model);
+    if ("errorMessage" in match) throw new Error(match.errorMessage);
+    clickDoubaoDropdown(options[match.index]);
+  } catch (error) {
+    closeDoubaoDropdown();
+    throw error;
+  }
+
+  // 收费模型（例如带「升级」角标的 5.0 Pro）点了也可能选不上，
+  // 所以必须以触发按钮的回显为准，而不是以点击成功为准。
+  const applied = await waitUntilTruthy(() => {
+    const current = document.querySelector<HTMLElement>(DOUBAO_MODEL_TRIGGER_SELECTOR);
+    return current && isDoubaoModelSelected(current.innerText ?? "", model) ? current : null;
+  }, 5_000);
+  if (!applied) {
+    closeDoubaoDropdown();
+    const current = doubaoModelTriggerName(
+      document.querySelector<HTMLElement>(DOUBAO_MODEL_TRIGGER_SELECTOR)?.innerText ?? ""
+    );
+    throw new Error(`豆包模型未切换到「${model}」，当前仍是「${current || "未知"}」，可能需要更高权益。`);
+  }
+}
+
+// radix 的 trigger/menuitem 只监听 pointerdown/mouseup，单纯 .click() 不会展开。
+function clickDoubaoDropdown(element: HTMLElement): void {
+  element.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
+  element.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+  element.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true }));
+  element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
+  element.click();
+}
+
+function closeDoubaoDropdown(): void {
+  if (!document.querySelector(DOUBAO_MENU_SELECTOR)) return;
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
+}
+
 function findDoubaoToolbarButton(label: string): HTMLButtonElement | null {
   return [...document.querySelectorAll<HTMLButtonElement>("button")]
     .find(button => isVisible(button) && button.innerText?.trim() === label) ?? null;
@@ -1441,7 +1547,7 @@ function findDoubaoToolbarButton(label: string): HTMLButtonElement | null {
 
 function findDoubaoSendButton(): HTMLButtonElement | null {
   return [...document.querySelectorAll<HTMLButtonElement>("button")]
-    .find(button => isVisible(button) && getComputedStyle(button).backgroundColor === "rgb(0, 102, 255)") ?? null;
+    .find(button => isVisible(button) && getComputedStyle(button).backgroundColor === DOUBAO_BRAND_BLUE) ?? null;
 }
 
 async function waitForDoubaoUploadReady(jobId: string): Promise<void> {
@@ -1834,7 +1940,11 @@ async function downloadDoubaoImage(image: HTMLImageElement): Promise<Blob> {
   image.scrollIntoView({ block: "center", inline: "center" });
   image.click();
   const saveButton = await waitUntilTruthy(findDoubaoPreviewSaveButton, 5_000);
-  await debugLog("findDoubaoPreviewSaveButton", { found: Boolean(saveButton) });
+  await debugLog("findDoubaoPreviewSaveButton", {
+    found: Boolean(saveButton),
+    previewOpen: isDoubaoImagePreviewOpen(),
+    byIcon: saveButton ? hasDoubaoDownloadIcon(saveButton) : false
+  });
   if (!saveButton) throw new Error("Doubao's image preview save button was not found.");
 
   try {
@@ -1915,8 +2025,26 @@ function findGeminiDownloadButton(image: HTMLImageElement): HTMLElement | null {
 }
 
 function findDoubaoPreviewSaveButton(): HTMLElement | null {
-  return [...document.querySelectorAll<HTMLElement>("button,[role='button'],a")]
-    .find(element => isPresentInLayout(element) && isDoubaoDownloadControl(element)) ?? null;
+  const candidates = [...document.querySelectorAll<HTMLElement>("button,[role='button'],a")].filter(isPresentInLayout);
+
+  // 优先认下载图标：新版预览面板的下载按钮只剩这个特征。取最内层的命中，
+  // 否则包着整条工具条的祖先按钮会先于真正的按钮被 document order 选中。
+  const iconHits = candidates.filter(hasDoubaoDownloadIcon);
+  const innermostIconHit = iconHits.find(element => !iconHits.some(other => other !== element && element.contains(other)));
+  if (innermostIconHit) return innermostIconHit;
+
+  // 老版 UI（以及其它带文案的下载入口）走文本匹配。
+  const labelled = candidates.find(isDoubaoDownloadControl);
+  if (labelled) return labelled;
+
+  // 图标再改一次也别整个流程报废：预览开着时，工具条里唯一的品牌蓝按钮就是下载。
+  if (!isDoubaoImagePreviewOpen()) return null;
+  const blue = candidates.filter(element => getComputedStyle(element).backgroundColor === DOUBAO_BRAND_BLUE);
+  return blue.length === 1 ? blue[0] : null;
+}
+
+function isDoubaoImagePreviewOpen(): boolean {
+  return [...document.querySelectorAll<HTMLElement>(DOUBAO_PREVIEW_MARKER_SELECTOR)].some(isPresentInLayout);
 }
 
 function closeDoubaoImagePreview(): void {

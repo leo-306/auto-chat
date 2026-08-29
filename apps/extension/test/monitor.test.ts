@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  DOUBAO_IMAGE_RENDER_GRACE_MS,
   GPT_IMAGE_RENDER_STALL_MIN_MS,
   GPT_IMAGE_STOP_CONFIRM_TIMEOUT_MS,
   hasExplicitGenerationError,
@@ -7,6 +8,8 @@ import {
   selectMonitorStallRecovery,
   selectStuckGptImageStopRecovery,
   shouldCompleteImageJob,
+  shouldFailCompletedDoubaoImageJob,
+  shouldGiveUpOnMissingDoubaoImages,
   shouldRetryGptImageGenerationInPage,
   shouldResubmitEmptyGptImage,
   shouldStopGptImageGeneration
@@ -49,6 +52,42 @@ describe("monitor stall recovery", () => {
       loadedImageCount: 1,
       expectedImageCount: 2
     })).toBe(false);
+  });
+
+  it("fails a completed Doubao image response that has no image", () => {
+    const snapshot = {
+      platform: "doubao" as const,
+      mode: "image" as const,
+      assistantExists: true,
+      assistantText: "你这条指令没有明确的画面内容。",
+      loadedImageCount: 0,
+      isGenerating: false
+    };
+
+    expect(shouldFailCompletedDoubaoImageJob(snapshot)).toBe(true);
+    expect(shouldFailCompletedDoubaoImageJob({ ...snapshot, platform: "gpt" })).toBe(false);
+    expect(shouldFailCompletedDoubaoImageJob({ ...snapshot, isGenerating: true })).toBe(false);
+    expect(shouldFailCompletedDoubaoImageJob({ ...snapshot, assistantText: "" })).toBe(false);
+    expect(shouldFailCompletedDoubaoImageJob({ ...snapshot, loadedImageCount: 1 })).toBe(false);
+    expect(shouldFailCompletedDoubaoImageJob({ ...snapshot, mode: "text" })).toBe(false);
+  });
+
+  // 豆包先结束文字回复、图片卡片晚一步渲染，短宽限期会误杀成功任务。
+  it("gives Doubao a long grace period before declaring the images missing", () => {
+    const completedWithoutImagesAt = 1_000_000;
+
+    expect(shouldGiveUpOnMissingDoubaoImages({ completedWithoutImagesAt, now: completedWithoutImagesAt + 6_000 })).toBe(false);
+    expect(shouldGiveUpOnMissingDoubaoImages({
+      completedWithoutImagesAt,
+      now: completedWithoutImagesAt + DOUBAO_IMAGE_RENDER_GRACE_MS - 1
+    })).toBe(false);
+    expect(shouldGiveUpOnMissingDoubaoImages({
+      completedWithoutImagesAt,
+      now: completedWithoutImagesAt + DOUBAO_IMAGE_RENDER_GRACE_MS
+    })).toBe(true);
+    // 还没进入「回复已完成但没图」状态时不能判失败。
+    expect(shouldGiveUpOnMissingDoubaoImages({ completedWithoutImagesAt: 0, now: completedWithoutImagesAt })).toBe(false);
+    expect(DOUBAO_IMAGE_RENDER_GRACE_MS).toBeGreaterThanOrEqual(60_000);
   });
 
   it("stops a GPT response only after all expected images are available", () => {
