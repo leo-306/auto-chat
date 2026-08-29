@@ -9,21 +9,46 @@
     "48": "icons/icon-48.png",
     "128": "icons/icon-128.png"
   },
-  "permissions": ["tabs", "scripting", "storage", "downloads", "alarms", "clipboardRead", "debugger"],
+  "permissions": [
+    "tabs",
+    "scripting",
+    "storage",
+    "downloads",
+    "alarms",
+    "clipboardRead",
+    "debugger",
+    "declarativeNetRequestWithHostAccess"
+  ],
   "host_permissions": [
     "https://chatgpt.com/*",
     "https://gemini.google.com/*",
     "https://www.doubao.com/*",
+    "*://*.byteimg.com/*",
     "http://127.0.0.1:17321/*"
   ],
   "background": {
     "service_worker": "background.js"
+  },
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "doubao-image-rules",
+        "enabled": true,
+        "path": "doubao-image-rules.json"
+      }
+    ]
   },
   "content_scripts": [
     {
       "matches": ["https://chatgpt.com/*", "https://gemini.google.com/*", "https://www.doubao.com/*"],
       "js": ["content.js"],
       "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://www.doubao.com/*"],
+      "js": ["doubaoWatermarkPage.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
     }
   ],
   "action": {

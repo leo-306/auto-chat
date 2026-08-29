@@ -3,6 +3,7 @@
   "compilerOptions": {
     "rootDir": ".",
     "noEmit": true,
+    "resolveJsonModule": true,
     "types": ["chrome", "vitest"]
   },
   "include": ["src/**/*.ts", "test/**/*.ts"]

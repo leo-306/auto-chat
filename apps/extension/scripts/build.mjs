@@ -7,7 +7,7 @@ const dist = path.join(root, "dist");
 fs.rmSync(dist, { recursive: true, force: true });
 fs.mkdirSync(dist, { recursive: true });
 
-for (const entry of ["background", "content", "popup"]) {
+for (const entry of ["background", "content", "popup", "doubaoWatermarkPage"]) {
   await esbuild.build({
     entryPoints: [path.join(root, "src", `${entry}.ts`)],
     outfile: path.join(dist, `${entry}.js`),
@@ -18,7 +18,7 @@ for (const entry of ["background", "content", "popup"]) {
   });
 }
 
-for (const file of ["popup.html", "popup.css"]) {
+for (const file of ["popup.html", "popup.css", "doubao-image-rules.json"]) {
   fs.copyFileSync(path.join(root, "src", file), path.join(dist, file));
 }
 
