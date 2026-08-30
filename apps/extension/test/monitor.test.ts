@@ -1,13 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
   DOUBAO_IMAGE_RENDER_GRACE_MS,
+  DOUBAO_VIDEO_CONFIRM_MAX_CLICKS,
+  DOUBAO_VIDEO_WAIT_MIN_MS,
   GPT_IMAGE_RENDER_STALL_MIN_MS,
   GPT_IMAGE_STOP_CONFIRM_TIMEOUT_MS,
   hasExplicitGenerationError,
   selectGptErrorRefresh,
   selectMonitorStallRecovery,
   selectStuckGptImageStopRecovery,
+  shouldClickDoubaoVideoConfirm,
   shouldCompleteImageJob,
+  shouldCompleteVideoJob,
   shouldFailCompletedDoubaoImageJob,
   shouldGiveUpOnMissingDoubaoImages,
   shouldRetryGptImageGenerationInPage,
@@ -163,6 +167,64 @@ describe("monitor stall recovery", () => {
       idleMs: 120_001,
       stallTimeoutMs: 120_000
     })).toMatchObject({ recoveryMode: "monitor_only" });
+  });
+
+  // 豆包视频是异步的：提交后页面整段时间一动不动，通用停滞超时会把它当成卡死。
+  it("keeps waiting on a pending Doubao video past the generic stall timeout", () => {
+    expect(selectMonitorStallRecovery({
+      platform: "doubao",
+      mode: "video",
+      isGenerating: false,
+      idleMs: 300_001,
+      stallTimeoutMs: 300_000
+    })).toBeNull();
+    expect(selectMonitorStallRecovery({
+      platform: "doubao",
+      mode: "video",
+      isGenerating: false,
+      idleMs: DOUBAO_VIDEO_WAIT_MIN_MS + 1,
+      stallTimeoutMs: 300_000
+    })).toMatchObject({ recoveryMode: "monitor_only" });
+    // 图片模式不受影响。
+    expect(selectMonitorStallRecovery({
+      platform: "doubao",
+      mode: "image",
+      isGenerating: false,
+      idleMs: 300_001,
+      stallTimeoutMs: 300_000
+    })).toMatchObject({ recoveryMode: "monitor_only" });
+  });
+
+  // 豆包偶尔要求二次确认：不点「确认生成 →」就永远不会开始生成。
+  it("clicks the Doubao video confirmation button until the video appears", () => {
+    const snapshot = {
+      platform: "doubao" as const,
+      mode: "video" as const,
+      hasConfirmButton: true,
+      loadedVideoCount: 0,
+      isGenerating: false,
+      confirmClickCount: 0
+    };
+
+    expect(shouldClickDoubaoVideoConfirm(snapshot)).toBe(true);
+    expect(shouldClickDoubaoVideoConfirm({ ...snapshot, hasConfirmButton: false })).toBe(false);
+    // 已经在生成 / 已经出片，就别再点了。
+    expect(shouldClickDoubaoVideoConfirm({ ...snapshot, isGenerating: true })).toBe(false);
+    expect(shouldClickDoubaoVideoConfirm({ ...snapshot, loadedVideoCount: 1 })).toBe(false);
+    expect(shouldClickDoubaoVideoConfirm({ ...snapshot, mode: "image" })).toBe(false);
+    expect(shouldClickDoubaoVideoConfirm({ ...snapshot, platform: "gpt" })).toBe(false);
+    // 按钮一直不消失时有次数上限兜底。
+    expect(shouldClickDoubaoVideoConfirm({
+      ...snapshot,
+      confirmClickCount: DOUBAO_VIDEO_CONFIRM_MAX_CLICKS
+    })).toBe(false);
+  });
+
+  it("completes a video job as soon as one video card is present", () => {
+    expect(shouldCompleteVideoJob({ mode: "video", loadedVideoCount: 1 })).toBe(true);
+    expect(shouldCompleteVideoJob({ mode: "video", loadedVideoCount: 0 })).toBe(false);
+    expect(shouldCompleteVideoJob({ mode: "image", loadedVideoCount: 1 })).toBe(false);
+    expect(shouldCompleteVideoJob({ mode: "text", loadedVideoCount: 1 })).toBe(false);
   });
 
   it("refreshes an active GPT image placeholder at the three-minute render timeout", () => {

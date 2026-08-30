@@ -40,6 +40,40 @@ export function shouldCompleteImageJob(input: {
   return input.mode === "image" && input.loadedImageCount >= input.expectedImageCount;
 }
 
+export function shouldCompleteVideoJob(input: {
+  mode: Job["mode"];
+  loadedVideoCount: number;
+}): boolean {
+  return input.mode === "video" && input.loadedVideoCount >= 1;
+}
+
+// 豆包视频是异步生成的：助手先回一句「视频生成已提交…大约需要 1-3 分钟」并把
+// isGenerating 置回 false，之后才追加一条带视频卡片的消息。这段等待期页面签名毫无变化，
+// 会被通用停滞超时（默认 5 分钟）误判成卡死，所以视频任务用一个更长的空闲下限，
+// 上限仍由 hardTimeoutMs（默认 15 分钟）兜住。
+export const DOUBAO_VIDEO_WAIT_MIN_MS = 720_000;
+
+// 豆包视频还可能插一步二次确认：助手先回一段授权声明 + 一个「确认生成 →」按钮，
+// 点了才真正开始排队生成。点击后按钮通常就消失，这里仍留一个次数上限兜底，
+// 避免按钮一直留在页面上时被无限点击。
+export const DOUBAO_VIDEO_CONFIRM_MAX_CLICKS = 3;
+
+export function shouldClickDoubaoVideoConfirm(input: {
+  platform: JobPlatform;
+  mode: Job["mode"];
+  hasConfirmButton: boolean;
+  loadedVideoCount: number;
+  isGenerating: boolean;
+  confirmClickCount: number;
+}): boolean {
+  return input.platform === "doubao" &&
+    input.mode === "video" &&
+    input.hasConfirmButton &&
+    !input.isGenerating &&
+    input.loadedVideoCount === 0 &&
+    input.confirmClickCount < DOUBAO_VIDEO_CONFIRM_MAX_CLICKS;
+}
+
 // 豆包可能在图片没有渲染出来时先结束助手回复。对图片任务来说，
 // 已完成的非空回复不能被当作成功，避免一直等待到通用停滞超时。
 export function shouldFailCompletedDoubaoImageJob(input: {
@@ -156,7 +190,7 @@ export function selectMonitorStallRecovery(input: {
     };
   }
 
-  if (!input.isGenerating && input.idleMs > input.stallTimeoutMs) {
+  if (!input.isGenerating && input.idleMs > effectiveStallTimeoutMs(input)) {
     return {
       errorMessage: "No visible progress before stall timeout.",
       recoveryMode: "monitor_only"
@@ -164,4 +198,15 @@ export function selectMonitorStallRecovery(input: {
   }
 
   return null;
+}
+
+function effectiveStallTimeoutMs(input: {
+  platform: JobPlatform;
+  mode: Job["mode"];
+  stallTimeoutMs: number;
+}): number {
+  if (input.platform === "doubao" && input.mode === "video") {
+    return Math.max(input.stallTimeoutMs, DOUBAO_VIDEO_WAIT_MIN_MS);
+  }
+  return input.stallTimeoutMs;
 }

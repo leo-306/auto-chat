@@ -25,6 +25,17 @@ export function hasDoubaoDownloadIcon(element: Element): boolean {
   );
 }
 
+// \u89c6\u9891\u5361\u7247 hover \u540e\u51fa\u73b0\u7684\u4e00\u6392\u64cd\u4f5c\u6309\u94ae\u540c\u6837\u6ca1\u6709\u4efb\u4f55\u6587\u5b57/aria\uff0c
+// \u800c\u4e14\u56fe\u6807 path \u548c\u56fe\u7247\u9884\u89c8\u7684\u4e0b\u8f7d\u56fe\u6807\u4e0d\u662f\u540c\u4e00\u6761\uff0c\u6240\u4ee5\u5355\u72ec\u8bb0\u4e00\u4e2a\u524d\u7f00\u3002
+// \u524d\u7f00\u53d6\u81ea 2026-08 \u7ebf\u4e0a DOM\uff08hover \u7ec4\u5185 28x28 \u7684 action \u5143\u7d20\uff09\u3002
+const DOUBAO_VIDEO_DOWNLOAD_ICON_PATH_PREFIX = "M11.9922 1.99221";
+
+export function hasDoubaoVideoDownloadIcon(element: Element): boolean {
+  return [...element.querySelectorAll("svg path")].some(path =>
+    (path.getAttribute("d") ?? "").trimStart().startsWith(DOUBAO_VIDEO_DOWNLOAD_ICON_PATH_PREFIX)
+  );
+}
+
 // \u9884\u89c8\u6253\u5f00\u65f6\u624d\u4f1a\u51fa\u73b0\u7684\u4e00\u6392\u6807\u6ce8\u5de5\u5177\uff0c\u7528\u6765\u786e\u8ba4\u300c\u9884\u89c8\u786e\u5b9e\u5f00\u7740\u300d\u3002
 // \u54c1\u724c\u84dd\u515c\u5e95\u903b\u8f91\u5fc5\u987b\u9760\u5b83\u628a\u8f93\u5165\u6846\u7684\u53d1\u9001\u6309\u94ae\u6392\u9664\u6389\u2014\u2014\u4e24\u8005\u540c\u8272\u3002
 export const DOUBAO_PREVIEW_MARKER_SELECTOR = "[aria-label^='marker-tool']";

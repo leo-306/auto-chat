@@ -371,6 +371,13 @@ describe("isReadableLocalDownload", () => {
     expect(isReadableLocalDownload(target)).toBe(false);
   });
 
+  // 豆包视频也是「页面下载 + 读回 Downloads」这条路。
+  it("accepts a video path inside the Downloads folder", () => {
+    expect(isReadableLocalDownload(path.join(os.homedir(), "Downloads", "clip.mp4"))).toBe(true);
+    expect(isReadableLocalDownload(path.join(os.homedir(), "Downloads", "clip.webm"))).toBe(true);
+    expect(isReadableLocalDownload(path.join(os.homedir(), "Downloads", "clip.mov"))).toBe(true);
+  });
+
   it("rejects an empty path", () => {
     expect(isReadableLocalDownload("")).toBe(false);
   });

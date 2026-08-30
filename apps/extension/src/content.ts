@@ -9,6 +9,15 @@ import {
   readDoubaoModel
 } from "./doubaoModel.js";
 import {
+  doubaoVideoSliderValue,
+  isDoubaoVideoConfirmLabel,
+  isDoubaoVideoParamsApplied,
+  matchDoubaoVideoRatioOption,
+  parseDoubaoVideoParamsTrigger,
+  readDoubaoVideoDurationSeconds,
+  readDoubaoVideoRatio
+} from "./doubaoVideo.js";
+import {
   hasGptUnavailableContentMessage,
   isGptConversationPath,
   normalizeGptConversationUrl,
@@ -18,6 +27,7 @@ import {
   DOUBAO_BRAND_BLUE,
   DOUBAO_PREVIEW_MARKER_SELECTOR,
   hasDoubaoDownloadIcon,
+  hasDoubaoVideoDownloadIcon,
   isDoubaoDownloadControl
 } from "./imageDownload.js";
 import { hasGeneratingText, isGenerationStopControl } from "./inspect.js";
@@ -27,6 +37,8 @@ import {
   selectMonitorStallRecovery,
   selectStuckGptImageStopRecovery,
   shouldCompleteImageJob,
+  shouldCompleteVideoJob,
+  shouldClickDoubaoVideoConfirm,
   shouldFailCompletedDoubaoImageJob,
   shouldGiveUpOnMissingDoubaoImages,
   shouldRetryGptImageGenerationInPage,
@@ -60,6 +72,7 @@ const INTERRUPTED_TEXT_PATTERN = /Connection interrupted|Waiting for the complet
 const MONITOR_INTERVAL_MS = 5000;
 const TEXT_DONE_STABLE_MS = 1000;
 const IMAGE_DONE_STABLE_MS = 2000;
+const VIDEO_DONE_STABLE_MS = 2000;
 const GEMINI_SINGLE_IMAGE_DONE_STABLE_MS = 2000;
 const EMPTY_GPT_IMAGE_RECOVERY_DELAY_MS = 10_000;
 // Gemini can take longer than the generic stall threshold to render a
@@ -77,7 +90,35 @@ type CollectedImage = {
   acquisition: "gpt_direct" | "gpt_share_sheet" | "gemini_download" | "doubao_download" | "element_url";
 };
 
+type CollectedVideo = {
+  index: number;
+  sourceId: string;
+  dataUrl: string;
+  contentType: string;
+  byteLength: number;
+  sha256: string;
+  acquisition: "doubao_video_download";
+};
+
 class RetryableJobError extends Error {}
+
+// 在 chrome://extensions 里重新加载插件后，页面上那份老的 content script 并不会被卸载，
+// 它还在跑自己的轮询；一旦碰到任何 chrome.* 调用就抛 "Extension context invalidated."，
+// 在控制台堆成一片和业务无关的红色报错（新脚本会在下次注入时接手，老脚本已经无事可做）。
+// 所以这里统一：检测到扩展上下文已失效就静默中止循环，并吃掉这一类未捕获的 rejection。
+function isExtensionContextAlive(): boolean {
+  return Boolean(chrome.runtime?.id);
+}
+
+function isExtensionContextInvalidated(error: unknown): boolean {
+  return /Extension context invalidated|message port closed/i.test(String(error));
+}
+
+window.addEventListener("unhandledrejection", event => {
+  if (!isExtensionContextInvalidated(event.reason)) return;
+  event.preventDefault();
+  monitorAbort?.abort();
+});
 
 function platformLabel(): string {
   if (activeJob?.platform === "gemini") return "Gemini";
@@ -439,6 +480,8 @@ async function monitorJob(
   let gptStopRequestedAt = 0;
   let capturedGptImages: CollectedImage[] | null = null;
   let doubaoNoImageDoneAt = 0;
+  let doubaoVideoConfirmClicks = 0;
+  let tracedDoubaoVideoControls = false;
   let resubmittedEmptyGptImage = hasResubmittedEmptyGptImage(job.id);
   let lastTraceSignature = "";
   await traceJob(job.id, "monitor_started", {
@@ -451,6 +494,8 @@ async function monitorJob(
 
   try {
     while (!signal.aborted) {
+      // 插件被重新加载后这份脚本已经是孤儿，继续轮询只会刷报错。
+      if (!isExtensionContextAlive()) return;
       if (job.platform === "gpt" && dismissRateLimitModal()) {
         await traceJob(job.id, "rate_limit_modal_detected", { platform: job.platform });
         await report(job.id, "rate_limited");
@@ -552,6 +597,57 @@ async function monitorJob(
             status: "done",
             signature: state.signature,
             images: capturedGptImages ?? await collectImages(state.loadedImages.slice(0, job.expectedImageCount))
+          });
+          return;
+        }
+        await sleep(MONITOR_INTERVAL_MS);
+        continue;
+      }
+
+      // 豆包视频可能要求二次确认：助手先回一段授权声明和一个「确认生成 →」按钮，
+      // 不点它页面就一直停在这里，直到被当成停滞。
+      if (job.platform === "doubao" && job.mode === "video") {
+        const confirmButton = findDoubaoVideoConfirmButton(job.id);
+        if (!confirmButton && !tracedDoubaoVideoControls && state.assistantExists) {
+          tracedDoubaoVideoControls = true;
+          await traceJob(job.id, "doubao_video_scope_controls", { controls: describeJobScopeControls(job.id) });
+        }
+        if (shouldClickDoubaoVideoConfirm({
+          platform: job.platform,
+          mode: job.mode,
+          hasConfirmButton: Boolean(confirmButton),
+          loadedVideoCount: state.loadedVideos.length,
+          isGenerating: state.isGenerating,
+          confirmClickCount: doubaoVideoConfirmClicks
+        })) {
+          doubaoVideoConfirmClicks += 1;
+          clickDoubaoControl(confirmButton!);
+          await traceJob(job.id, "doubao_video_confirm_clicked", {
+            ...monitorSnapshot(job, state),
+            confirmClickCount: doubaoVideoConfirmClicks
+          });
+          lastChangedAt = Date.now();
+          maybeDoneAt = 0;
+          await sleep(MONITOR_INTERVAL_MS);
+          continue;
+        }
+      }
+
+      // 豆包视频：卡片一出现就算生成完成（此时 isGenerating 往往已经是 false，
+      // 因为「视频生成已提交」那条回复早就结束了），稳定 2 秒后再走下载。
+      if (shouldCompleteVideoJob({ mode: job.mode, loadedVideoCount: state.loadedVideos.length })) {
+        if (!maybeDoneAt) {
+          maybeDoneAt = Date.now();
+          await sendProgress({ type: "JOB_PROGRESS", jobId: job.id, status: "maybe_done", signature: state.signature });
+        }
+        if (Date.now() - maybeDoneAt > VIDEO_DONE_STABLE_MS) {
+          await traceJob(job.id, "video_collection_started", monitorSnapshot(job, state));
+          await sendProgress({
+            type: "JOB_PROGRESS",
+            jobId: job.id,
+            status: "done",
+            signature: state.signature,
+            videos: await collectVideos(state.loadedVideos.slice(0, 1))
           });
           return;
         }
@@ -787,11 +883,15 @@ async function inspectJob(jobId: string, platform?: JobPlatform): Promise<{
   loadedImages: HTMLImageElement[];
   scopedImages: HTMLImageElement[];
   pageImages: HTMLImageElement[];
+  loadedVideos: HTMLElement[];
   signature: string;
 }> {
   const assistant = findJobAssistant(jobId);
   const scopedImages = findJobScopedImages(jobId);
   const pageImages = findLoadedImages(document);
+  // 豆包视频卡片挂在「视频生成好了」那条独立的助手消息里，不一定是 scope.assistant，
+  // 所以按整段任务范围找，而不是只在 assistant 元素里找。
+  const loadedVideos = platform === "doubao" ? findJobScopedVideoCards(jobId) : [];
   if (!assistant) {
     const text = document.body.innerText;
     const jobText = findJobScopeText(jobId);
@@ -808,7 +908,8 @@ async function inspectJob(jobId: string, platform?: JobPlatform): Promise<{
       loadedImages: scopedImages,
       scopedImages,
       pageImages,
-      signature: `no-assistant:${text.length}:${scopedImages.length}:${pageImages.length}`
+      loadedVideos,
+      signature: `no-assistant:${text.length}:${scopedImages.length}:${pageImages.length}:${loadedVideos.length}`
     };
   }
 
@@ -834,7 +935,8 @@ async function inspectJob(jobId: string, platform?: JobPlatform): Promise<{
     loadedImages,
     scopedImages,
     pageImages,
-    signature: `${text.length}:${loadedImages.length}:${scopedImages.length}:${pageImages.length}:${isGenerating}:${assistant.querySelectorAll("button,a").length}`
+    loadedVideos,
+    signature: `${text.length}:${loadedImages.length}:${scopedImages.length}:${pageImages.length}:${loadedVideos.length}:${isGenerating}:${assistant.querySelectorAll("button,a").length}`
   };
 }
 
@@ -854,6 +956,7 @@ async function debugInspect(jobId?: string): Promise<DebugInspectResult> {
       loadedImages: findLoadedImages(document).length,
       scopedImages: 0,
       pageImages: findLoadedImages(document).length,
+      loadedVideos: 0,
       expectedImages: activeJob?.expectedImageCount ?? null,
       signature: `no-job:${document.body.innerText.length}`
     };
@@ -872,6 +975,7 @@ async function debugInspect(jobId?: string): Promise<DebugInspectResult> {
     loadedImages: state.loadedImages.length,
     scopedImages: state.scopedImages.length,
     pageImages: state.pageImages.length,
+    loadedVideos: state.loadedVideos.length,
     expectedImages: activeJob?.id === resolvedJobId ? activeJob.expectedImageCount : null,
     signature: state.signature,
     errorText: state.errorText
@@ -979,6 +1083,53 @@ function findJobScopeRetryButton(jobId: string, platform?: JobPlatform): HTMLEle
   return shareIndex >= 0 ? groupButtons[shareIndex + 1] ?? null : null;
 }
 
+// 二次确认按钮就渲染在本次任务那条助手回复里，所以按会话作用域筛选，
+// 避免点到历史消息里同样文案的按钮。豆包这个「确认生成 →」不一定是 <button>，
+// 实测也可能是带 cursor:pointer 的 div，所以按文案找最内层的可点击元素，
+// 再回退到它最近的 button/role=button 祖先。
+function findDoubaoVideoConfirmButton(jobId: string): HTMLElement | null {
+  const scope = findJobConversationScope(jobId);
+  if (!scope) return null;
+
+  const matches = [...document.querySelectorAll<HTMLElement>("button,[role='button'],a,div,span")].filter(element =>
+    isAfter(element, scope.user) &&
+    (!scope.nextUser || isBefore(element, scope.nextUser)) &&
+    isPresentInLayout(element) &&
+    isLikelyClickable(element) &&
+    isDoubaoVideoConfirmLabel(elementLabel(element))
+  );
+  const innermost = matches.filter(element => !matches.some(other => other !== element && element.contains(other)));
+  const target = innermost[innermost.length - 1] ?? null;
+  return target?.closest<HTMLElement>("button,[role='button']") ?? target;
+}
+
+function isLikelyClickable(element: HTMLElement): boolean {
+  if (element.tagName === "BUTTON" || element.tagName === "A") return true;
+  if (element.getAttribute("role") === "button") return true;
+  return getComputedStyle(element).cursor === "pointer";
+}
+
+function elementLabel(element: HTMLElement): string {
+  return `${element.innerText ?? ""} ${element.getAttribute("aria-label") ?? ""}`.replace(/\s+/g, " ").trim();
+}
+
+// 豆包的回复里会插各种平台按钮（二次确认、追问建议…），文案和结构都在变。
+// 没找到确认按钮时把这条回复里的可点击元素记一遍，便于事后对照 trace 排查。
+function describeJobScopeControls(jobId: string): string[] {
+  const scope = findJobConversationScope(jobId);
+  if (!scope) return [];
+
+  const candidates = scope.assistant
+    ? [...scope.assistant.querySelectorAll<HTMLElement>("*")]
+    : [...document.querySelectorAll<HTMLElement>("button,[role='button'],a")].filter(element =>
+      isAfter(element, scope.user) && (!scope.nextUser || isBefore(element, scope.nextUser)));
+  const clickable = candidates.filter(element => isPresentInLayout(element) && isLikelyClickable(element));
+  return clickable
+    .filter(element => !clickable.some(other => other !== element && element.contains(other)))
+    .slice(0, 24)
+    .map(element => `${element.tagName.toLowerCase()}:${elementLabel(element).slice(0, 40)}`);
+}
+
 function findJobConversationScope(jobId: string): { user: HTMLElement; assistant: HTMLElement | null; nextUser: HTMLElement | null } | null {
   const turns = findConversationTurns();
   const scope = findLatestJobConversationScope(turns.map(turn => ({
@@ -1060,6 +1211,7 @@ function monitorSnapshot(
     loadedImageCount: state.loadedImages.length,
     scopedImageCount: state.scopedImages.length,
     pageImageCount: state.pageImages.length,
+    loadedVideoCount: state.loadedVideos.length,
     isGenerating: state.isGenerating,
     hasError: state.hasError,
     errorText: state.errorText || null,
@@ -1438,7 +1590,14 @@ async function fillPromptAndSendDoubao(job: Job): Promise<void> {
     if (job.mode === "image") {
       await enterDoubaoImageMode();
       const model = readDoubaoModel(job.metadata);
-      if (model) await selectDoubaoModel(model);
+      if (model) await selectDoubaoModel(model, DOUBAO_MODEL_TRIGGER_SELECTOR);
+    }
+
+    if (job.mode === "video") {
+      await enterDoubaoVideoMode();
+      const model = readDoubaoModel(job.metadata);
+      if (model) await selectDoubaoModel(model, DOUBAO_VIDEO_MODEL_TRIGGER_SELECTOR);
+      await applyDoubaoVideoParams(job);
     }
 
     const composer = fillPrompt(prompt);
@@ -1484,17 +1643,111 @@ function isDoubaoImageModeActive(): boolean {
   return placeholderEl?.getAttribute("data-placeholder") === "描述你想要的图片";
 }
 
+async function enterDoubaoVideoMode(): Promise<void> {
+  if (isDoubaoVideoModeActive()) return;
+
+  const button = findDoubaoToolbarButton("视频生成");
+  if (!button) throw new Error("豆包「视频生成」按钮未找到。");
+  button.click();
+
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (isDoubaoVideoModeActive()) return;
+    await sleep(300);
+  }
+  throw new Error("点击「视频生成」后未能进入视频生成模式。");
+}
+
+function isDoubaoVideoModeActive(): boolean {
+  const placeholderEl = document.querySelector("[data-placeholder]");
+  return placeholderEl?.getAttribute("data-placeholder") === "描述你想要的视频";
+}
+
 // 豆包 actionbar 上的控件是 radix dropdown，data-* 属性比 class 稳定得多。
 const DOUBAO_MODEL_TRIGGER_SELECTOR = "[data-input-engine-actionbar-control-key='model']";
+// 视频模式的模型下拉是另一个 control-key，菜单结构和图片模式完全一致。
+const DOUBAO_VIDEO_MODEL_TRIGGER_SELECTOR = "[data-input-engine-actionbar-control-key='video-model']";
+const DOUBAO_VIDEO_PARAMS_TRIGGER_SELECTOR =
+  "[data-input-engine-actionbar-render-entry-key='video-generation-params-panel']";
+const DOUBAO_VIDEO_PARAMS_PANEL_SELECTOR =
+  "[data-slot='dropdown-menu-content'][data-creation-params-panel-id]";
 const DOUBAO_MENU_SELECTOR = "[role='menu'][data-slot='dropdown-menu-content']";
 const DOUBAO_MENU_ITEM_SELECTOR = "[role='menuitem'][data-slot='dropdown-menu-item']";
 
-async function selectDoubaoModel(model: string): Promise<void> {
-  const trigger = document.querySelector<HTMLElement>(DOUBAO_MODEL_TRIGGER_SELECTOR);
-  if (!trigger) throw new Error("豆包「模型」按钮未找到，可能不在图片生成模式。");
+// 「比例 · 时长」面板：比例是一排 button，时长是一个 radix slider。
+// 触发按钮上的文字就是当前生效值（例如 "16:9 · 4s"），拿它做回读断言。
+async function applyDoubaoVideoParams(job: Job): Promise<void> {
+  const ratio = readDoubaoVideoRatio(job.metadata);
+  const seconds = readDoubaoVideoDurationSeconds(job.metadata);
+  if (!ratio && seconds === undefined) return;
+
+  const trigger = document.querySelector<HTMLElement>(DOUBAO_VIDEO_PARAMS_TRIGGER_SELECTOR);
+  if (!trigger) throw new Error("豆包视频「比例 · 时长」按钮未找到，可能不在视频生成模式。");
+  if (isDoubaoVideoParamsApplied(trigger.innerText ?? "", { ratio, seconds })) return;
+
+  clickDoubaoControl(trigger);
+  const panel = await waitUntilTruthy(() => {
+    const element = document.querySelector<HTMLElement>(DOUBAO_VIDEO_PARAMS_PANEL_SELECTOR);
+    return element && isPresentInLayout(element) ? element : null;
+  }, 5_000);
+  if (!panel) throw new Error("点击「比例 · 时长」后参数面板未出现。");
+
+  try {
+    if (ratio) await selectDoubaoVideoRatio(panel, ratio);
+    if (seconds !== undefined) await setDoubaoVideoDuration(panel, seconds);
+  } catch (error) {
+    closeDoubaoDropdown();
+    throw error;
+  }
+  closeDoubaoDropdown();
+
+  const applied = await waitUntilTruthy(() => {
+    const current = document.querySelector<HTMLElement>(DOUBAO_VIDEO_PARAMS_TRIGGER_SELECTOR);
+    return current && isDoubaoVideoParamsApplied(current.innerText ?? "", { ratio, seconds }) ? current : null;
+  }, 5_000);
+  if (!applied) {
+    const current = document.querySelector<HTMLElement>(DOUBAO_VIDEO_PARAMS_TRIGGER_SELECTOR)?.innerText ?? "";
+    const parsed = parseDoubaoVideoParamsTrigger(current);
+    const wanted = [ratio ?? "（不改）", seconds === undefined ? "（不改）" : `${seconds}s`].join(" · ");
+    throw new Error(
+      `豆包视频参数未设置成「${wanted}」，当前是「${parsed ? `${parsed.ratio} · ${parsed.seconds}s` : current.trim() || "未知"}」。`
+    );
+  }
+}
+
+async function selectDoubaoVideoRatio(panel: HTMLElement, ratio: string): Promise<void> {
+  const buttons = [...panel.querySelectorAll<HTMLButtonElement>("div.grid button")]
+    .filter(button => isPresentInLayout(button));
+  const match = matchDoubaoVideoRatioOption(buttons.map(button => button.innerText ?? ""), ratio);
+  if ("errorMessage" in match) throw new Error(match.errorMessage);
+  buttons[match.index]!.click();
+  await sleep(200);
+}
+
+// 时长 slider 用键盘驱动最稳：拖拽要算像素，而 ArrowLeft/ArrowRight 每次正好动 1 格。
+async function setDoubaoVideoDuration(panel: HTMLElement, seconds: number): Promise<void> {
+  const thumb = panel.querySelector<HTMLElement>("[data-slot='slider-thumb'][role='slider']");
+  if (!thumb) throw new Error("豆包视频时长滑块未找到。");
+
+  const wanted = doubaoVideoSliderValue(seconds);
+  thumb.focus();
+  for (let guard = 0; guard < 32; guard += 1) {
+    const now = Number(thumb.getAttribute("aria-valuenow"));
+    if (!Number.isFinite(now)) throw new Error("豆包视频时长滑块没有 aria-valuenow。");
+    if (now === wanted) return;
+    const key = now > wanted ? "ArrowLeft" : "ArrowRight";
+    thumb.dispatchEvent(new KeyboardEvent("keydown", { key, code: key, bubbles: true, cancelable: true }));
+    thumb.dispatchEvent(new KeyboardEvent("keyup", { key, code: key, bubbles: true, cancelable: true }));
+    await sleep(120);
+  }
+  throw new Error(`豆包视频时长未能调到 ${seconds}s。`);
+}
+
+async function selectDoubaoModel(model: string, triggerSelector: string): Promise<void> {
+  const trigger = document.querySelector<HTMLElement>(triggerSelector);
+  if (!trigger) throw new Error("豆包「模型」按钮未找到，可能不在对应的生成模式。");
   if (isDoubaoModelSelected(trigger.innerText ?? "", model)) return;
 
-  clickDoubaoDropdown(trigger);
+  clickDoubaoControl(trigger);
   const menu = await waitUntilTruthy(() => {
     const element = document.querySelector<HTMLElement>(DOUBAO_MENU_SELECTOR);
     return element && isPresentInLayout(element) ? element : null;
@@ -1505,7 +1758,7 @@ async function selectDoubaoModel(model: string): Promise<void> {
     const options = [...menu.querySelectorAll<HTMLElement>(DOUBAO_MENU_ITEM_SELECTOR)];
     const match = matchDoubaoModelOption(options.map(option => option.innerText ?? ""), model);
     if ("errorMessage" in match) throw new Error(match.errorMessage);
-    clickDoubaoDropdown(options[match.index]);
+    clickDoubaoControl(options[match.index]);
   } catch (error) {
     closeDoubaoDropdown();
     throw error;
@@ -1514,20 +1767,20 @@ async function selectDoubaoModel(model: string): Promise<void> {
   // 收费模型（例如带「升级」角标的 5.0 Pro）点了也可能选不上，
   // 所以必须以触发按钮的回显为准，而不是以点击成功为准。
   const applied = await waitUntilTruthy(() => {
-    const current = document.querySelector<HTMLElement>(DOUBAO_MODEL_TRIGGER_SELECTOR);
+    const current = document.querySelector<HTMLElement>(triggerSelector);
     return current && isDoubaoModelSelected(current.innerText ?? "", model) ? current : null;
   }, 5_000);
   if (!applied) {
     closeDoubaoDropdown();
     const current = doubaoModelTriggerName(
-      document.querySelector<HTMLElement>(DOUBAO_MODEL_TRIGGER_SELECTOR)?.innerText ?? ""
+      document.querySelector<HTMLElement>(triggerSelector)?.innerText ?? ""
     );
     throw new Error(`豆包模型未切换到「${model}」，当前仍是「${current || "未知"}」，可能需要更高权益。`);
   }
 }
 
 // radix 的 trigger/menuitem 只监听 pointerdown/mouseup，单纯 .click() 不会展开。
-function clickDoubaoDropdown(element: HTMLElement): void {
+function clickDoubaoControl(element: HTMLElement): void {
   element.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
   element.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
   element.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, cancelable: true }));
@@ -1921,8 +2174,60 @@ async function requestTrustedClickDownload(point: { x: number; y: number }, fail
   });
 }
 
+// 豆包视频卡片的下载按钮只在鼠标真的悬停在卡片上时才出现，而 debugger 一 attach
+// 又会因为调试提示栏改变视口高度，让 attach 之前量的坐标失效。所以把「量坐标」这一步
+// 交给 background：它先用 CDP 把真实指针挪到卡片上，再回一个 HOVER_READY，
+// 我们在那个状态下现场找按钮、回传坐标，最后由它在同一次 attach 里点下去。
+async function requestHoverClickDownload(
+  hoverPoint: { x: number; y: number },
+  measureClickPoint: () => Promise<{ x: number; y: number } | null>,
+  failureLabel: string
+): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const port = chrome.runtime.connect({ name: "image-download-capture" });
+    let settled = false;
+    const finishOk = (blob: Blob) => {
+      if (settled) return;
+      settled = true;
+      port.disconnect();
+      resolve(blob);
+    };
+    const finishError = (message: string) => {
+      if (settled) return;
+      settled = true;
+      port.disconnect();
+      reject(new Error(message));
+    };
+
+    port.onMessage.addListener((message: { type: string; ok?: boolean; contentType?: string; base64?: string; error?: string }) => {
+      if (message.type === "HOVER_READY") {
+        void measureClickPoint()
+          .then(point => port.postMessage({ type: "CLICK_AT", point }))
+          .catch(() => port.postMessage({ type: "CLICK_AT", point: null }));
+        return;
+      }
+      if (message.type === "RESULT") {
+        if (message.ok && message.contentType && message.base64) {
+          finishOk(base64ToBlob(message.base64, message.contentType));
+        } else {
+          finishError(message.error || `${failureLabel} failed for an unknown reason.`);
+        }
+      }
+    });
+    port.onDisconnect.addListener(() => {
+      finishError("Connection to the extension background script was lost before the download completed.");
+    });
+    port.postMessage({ type: "REQUEST_HOVER_DOWNLOAD", hoverPoint });
+  });
+}
+
 function elementCenterPoint(element: HTMLElement): { x: number; y: number } | null {
   element.scrollIntoView({ block: "center", inline: "center" });
+  return elementViewportPoint(element);
+}
+
+// 已经悬停/已经滚到位时只量不滚：scrollIntoView 会把元素挪到指针底下之外去。
+function elementViewportPoint(element: HTMLElement): { x: number; y: number } | null {
   const rect = element.getBoundingClientRect();
   if (rect.width === 0 || rect.height === 0) return null;
   return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
@@ -1957,6 +2262,240 @@ async function downloadDoubaoImage(image: HTMLImageElement): Promise<Blob> {
   } finally {
     closeDoubaoImagePreview();
   }
+}
+
+// 豆包视频卡片：完成的视频渲染成一张封面图 + 播放按钮，真正的 <video>（xgplayer）
+// 只在鼠标悬停时才挂载，下载入口也只在悬停后出现。整卡的选择器是 block-video-<hash>，
+// hash 每次发版都会变，所以只匹配前缀。
+const DOUBAO_VIDEO_CARD_SELECTOR = "[class*='block-video-']";
+const DOUBAO_VIDEO_HOVER_GROUP_SELECTOR = "[class*='video-hover-button-group-']";
+
+function findDoubaoVideoCards(root: ParentNode): HTMLElement[] {
+  return [...root.querySelectorAll<HTMLElement>(DOUBAO_VIDEO_CARD_SELECTOR)]
+    .filter(card => isPresentInLayout(card))
+    // 生成中的占位卡没有封面图，只有出了封面才算真的有产物。
+    .filter(card => Boolean(card.querySelector("img[class*='cover-']")));
+}
+
+function findJobScopedVideoCards(jobId: string): HTMLElement[] {
+  const scope = findJobConversationScope(jobId);
+  if (!scope) return [];
+
+  return findDoubaoVideoCards(document).filter(card =>
+    !scope.user.contains(card) &&
+    isAfter(card, scope.user) && (!scope.nextUser || isBefore(card, scope.nextUser))
+  );
+}
+
+async function collectVideos(cards: HTMLElement[]): Promise<CollectedVideo[]> {
+  const result: CollectedVideo[] = [];
+  for (const [index, card] of cards.entries()) {
+    const blob = await downloadDoubaoVideo(card);
+    // 从 Downloads 读回来的文件如果扩展名认不出来会是 application/octet-stream，
+    // 直接用它会让 background 按图片规则存成 .png，所以非视频类型统一按 mp4 记。
+    const contentType = blob.type.startsWith("video/") ? blob.type : "video/mp4";
+    const sha256 = await sha256Blob(blob);
+    const sourceId = card.querySelector<HTMLImageElement>("img[class*='cover-']")?.currentSrc || `video-${index + 1}`;
+    if (activeJob) {
+      await traceJob(activeJob.id, "video_asset_collected", {
+        index: index + 1,
+        sourceId,
+        acquisition: "doubao_video_download",
+        byteLength: blob.size,
+        contentType,
+        sha256
+      });
+    }
+    result.push({
+      index,
+      sourceId,
+      contentType,
+      byteLength: blob.size,
+      sha256,
+      acquisition: "doubao_video_download",
+      dataUrl: await blobToDataUrl(blob)
+    });
+  }
+  return result;
+}
+
+// mp4 本体在 ByteDance 的 CDN 上（例如 v26-default.douyin.com），地址是 hover 出来的
+// <video> 上那条带签名的临时直链：页面里 fetch 会被 CORS 拦，但 background 配了
+// host 权限就能直接取，所以优先走直链，取不到才退回「页面自己下载 + chrome.downloads
+// 捕获」这条和图片、Gemini 一致的老路。
+async function downloadDoubaoVideo(card: HTMLElement): Promise<Blob> {
+  // 先试直链：悬停后 xgplayer 会把 <video> 挂上来。它的地址是带签名的临时直链，
+  // 页面里 fetch 会被 CORS 拦，但 background 有对应 host 权限，能直接取字节。
+  // 这条路比「量坐标 → 可信点击 → 捕获 chrome.downloads」少了一堆会飘的环节，
+  // 取不到（例如 MSE 播放时 src 是 blob:）才退回点下载按钮那条路。
+  const direct = await fetchDoubaoVideoBySource(card);
+  if (direct) return direct;
+
+  const hoverPoint = elementCenterPoint(card);
+  if (!hoverPoint) throw new Error("豆包视频卡片没有可悬停的屏幕坐标。");
+  await sleep(200);
+
+  const blob = await requestHoverClickDownload(hoverPoint, async () => {
+    // 到这里真实指针已经压在卡片上，悬停条才真的出现，坐标也只有这时候量才是准的。
+    hoverDoubaoVideoCard(card);
+    const action = await waitForDoubaoVideoDownloadAction(card, 8_000);
+    await debugLog("findDoubaoVideoDownloadAction", { found: Boolean(action) });
+    if (!action) {
+      if (activeJob) {
+        await traceJob(activeJob.id, "doubao_video_card_probe", describeDoubaoVideoCard(card));
+      }
+      return null;
+    }
+    // scrollIntoView 会把卡片挪走、把指针甩出悬停区，所以这里只量不滚。
+    const point = elementViewportPoint(action);
+    // 上一轮就是「按钮找到了、点了、但没有任何下载开始」，所以要知道这个坐标上
+    // 最顶层到底是不是这个按钮 —— 如果被播放器蒙层盖住，可信点击就打在蒙层上了。
+    const hit = point ? document.elementFromPoint(point.x, point.y) : null;
+    await debugLog("doubaoVideoDownloadActionPoint", {
+      point,
+      action: describeNodeForTrace(action),
+      hit: hit instanceof HTMLElement ? describeNodeForTrace(hit) : null,
+      hitIsAction: Boolean(hit && (action.contains(hit) || hit.contains(action)))
+    });
+    return point;
+  }, "Doubao video download");
+
+  await debugLog("downloadDoubaoVideo succeeded", { size: blob.size, type: blob.type });
+  if (blob.size === 0) throw new Error("豆包视频下载得到的是空文件。");
+  return blob;
+}
+
+async function fetchDoubaoVideoBySource(card: HTMLElement): Promise<Blob | null> {
+  const src = await waitUntilTruthy(() => {
+    // <video> 只在悬停时才挂上来，每轮都补一次合成悬停。
+    hoverDoubaoVideoCard(card);
+    const video = card.querySelector("video");
+    const candidate = video?.currentSrc || video?.getAttribute("src") || "";
+    return candidate.startsWith("http") ? candidate : null;
+  }, 6_000);
+  const described = src ? describeMediaUrl(src) : null;
+  await debugLog("doubaoVideoSource", { found: Boolean(src), ...described });
+  if (!src) return null;
+
+  const response = await chrome.runtime.sendMessage({ type: "FETCH_MEDIA", url: src }) as
+    { ok?: boolean; contentType?: string; base64?: string; error?: string } | undefined;
+  if (!response?.ok || !response.base64) {
+    await debugLog("doubaoVideoSourceFetchFailed", { error: response?.error ?? "no_response" });
+    return null;
+  }
+  const contentType = response.contentType?.startsWith("video/") ? response.contentType : "video/mp4";
+  const blob = base64ToBlob(response.base64, contentType);
+  await debugLog("doubaoVideoSourceFetched", { size: blob.size, type: blob.type });
+  if (blob.size === 0) return null;
+  if (activeJob) {
+    await traceJob(activeJob.id, "doubao_video_direct_source_used", { ...described, byteLength: blob.size });
+  }
+  return blob;
+}
+
+// 只记域名和路径，签名参数不进日志。
+function describeMediaUrl(raw: string): Record<string, unknown> {
+  try {
+    const url = new URL(raw);
+    return { host: url.host, path: url.pathname.slice(0, 120) };
+  } catch {
+    return { host: null, path: null };
+  }
+}
+
+
+async function waitForDoubaoVideoDownloadAction(card: HTMLElement, timeoutMs: number): Promise<HTMLElement | null> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    // 卡片可能刚重新挂载，每轮都补一次合成悬停事件（React 的 onMouseEnter 吃这个）。
+    hoverDoubaoVideoCard(card);
+    const action = findDoubaoVideoDownloadAction(card);
+    if (action) return action;
+    await sleep(300);
+  }
+  return findDoubaoVideoDownloadAction(card);
+}
+
+// 卡片是靠 React 的 onMouseEnter 挂播放器和悬停条的，合成事件就够；
+// 但必须带上 clientX/clientY，否则组件按 (0,0) 判断指针位置会立刻又收起来。
+function hoverDoubaoVideoCard(card: HTMLElement): void {
+  const rect = card.getBoundingClientRect();
+  const init = {
+    bubbles: true,
+    cancelable: true,
+    clientX: rect.left + rect.width / 2,
+    clientY: rect.top + rect.height / 2
+  };
+  card.dispatchEvent(new PointerEvent("pointerover", init));
+  card.dispatchEvent(new MouseEvent("mouseover", init));
+  card.dispatchEvent(new PointerEvent("pointerenter", { ...init, bubbles: false }));
+  card.dispatchEvent(new MouseEvent("mouseenter", { ...init, bubbles: false }));
+  card.dispatchEvent(new PointerEvent("pointermove", init));
+  card.dispatchEvent(new MouseEvent("mousemove", init));
+}
+
+// 悬停条里的按钮没有 aria-label / title / 文案，主要靠下载图标的 path 认；
+// 图标 path 每次发版都可能换，所以再兜两层：图片预览那条下载图标，以及 class/outerHTML
+// 里带 download/保存 字样的小图标按钮（限定 ≤64px 且自带 svg，避免选中整张卡片）。
+const DOUBAO_VIDEO_ACTION_MAX_SIZE_PX = 64;
+
+function findDoubaoVideoDownloadAction(card: HTMLElement): HTMLElement | null {
+  const scopes = [
+    ...card.querySelectorAll<HTMLElement>(DOUBAO_VIDEO_HOVER_GROUP_SELECTOR),
+    card
+  ].filter(isPresentInLayout);
+
+  for (const scope of scopes) {
+    const candidates = [...scope.querySelectorAll<HTMLElement>("*")]
+      .filter(isDoubaoVideoActionCandidate)
+      .filter(element =>
+        hasDoubaoVideoDownloadIcon(element) ||
+        hasDoubaoDownloadIcon(element) ||
+        isDoubaoDownloadControl(element));
+    // 取最内层命中，否则包着整条悬停条的祖先会先按 document order 被选中。
+    const innermost = candidates.find(element => !candidates.some(other => other !== element && element.contains(other)));
+    if (innermost) return innermost.closest<HTMLElement>("button,[role='button']") ?? innermost;
+  }
+  return null;
+}
+
+function isDoubaoVideoActionCandidate(element: HTMLElement): boolean {
+  if (!element.querySelector("svg")) return false;
+  if (!isPresentInLayout(element)) return false;
+  const rect = element.getBoundingClientRect();
+  return rect.width <= DOUBAO_VIDEO_ACTION_MAX_SIZE_PX && rect.height <= DOUBAO_VIDEO_ACTION_MAX_SIZE_PX;
+}
+
+// 找不到下载按钮时把卡片里的可点击元素和图标 path 记进 trace，
+// 下次改选择器就不用再靠猜（和确认按钮那次用的是同一套办法）。
+function describeDoubaoVideoCard(card: HTMLElement): Record<string, unknown> {
+  const nodes = [...card.querySelectorAll<HTMLElement>("*")];
+  return {
+    cardClass: elementClassName(card).slice(0, 120),
+    nodeCount: nodes.length,
+    hasVideoElement: Boolean(card.querySelector("video")),
+    hoverGroups: nodes.filter(node => node.matches(DOUBAO_VIDEO_HOVER_GROUP_SELECTOR)).map(describeNodeForTrace),
+    iconNodes: nodes.filter(node => node.matches(":has(> svg)")).slice(0, 20).map(describeNodeForTrace),
+    clickable: nodes.filter(node => isPresentInLayout(node) && isLikelyClickable(node)).slice(0, 20).map(describeNodeForTrace),
+    svgPaths: [...card.querySelectorAll("svg path")].slice(0, 20).map(path => (path.getAttribute("d") ?? "").slice(0, 28))
+  };
+}
+
+function describeNodeForTrace(element: HTMLElement): string {
+  const rect = element.getBoundingClientRect();
+  const style = getComputedStyle(element);
+  return [
+    element.tagName.toLowerCase(),
+    elementClassName(element).slice(0, 48),
+    `${Math.round(rect.width)}x${Math.round(rect.height)}@${Math.round(rect.x)},${Math.round(rect.y)}`,
+    `op=${style.opacity}`,
+    `vis=${style.visibility}`,
+    `cur=${style.cursor}`
+  ].filter(Boolean).join("|");
+}
+
+function elementClassName(element: Element): string {
+  return typeof element.className === "string" ? element.className : String(element.getAttribute("class") ?? "");
 }
 
 // GPT has no direct "download" affordance on the image itself — the only

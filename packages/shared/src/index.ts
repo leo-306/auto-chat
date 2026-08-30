@@ -21,7 +21,7 @@ export const JOB_STATUSES = [
 export const JobStatusSchema = z.enum(JOB_STATUSES);
 export type JobStatus = z.infer<typeof JobStatusSchema>;
 
-export const JobModeSchema = z.enum(["image", "text"]);
+export const JobModeSchema = z.enum(["image", "text", "video"]);
 export type JobMode = z.infer<typeof JobModeSchema>;
 
 export const JobPlatformSchema = z.enum(["gpt", "gemini", "doubao"]);

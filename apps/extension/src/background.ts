@@ -50,6 +50,11 @@ chrome.runtime.onStartup.addListener(() => {
   chrome.alarms.create("scheduler", { periodInMinutes: 0.1 });
 });
 
+// onInstalled/onStartup 不覆盖「插件被重新加载」这一路（尤其是自助重载之后），
+// 定时器一丢整个调度就停了。service worker 每次起来都会跑到这里，重名 create
+// 是幂等的，所以放在顶层最稳。
+chrome.alarms.create("scheduler", { periodInMinutes: 0.1 });
+
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "scheduler") void schedulerTick();
 });
@@ -152,6 +157,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 async function handleMessage(message: unknown, sender: chrome.runtime.MessageSender): Promise<unknown> {
+  if (isFetchMedia(message)) {
+    // 豆包视频悬停时挂上来的 <video> 用的是带签名的临时直链，域名不在页面自己的
+    // 源里，content script fetch 会被 CORS 拦掉；background 有 host 权限，
+    // 可以直接取到字节，省掉「量坐标 + 可信点击 + 捕获下载」那一长串会飘的环节。
+    try {
+      const response = await fetch(message.url, { credentials: "omit" });
+      if (!response.ok) return { ok: false, error: `${response.status} ${response.statusText}` };
+      const buffer = await response.arrayBuffer();
+      if (buffer.byteLength === 0) return { ok: false, error: "empty_body" };
+      return {
+        ok: true,
+        contentType: response.headers.get("content-type") ?? "video/mp4",
+        base64: bytesToBase64(buffer)
+      };
+    } catch (error) {
+      return { ok: false, error: String(error) };
+    }
+  }
   if (isProgress(message)) {
     await handleProgress(message, sender.tab?.id);
     return { ok: true };
@@ -231,6 +254,7 @@ async function schedulerTick(options: { force?: boolean; platform?: JobPlatform 
   };
   await refreshConfig();
   if (!serverOk) return;
+  await maybeReloadExtension();
   await pruneTerminalWorkers();
   const dispatched = await consumeDispatchSignal();
 
@@ -384,6 +408,24 @@ async function refreshConfig(): Promise<void> {
   }
 }
 
+// 未打包加载的插件改了代码得重新加载才生效。服务端提供一个令牌，
+// `curl -XPOST /extension/reload` 换一次值，这里看到变化就自己重载，
+// 免得每轮调试都要人去点 chrome://extensions。
+// 注意：重载只换掉 background 和「之后新注入」的 content script，
+// 已经打开的页面里那份老脚本仍然是孤儿，所以有任务在跑时不重载。
+async function maybeReloadExtension(): Promise<void> {
+  const requested = await api<{ token: string }>("/extension/reload-token").catch(() => null);
+  if (!requested) return;
+  const stored = await chrome.storage.local.get("extensionReloadToken");
+  const seen = typeof stored.extensionReloadToken === "string" ? stored.extensionReloadToken : "";
+  if (requested.token === seen) return;
+  await chrome.storage.local.set({ extensionReloadToken: requested.token });
+  // 空令牌意味着服务端刚重启，不是一次重载请求。
+  if (!requested.token) return;
+  if (workers.size > 0) return;
+  chrome.runtime.reload();
+}
+
 async function consumeDispatchSignal(): Promise<DispatchState | null | false> {
   if (!serverOk) return false;
   try {
@@ -466,7 +508,7 @@ async function launchJob(job: Job): Promise<void> {
     ? normalizedConversationUrl(job.platform, job.conversationUrl)
     : null;
   const reloadOnly = job.metadata.autoChatReloadOnly === true;
-  const activateTab = job.platform === "gpt" || job.mode === "image" || reloadOnly;
+  const activateTab = job.platform === "gpt" || job.mode === "image" || job.mode === "video" || reloadOnly;
 
   if (job.parentJobId) {
     const parentJob = await api<Job>(`/jobs/${job.parentJobId}`);
@@ -723,7 +765,8 @@ async function handleProgress(message: JobProgressMessage, tabId?: number): Prom
       await writeTrace(message.jobId, "background", "artifact_collection_started", {
         tabId,
         mode: job.mode,
-        imageCount: message.images?.length ?? 0
+        imageCount: message.images?.length ?? 0,
+        videoCount: message.videos?.length ?? 0
       });
       if (job.mode === "text") {
         await saveArtifact(message.jobId, {
@@ -736,6 +779,29 @@ async function handleProgress(message: JobProgressMessage, tabId?: number): Prom
           type: "text_output",
           payload: {
             length: message.text?.length ?? 0
+          }
+        });
+      } else if (job.mode === "video") {
+        // 视频和图片共用 kind: "output"，只是扩展名换成 .mp4，
+        // 这样 server 侧的 outputs/ 归档、outputDir 复制都不用改。
+        for (const video of message.videos ?? []) {
+          await saveArtifact(message.jobId, {
+            kind: "output",
+            filename: `output-${String(video.index + 1).padStart(2, "0")}.${extensionFor(video.contentType)}`,
+            contentType: video.contentType,
+            dataBase64: video.dataUrl.split(",")[1] ?? video.dataUrl
+          });
+        }
+        await postEvent(message.jobId, {
+          type: "video_output",
+          payload: {
+            videos: (message.videos ?? []).map(video => ({
+              index: video.index + 1,
+              sourceId: video.sourceId,
+              acquisition: video.acquisition ?? null,
+              byteLength: video.byteLength ?? null,
+              sha256: video.sha256 ?? null
+            }))
           }
         });
       } else {
@@ -768,7 +834,8 @@ async function handleProgress(message: JobProgressMessage, tabId?: number): Prom
       await writeTrace(message.jobId, "background", "job_completed", {
         tabId,
         mode: job.mode,
-        imageCount: message.images?.length ?? 0
+        imageCount: message.images?.length ?? 0,
+        videoCount: message.videos?.length ?? 0
       });
       workers.delete(tabId);
       // A final follow-up job may retain parentJobId to reuse the same tab.
@@ -909,13 +976,42 @@ chrome.downloads.onChanged.addListener(delta => {
 chrome.runtime.onConnect.addListener(port => {
   if (port.name !== "image-download-capture") return;
   const tabId = port.sender?.tab?.id;
-  port.onMessage.addListener((message: { type?: string; point?: { x: number; y: number } }) => {
-    if (message?.type !== "REQUEST_IMAGE_DOWNLOAD" || !message.point || tabId === undefined) return;
-    const point = message.point;
-    const turn = downloadQueueTail.then(() => captureOneDownload(port, tabId, point));
-    // Swallow rejections in the chain itself so one failed/aborted capture
-    // doesn't permanently jam the queue for requests behind it.
-    downloadQueueTail = turn.catch(() => {});
+  // 视频卡片那条路要在「真实指针已经压在卡片上」的时候才量得到下载按钮坐标，
+  // 所以坐标是 content script 在 HOVER_READY 之后回传的，这里存住等它的 resolver。
+  let resolveClickPoint: ((point: { x: number; y: number } | null) => void) | null = null;
+  port.onMessage.addListener((message: {
+    type?: string;
+    point?: { x: number; y: number } | null;
+    hoverPoint?: { x: number; y: number };
+  }) => {
+    if (tabId === undefined) return;
+    if (message?.type === "CLICK_AT") {
+      resolveClickPoint?.(message.point ?? null);
+      resolveClickPoint = null;
+      return;
+    }
+    if (message?.type === "REQUEST_IMAGE_DOWNLOAD" && message.point) {
+      const point = message.point;
+      const turn = downloadQueueTail.then(() => captureOneDownload(port, () => dispatchTrustedClick(tabId, point)));
+      // Swallow rejections in the chain itself so one failed/aborted capture
+      // doesn't permanently jam the queue for requests behind it.
+      downloadQueueTail = turn.catch(() => {});
+      return;
+    }
+    if (message?.type === "REQUEST_HOVER_DOWNLOAD" && message.hoverPoint) {
+      const hoverPoint = message.hoverPoint;
+      const waitForClickPoint = () => new Promise<{ x: number; y: number } | null>(resolve => {
+        resolveClickPoint = resolve;
+        setTimeout(() => {
+          if (resolveClickPoint !== resolve) return;
+          resolveClickPoint = null;
+          resolve(null);
+        }, HOVER_MEASURE_TIMEOUT_MS);
+      });
+      const turn = downloadQueueTail.then(() =>
+        captureOneDownload(port, () => dispatchTrustedHoverClick(port, tabId, hoverPoint, waitForClickPoint)));
+      downloadQueueTail = turn.catch(() => {});
+    }
   });
 });
 
@@ -934,18 +1030,59 @@ async function dispatchTrustedClick(tabId: number, point: { x: number; y: number
   const target = { tabId };
   await chrome.debugger.attach(target, "1.3");
   try {
-    const args = { x: point.x, y: point.y, button: "left" as const, clickCount: 1 };
-    await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", { type: "mousePressed", ...args });
-    await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", { type: "mouseReleased", ...args });
+    await dispatchTrustedClickAt(target, point);
   } finally {
     await chrome.debugger.detach(target).catch(() => {});
   }
 }
 
-function captureOneDownload(port: chrome.runtime.Port, tabId: number, point: { x: number; y: number }): Promise<void> {
+// 豆包视频卡片的下载按钮只在鼠标真的悬停在卡片上时才出现，合成事件和 CSS :hover
+// 都指望不上；而且 debugger 一挂上来会多出一条调试提示栏，视口高度变了，挂之前量的
+// 坐标就偏了。所以整个「悬停 → 量坐标 → 点击」都在同一次 attach 里完成：
+// 先把真实指针挪到卡片中心，再让 content script 在这个状态下回传按钮坐标。
+const HOVER_MEASURE_TIMEOUT_MS = 12_000;
+
+async function dispatchTrustedHoverClick(
+  port: chrome.runtime.Port,
+  tabId: number,
+  hoverPoint: { x: number; y: number },
+  waitForClickPoint: () => Promise<{ x: number; y: number } | null>
+): Promise<void> {
+  const target = { tabId };
+  await chrome.debugger.attach(target, "1.3");
+  try {
+    await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: hoverPoint.x,
+      y: hoverPoint.y
+    });
+    port.postMessage({ type: "HOVER_READY" });
+    const point = await waitForClickPoint();
+    if (!point) throw new Error("悬停后没有量到下载按钮的坐标。");
+    await dispatchTrustedClickAt(target, point);
+  } finally {
+    await chrome.debugger.detach(target).catch(() => {});
+  }
+}
+
+async function dispatchTrustedClickAt(target: chrome.debugger.Debuggee, point: { x: number; y: number }): Promise<void> {
+  const args = { x: point.x, y: point.y, button: "left" as const, clickCount: 1 };
+  // 点下去的瞬间悬停条可能已经收起。先送一个真实的 mouseMoved 把指针挪过去，
+  // 对图片那条路是纯粹的无害动作。
+  await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: point.x,
+    y: point.y
+  });
+  await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", { type: "mousePressed", ...args });
+  await chrome.debugger.sendCommand(target, "Input.dispatchMouseEvent", { type: "mouseReleased", ...args });
+}
+
+function captureOneDownload(port: chrome.runtime.Port, dispatch: () => Promise<void>): Promise<void> {
   return new Promise(resolve => {
     let settled = false;
     let disconnected = false;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
     port.onDisconnect.addListener(() => {
       disconnected = true;
     });
@@ -965,9 +1102,7 @@ function captureOneDownload(port: chrome.runtime.Port, tabId: number, point: { x
       resolve();
     };
 
-    const timeout = setTimeout(() => {
-      finish({ ok: false, error: "Timed out waiting for the download to start." });
-    }, DOWNLOAD_CAPTURE_TIMEOUT_MS);
+    const timeoutError = () => finish({ ok: false, error: "Timed out waiting for the download to start." });
 
     // Arm the listener BEFORE dispatching the click — the whole point of
     // this handshake is that the click only happens once we're guaranteed
@@ -985,7 +1120,11 @@ function captureOneDownload(port: chrome.runtime.Port, tabId: number, point: { x
         readAndCleanUpDownload(item).then(finish, error => finish({ ok: false, error: String(error) }));
       }
     };
-    dispatchTrustedClick(tabId, point).catch(error => {
+    // 视频那条路要在 attach 之后才量坐标，等待期算在 dispatch 里；
+    // 下载本身的超时从真的点下去之后才开始计。
+    dispatch().then(() => {
+      timeout = setTimeout(timeoutError, DOWNLOAD_CAPTURE_TIMEOUT_MS);
+    }, error => {
       finish({ ok: false, error: `Failed to dispatch a trusted click via chrome.debugger: ${String(error)}` });
     });
   });
@@ -1014,6 +1153,12 @@ async function waitForTabComplete(tabId: number): Promise<void> {
 
 function isProgress(message: unknown): message is JobProgressMessage {
   return Boolean(message && typeof message === "object" && (message as { type?: string }).type === "JOB_PROGRESS");
+}
+
+function isFetchMedia(message: unknown): message is { type: "FETCH_MEDIA"; url: string } {
+  if (!message || typeof message !== "object") return false;
+  const candidate = message as { type?: string; url?: unknown };
+  return candidate.type === "FETCH_MEDIA" && typeof candidate.url === "string" && candidate.url.startsWith("http");
 }
 
 function isTrace(message: unknown): message is JobTraceMessage {
@@ -1158,6 +1303,9 @@ function sleep(ms: number): Promise<void> {
 }
 
 function extensionFor(contentType: string): string {
+  if (contentType.includes("mp4")) return "mp4";
+  if (contentType.includes("webm")) return "webm";
+  if (contentType.includes("quicktime")) return "mov";
   if (contentType.includes("jpeg")) return "jpg";
   if (contentType.includes("webp")) return "webp";
   return "png";
@@ -1167,6 +1315,17 @@ function textToBase64(text: string): string {
   const bytes = new TextEncoder().encode(text);
   let binary = "";
   for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function bytesToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  // 视频有几 MB，一次性 apply 整个数组会爆栈，所以分块拼。
+  const chunk = 0x8000;
+  for (let offset = 0; offset < bytes.length; offset += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunk));
+  }
   return btoa(binary);
 }
 

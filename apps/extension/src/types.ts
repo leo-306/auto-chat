@@ -34,6 +34,15 @@ export type JobProgressMessage = {
     sha256?: string;
     acquisition?: "gpt_direct" | "gpt_share_sheet" | "gemini_download" | "doubao_download" | "element_url";
   }>;
+  videos?: Array<{
+    index: number;
+    sourceId: string;
+    dataUrl: string;
+    contentType: string;
+    byteLength?: number;
+    sha256?: string;
+    acquisition?: "doubao_video_download";
+  }>;
   imageOrderComplete?: boolean;
   text?: string;
   recoveryMode?: EmptyAssistantRecoveryMode;
@@ -110,6 +119,7 @@ export type DebugInspectResult = {
   loadedImages: number;
   scopedImages: number;
   pageImages: number;
+  loadedVideos: number;
   expectedImages: number | null;
   signature: string;
   errorText?: string;

@@ -295,7 +295,7 @@ describe("CLI formatting", () => {
     expect(formatJobSummary(copyFailed)).toContain("复制失败");
 
     const textWithOutputDir = { ...withOutputDir, mode: "text" as const };
-    expect(formatJobSummary(textWithOutputDir)).toContain("仅图片任务会额外复制");
+    expect(formatJobSummary(textWithOutputDir)).toContain("仅图片与视频任务会额外复制");
   });
 
   it("formats reload result with the preserved conversation URL", () => {

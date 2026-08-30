@@ -33,6 +33,8 @@ type CliOptions = {
   autoId: boolean;
   platform?: JobPlatform;
   model?: string;
+  ratio?: string;
+  duration?: number;
 };
 
 type ListRow = {
@@ -107,6 +109,12 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     if (options.platform) body.platform = options.platform;
     if (options.model) {
       body.metadata = { ...(body.metadata ?? {}), doubaoModel: options.model };
+    }
+    if (options.ratio) {
+      body.metadata = { ...(body.metadata ?? {}), doubaoVideoRatio: options.ratio };
+    }
+    if (options.duration !== undefined) {
+      body.metadata = { ...(body.metadata ?? {}), doubaoVideoDuration: options.duration };
     }
     if (typeof body.outputDir === "string" && body.outputDir.trim()) {
       body.outputDir = path.resolve(process.cwd(), body.outputDir.trim());
@@ -250,10 +258,11 @@ export function formatJobSummary(job: Job): string {
 }
 
 function formatOutputDirStatus(job: Job): string {
-  if (job.mode !== "image") return "（仅图片任务会额外复制）";
+  if (job.mode === "text") return "（仅图片与视频任务会额外复制）";
+  const label = job.mode === "video" ? "视频" : "图片";
   if (job.copiedOutputFiles.length > 0) return `（已复制 ${job.copiedOutputFiles.length} 个文件）`;
-  if (job.outputFiles.length > 0) return "（图片已生成，但复制失败，请查看 events.jsonl 中的 output_copy_failed）";
-  return "（等待图片生成后复制）";
+  if (job.outputFiles.length > 0) return `（${label}已生成，但复制失败，请查看 events.jsonl 中的 output_copy_failed）`;
+  return `（等待${label}生成后复制）`;
 }
 
 export function formatDoctor(
@@ -655,13 +664,26 @@ function portFromBaseUrl(): string {
 function parseOptions(args: string[]): CliOptions {
   const rawPlatform = readFlag(args, "--platform");
   const rawModel = readFlag(args, "--model")?.trim();
+  const rawRatio = readFlag(args, "--ratio")?.trim();
+  const rawDuration = readFlag(args, "--duration")?.trim();
   return {
     json: args.includes("--json"),
     replace: args.includes("--replace"),
     autoId: args.includes("--auto-id"),
     platform: rawPlatform ? JobPlatformSchema.parse(rawPlatform) : undefined,
-    model: rawModel ? rawModel : undefined
+    model: rawModel ? rawModel : undefined,
+    ratio: rawRatio ? rawRatio : undefined,
+    duration: rawDuration ? parseDurationArg(rawDuration) : undefined
   };
+}
+
+// --duration 允许写 8 或 8s，落到 metadata.doubaoVideoDuration（秒）。
+function parseDurationArg(value: string): number {
+  const seconds = Number(value.replace(/s$/i, ""));
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    throw new Error(`--duration 需要是秒数，例如 --duration 8，收到「${value}」。`);
+  }
+  return Math.round(seconds);
 }
 
 function readFlag(args: string[], flag: string): string | undefined {
@@ -670,7 +692,7 @@ function readFlag(args: string[], flag: string): string | undefined {
 }
 
 export function positionalArgs(args: string[]): string[] {
-  const flagsWithValues = new Set(["--file", "--platform", "--model"]);
+  const flagsWithValues = new Set(["--file", "--platform", "--model", "--ratio", "--duration"]);
   const values: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -917,9 +939,13 @@ export function formatActionableGuidance(
     ].join("\n");
   }
   if (job.status === "done") {
-    return job.mode === "image"
-      ? "  下一步: 读取 outputs，并用 events.jsonl 中的 image_order 确认图片顺序。"
-      : "  下一步: 读取 outputs/output-01.txt。";
+    if (job.mode === "image") {
+      return "  下一步: 读取 outputs，并用 events.jsonl 中的 image_order 确认图片顺序。";
+    }
+    if (job.mode === "video") {
+      return "  下一步: 读取 outputs/output-01.mp4，并用 events.jsonl 中的 video_output 核对大小与 sha256。";
+    }
+    return "  下一步: 读取 outputs/output-01.txt。";
   }
   if (isJobUpdateStale(job, config)) {
     return [
@@ -1037,6 +1063,7 @@ export function formatAutoRetryResult(config: Pick<AppConfig, "autoRetry" | "max
 
 function formatProgress(job: Job): string {
   if (job.mode === "text") return job.textOutputFile ? "text ready" : "waiting text";
+  if (job.mode === "video") return `${job.outputFiles.length}/${job.expectedImageCount} videos`;
   return `${job.outputFiles.length}/${job.expectedImageCount} images`;
 }
 
@@ -1064,7 +1091,9 @@ function displayPath(value: string): string {
 }
 
 function formatMode(mode: Job["mode"]): string {
-  return mode === "text" ? "常规文本" : "图片生成";
+  if (mode === "text") return "常规文本";
+  if (mode === "video") return "视频生成";
+  return "图片生成";
 }
 
 function formatPlatform(platform: JobPlatform): string {
@@ -1133,8 +1162,10 @@ Usage:
   auto-chat status
   auto-chat add <job.json> [--replace] [--auto-id] [--json]
   auto-chat add <job.json> [--platform gpt|gemini|doubao]
-  auto-chat add <job.json> [--model "Seedream 4.5"]（仅豆包图片模式，等价于 metadata.doubaoModel）
-  (job.json 可选 "outputDir": "<dir>"，图片任务完成后会额外复制一份到该目录)
+  auto-chat add <job.json> [--model "Seedream 4.5"]（豆包图片/视频模式的模型，等价于 metadata.doubaoModel）
+  auto-chat add <job.json> [--ratio 16:9] [--duration 8]（仅豆包视频模式，等价于 metadata.doubaoVideoRatio / doubaoVideoDuration）
+  ("mode": "video" 时豆包会走视频生成，产物为 outputs/output-01.mp4)
+  (job.json 可选 "outputDir": "<dir>"，图片/视频任务完成后会额外复制一份到该目录)
   auto-chat list [--json]
   auto-chat show <jobId> [--json]
   auto-chat listen [jobId] [--json]

@@ -19,6 +19,9 @@ import { ZodError } from "zod";
 import { EventHub } from "./events.js";
 
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
+// 豆包视频那条路走的也是「页面自己下载 + 读回 Downloads 里的文件」，
+// 所以这里必须同时放行视频扩展名，否则读回时会被当成非法路径。
+const VIDEO_EXTENSIONS = new Set([".mp4", ".webm", ".mov"]);
 
 const RECHECKABLE_STATUSES = new Set([
   "opening_tab", "waiting_chat_ready", "uploading", "waiting_upload_ready",
@@ -33,6 +36,19 @@ export async function buildServer(
 ): Promise<FastifyInstance> {
   const app = Fastify({ logger, bodyLimit: 50 * 1024 * 1024 });
   await app.register(cors, { origin: true });
+
+  // 未打包加载的插件改了代码必须重新加载一次，否则跑的还是老 background/content。
+  // 手点 chrome://extensions 太费人工，所以这里放一个令牌：POST 一下就换成新值，
+  // 插件在轮询里看到值变了就自己 chrome.runtime.reload()。服务重启后是空串，
+  // 空串永远不算重载请求，避免重启把正常运行的插件也顺手重载一遍。
+  let extensionReloadToken = "";
+
+  app.get("/extension/reload-token", async () => ({ token: extensionReloadToken }));
+
+  app.post("/extension/reload", async () => {
+    extensionReloadToken = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    return { token: extensionReloadToken };
+  });
 
   app.get("/health", async () => ({ ok: true, version: readPackageVersion() }));
 
@@ -302,7 +318,8 @@ export function isReadableLocalDownload(target: string): boolean {
   const downloadsDir = path.join(os.homedir(), "Downloads");
   const resolved = path.resolve(target);
   const withinDownloads = resolved === downloadsDir || resolved.startsWith(`${downloadsDir}${path.sep}`);
-  return withinDownloads && IMAGE_EXTENSIONS.has(path.extname(resolved).toLowerCase());
+  const ext = path.extname(resolved).toLowerCase();
+  return withinDownloads && (IMAGE_EXTENSIONS.has(ext) || VIDEO_EXTENSIONS.has(ext));
 }
 
 function contentTypeForAsset(file: string): string | null {
@@ -313,5 +330,8 @@ function contentTypeForAsset(file: string): string | null {
   if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
   if (ext === ".webp") return "image/webp";
   if (ext === ".svg") return "image/svg+xml; charset=utf-8";
+  if (ext === ".mp4") return "video/mp4";
+  if (ext === ".webm") return "video/webm";
+  if (ext === ".mov") return "video/quicktime";
   return null;
 }

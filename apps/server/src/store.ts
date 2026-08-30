@@ -91,7 +91,12 @@ export class JobStore {
       ...(input.metadata ?? {}),
       ...(input.prompts ? { geminiPrompts: input.prompts } : {})
     };
-    const expectedImageCount = mode === "text" ? 0 : input.expectedImageCount ?? this.config.expectedImageCount;
+    // 视频模式一次只产出一条视频，文本模式没有产物文件。
+    const expectedImageCount = mode === "text"
+      ? 0
+      : mode === "video"
+        ? 1
+        : input.expectedImageCount ?? this.config.expectedImageCount;
 
     this.run(
       `insert into jobs (
