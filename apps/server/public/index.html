@@ -4,179 +4,238 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>auto-chat 任务中心</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2317161a'/%3E%3Ccircle cx='16' cy='16' r='5' fill='%23f1efe9'/%3E%3C/svg%3E" />
+    <script>
+      // Applied before first paint so a stored appearance never flashes the other theme.
+      try {
+        const storedTheme = localStorage.getItem('auto-chat-theme');
+        if (storedTheme === 'light' || storedTheme === 'dark') document.documentElement.dataset.theme = storedTheme;
+      } catch {
+        // Storage can be blocked; the system preference stays in effect.
+      }
+    </script>
     <style>
+      /* Tokens — ink & paper: near-monochrome surfaces, hairline structure,
+         one warm accent, mono for every machine-written value. */
       :root {
         color-scheme: light;
-        --bg: #f5f7fb;
-        --surface: #ffffff;
-        --surface-soft: #f8fafc;
-        --border: #e2e8f0;
-        --border-strong: #cbd5e1;
-        --text: #172033;
-        --muted: #64748b;
-        --primary: #4f46e5;
-        --primary-soft: #eef2ff;
-        --danger: #b42318;
-        --danger-soft: #fff1f2;
-        --shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 12px 28px rgba(15, 23, 42, 0.06);
+        --canvas: #f1efe9; --surface: #fbfaf7; --raised: #ffffff; --sunken: #e9e6df;
+        --ink: #17161a; --ink-2: #5b584f; --ink-3: #8b877e;
+        --line: rgba(23, 22, 26, 0.11); --line-2: rgba(23, 22, 26, 0.2);
+        --accent: #9a4a16; --ok: #4d6b2c; --info: #3a5680; --run: #8a5a12; --danger: #9c2820;
+        --focus: rgba(23, 22, 26, 0.5); --row-hover: rgba(23, 22, 26, 0.028);
+        --shadow-dialog: 0 40px 90px -24px rgba(23, 22, 26, 0.34);
+        --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+        --mono: "SF Mono", ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace;
+      }
+      :root[data-theme="dark"] {
+        color-scheme: dark;
+        --canvas: #0c0c0d; --surface: #141416; --raised: #1c1c1f; --sunken: #08080a;
+        --ink: #ecebe6; --ink-2: #9b978f; --ink-3: #726f68;
+        --line: rgba(255, 255, 255, 0.09); --line-2: rgba(255, 255, 255, 0.18);
+        --accent: #d59357; --ok: #93b25c; --info: #8ba8d4; --run: #d3a35f; --danger: #d9796d;
+        --focus: rgba(255, 255, 255, 0.55); --row-hover: rgba(255, 255, 255, 0.032);
+        --shadow-dialog: 0 40px 90px -24px rgba(0, 0, 0, 0.72);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root:not([data-theme="light"]) {
+          color-scheme: dark;
+          --canvas: #0c0c0d; --surface: #141416; --raised: #1c1c1f; --sunken: #08080a;
+          --ink: #ecebe6; --ink-2: #9b978f; --ink-3: #726f68;
+          --line: rgba(255, 255, 255, 0.09); --line-2: rgba(255, 255, 255, 0.18);
+          --accent: #d59357; --ok: #93b25c; --info: #8ba8d4; --run: #d3a35f; --danger: #d9796d;
+          --focus: rgba(255, 255, 255, 0.55); --row-hover: rgba(255, 255, 255, 0.032);
+          --shadow-dialog: 0 40px 90px -24px rgba(0, 0, 0, 0.72);
+        }
       }
 
       * { box-sizing: border-box; }
-      body {
-        margin: 0;
-        background: var(--bg);
-        color: var(--text);
-        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        -webkit-font-smoothing: antialiased;
-      }
-      a { color: var(--primary); text-decoration: none; }
-      a:hover { text-decoration: underline; }
-      button { font: inherit; }
+      html { -webkit-text-size-adjust: 100%; }
+      body { margin: 0; background: var(--canvas); color: var(--ink); font: 400 13px/1.6 var(--sans); -webkit-font-smoothing: antialiased; }
+      a { color: var(--accent); text-decoration: none; }
+      a:hover { text-decoration: underline; text-underline-offset: 3px; }
+      button, input, select { font: inherit; color: inherit; }
+      :focus-visible { outline: 1.5px solid var(--focus); outline-offset: 2px; }
+      ::selection { background: var(--line-2); }
+      code { font: 500 12px/1.5 var(--mono); }
 
-      .page { width: min(1680px, 100%); margin: 0 auto; padding: 32px 28px 48px; }
-      .page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 24px; }
-      h1 { margin: 0 0 6px; font-size: clamp(26px, 3vw, 36px); line-height: 1.15; letter-spacing: -0.035em; }
-      .subtitle { margin: 0; color: var(--muted); font-size: 14px; }
-      .live-pill { display: inline-flex; align-items: center; gap: 8px; flex: none; padding: 8px 12px; border: 1px solid #bbf7d0; border-radius: 999px; background: #f0fdf4; color: #166534; font-size: 13px; font-weight: 650; }
-      .live-dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 0 4px rgba(34, 197, 94, 0.12); }
+      .page { width: min(1620px, 100%); margin: 0 auto; padding: 44px 32px 72px; }
+      .page-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; padding-bottom: 22px; margin-bottom: 26px; border-bottom: 1px solid var(--line); }
+      h1 { margin: 0; font-size: clamp(24px, 2.6vw, 33px); font-weight: 600; line-height: 1.05; letter-spacing: -0.04em; }
+      h1 .h1-cjk { margin-left: 0.36em; color: var(--ink-2); font-weight: 500; letter-spacing: -0.01em; }
+      .subtitle { margin: 11px 0 0; color: var(--ink-3); font-size: 12.5px; }
+      .header-meta { display: flex; align-items: center; gap: 16px; flex: none; }
+      .live-pill { display: inline-flex; align-items: center; gap: 7px; flex: none; color: var(--ink-3); font-size: 11.5px; }
+      .live-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--ok); animation: breathe 2.6s ease-in-out infinite; }
+      @keyframes breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
 
-      .tabs { display: inline-flex; gap: 4px; margin-bottom: 18px; padding: 4px; border: 1px solid var(--border); border-radius: 11px; background: #e9edf5; }
-      .tab-button { border: 0; border-radius: 8px; padding: 8px 15px; background: transparent; color: var(--muted); cursor: pointer; font-size: 13px; font-weight: 700; }
-      .tab-button:hover { color: var(--text); }
-      .tab-button[aria-selected="true"] { background: var(--surface); color: var(--primary); box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12); }
+      .tabs { display: flex; gap: 26px; margin: 0 0 24px; padding: 0; border: 0; border-bottom: 1px solid var(--line); background: transparent; }
+      .tab-button { position: relative; border: 0; padding: 0 0 12px; background: transparent; color: var(--ink-3); cursor: pointer; font-size: 13px; font-weight: 550; letter-spacing: -0.005em; }
+      .tab-button::after { content: ""; position: absolute; inset: auto 0 -1px; height: 1.5px; background: var(--ink); opacity: 0; transition: opacity 160ms ease; }
+      .tab-button:hover { color: var(--ink); }
+      .tab-button[aria-selected="true"] { background: transparent; color: var(--ink); box-shadow: none; }
+      .tab-button[aria-selected="true"]::after { opacity: 1; }
       .tab-panel[hidden] { display: none; }
 
-      .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
-      .stat { padding: 16px 18px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03); }
-      .stat-label { color: var(--muted); font-size: 12px; font-weight: 650; }
-      .stat-value { margin-top: 5px; font-size: 25px; line-height: 1; font-weight: 750; font-variant-numeric: tabular-nums; }
+      .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 22px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); overflow: hidden; }
+      .stat { padding: 18px 20px 20px; }
+      .stat + .stat { border-left: 1px solid var(--line); }
+      .stat-label { display: flex; align-items: center; gap: 7px; color: var(--ink-3); font-size: 10px; font-weight: 600; letter-spacing: 0.13em; text-transform: uppercase; }
+      .stat-label::before { content: ""; width: 5px; height: 5px; flex: none; border-radius: 50%; background: currentColor; }
+      .stat[data-tone="queued"] .stat-label { color: var(--info); }
+      .stat[data-tone="running"] .stat-label { color: var(--run); }
+      .stat[data-tone="attention"] .stat-label { color: var(--danger); }
+      .stat-value { margin-top: 13px; font-size: clamp(26px, 2.3vw, 34px); line-height: 1; font-weight: 550; letter-spacing: -0.045em; font-variant-numeric: tabular-nums; }
 
-      .panel { border: 1px solid var(--border); border-radius: 16px; background: var(--surface); box-shadow: var(--shadow); overflow: hidden; }
-      .panel-heading { padding: 17px 20px 14px; border-bottom: 1px solid var(--border); }
-      .panel-heading h2 { margin: 0; font-size: 15px; letter-spacing: -0.01em; }
-      .panel-heading p { margin: 5px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
-      .definition-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 6px 20px 14px; }
-      .definition { min-width: 0; padding: 11px 8px 10px 0; }
-      .definition dt { margin: 0 0 4px; color: #334155; font: 650 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
-      .definition dd { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
-      .config-value { display: inline-flex; max-width: 100%; padding: 2px 7px; border-radius: 6px; background: var(--surface-soft); color: #0f172a; font: 650 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; white-space: normal; }
+      .panel { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); overflow: hidden; }
+      .panel-heading { padding: 18px 22px 16px; border-bottom: 1px solid var(--line); }
+      .panel-heading h2 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: -0.015em; }
+      .panel-heading p { margin: 6px 0 0; color: var(--ink-3); font-size: 12px; line-height: 1.55; }
+      .definition-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 34px; padding: 4px 22px 18px; }
+      .definition { min-width: 0; padding: 14px 0 13px; border-top: 1px solid var(--line); }
+      .definition:nth-child(1), .definition:nth-child(2) { border-top: 0; }
+      .definition:last-child:nth-child(odd) { grid-column: 1 / -1; }
+      .definition dt { margin: 0 0 5px; color: var(--ink); font: 500 12px/1.4 var(--mono); letter-spacing: -0.01em; overflow-wrap: anywhere; }
+      .definition dd { margin: 0; color: var(--ink-3); font-size: 12px; line-height: 1.6; }
+      .config-value { display: inline-flex; max-width: 100%; margin-bottom: 4px; padding: 2px 7px; border: 1px solid var(--line); border-radius: 5px; background: var(--sunken); color: var(--ink); font: 500 12px/1.5 var(--mono); overflow-wrap: anywhere; white-space: normal; }
+
+      /* Editable global config: same hairline grid as the read-only definitions,
+         with one control per row so a value and its meaning stay adjacent. */
+      .config-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 34px; padding: 4px 22px 20px; }
+      .config-field { min-width: 0; padding: 15px 0 14px; border-top: 1px solid var(--line); }
+      .config-field:nth-child(1), .config-field:nth-child(2) { border-top: 0; }
+      .config-field[data-span="full"] { grid-column: 1 / -1; }
+      .config-label { display: flex; align-items: baseline; gap: 9px; margin-bottom: 8px; }
+      .config-key { color: var(--ink); font: 500 12px/1.4 var(--mono); letter-spacing: -0.01em; overflow-wrap: anywhere; }
+      .config-name { color: var(--ink-3); font-size: 11px; white-space: nowrap; }
+      .config-input { width: 100%; min-width: 0; height: 30px; padding: 0 9px; border: 1px solid var(--line-2); border-radius: 6px; background: var(--raised); color: var(--ink); font: 500 12px/1.2 var(--mono); }
+      select.config-input { padding: 0 7px; }
+      textarea.config-input { height: auto; min-height: 66px; padding: 8px 9px; line-height: 1.7; resize: vertical; }
+      .config-input:hover { border-color: var(--ink-3); }
+      .config-input::placeholder { color: var(--ink-3); }
+      .config-input:disabled { cursor: not-allowed; opacity: 0.55; }
+      .config-field[data-invalid="true"] .config-input { border-color: var(--danger); }
+      .config-hint { margin: 8px 0 0; color: var(--ink-3); font-size: 11.5px; line-height: 1.55; }
+      .config-error { margin: 5px 0 0; color: var(--danger); font-size: 11.5px; line-height: 1.5; }
+      .config-error:empty { display: none; }
+      .config-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 13px 22px; border-top: 1px solid var(--line); background: var(--sunken); }
+      .config-footer .notice { text-align: left; }
+      .config-footer-actions { display: flex; align-items: center; gap: 10px; flex: none; }
+      .config-extra { border-top: 1px solid var(--line); }
+      .config-extra[hidden] { display: none; }
+
+      /* One button language: hairline ghost. Colour is reserved for state, never chrome. */
+      .ghost, .secondary-button, .pagination-button, .retry-button, .recheck-button, .dispatch-button, .reset-dispatch-button, .status-save-button, .copy-id-button, .danger, .tab-link { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 28px; border: 1px solid var(--line-2); border-radius: 6px; padding: 0 10px; background: var(--raised); color: var(--ink-2); cursor: pointer; font: 550 11.5px/1.3 var(--sans); white-space: nowrap; text-decoration: none; transition: color 130ms ease, border-color 130ms ease; }
+      .ghost:hover, .secondary-button:hover, .pagination-button:hover:not(:disabled), .retry-button:hover:not(:disabled), .recheck-button:hover:not(:disabled), .dispatch-button:hover:not(:disabled), .reset-dispatch-button:hover:not(:disabled), .status-save-button:hover:not(:disabled), .copy-id-button:hover:not(:disabled), .tab-link:hover { border-color: var(--ink-3); color: var(--ink); text-decoration: none; }
+      .ghost:disabled, .secondary-button:disabled, .pagination-button:disabled, .retry-button:disabled, .recheck-button:disabled, .dispatch-button:disabled, .reset-dispatch-button:disabled, .status-save-button:disabled, .copy-id-button:disabled, .danger:disabled { cursor: not-allowed; opacity: 0.4; }
 
       .table-panel { overflow: hidden; }
-      .table-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 20px; border-bottom: 1px solid var(--border); }
-      .table-toolbar h2 { margin: 0; font-size: 17px; }
-      .table-toolbar p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
-      .toolbar-actions { display: flex; align-items: center; gap: 12px; }
-      .filter-bar { display: flex; align-items: end; justify-content: space-between; gap: 16px; padding: 13px 20px; border-bottom: 1px solid var(--border); background: var(--surface-soft); }
+      .table-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 22px; border-bottom: 1px solid var(--line); }
+      .table-toolbar h2 { margin: 0; font-size: 14px; font-weight: 600; letter-spacing: -0.015em; }
+      .table-toolbar p { margin: 5px 0 0; color: var(--ink-3); font-size: 11.5px; }
+      .toolbar-actions { display: flex; align-items: center; gap: 14px; }
+      .filter-bar { display: flex; align-items: end; justify-content: space-between; gap: 16px; padding: 14px 22px; border-bottom: 1px solid var(--line); background: var(--sunken); }
       .filter-fields { display: grid; grid-template-columns: minmax(200px, 1fr) repeat(3, minmax(130px, 170px)); gap: 10px; width: min(780px, 100%); }
-      .filter-field { display: grid; gap: 5px; min-width: 0; color: var(--muted); font-size: 11px; font-weight: 700; }
-      .filter-field input, .filter-field select, .status-select { width: 100%; min-width: 0; height: 31px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface); color: var(--text); font: 600 12px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; }
+      .filter-field { display: grid; gap: 6px; min-width: 0; color: var(--ink-3); font-size: 10px; font-weight: 600; letter-spacing: 0.13em; text-transform: uppercase; }
+      .filter-field input, .filter-field select, .status-select, .page-size-select { width: 100%; min-width: 0; height: 30px; border: 1px solid var(--line-2); border-radius: 6px; background: var(--raised); color: var(--ink); font: 500 12px/1.2 var(--mono); }
       .filter-field input { padding: 0 9px; }
       .filter-field select, .status-select { padding: 0 7px; }
-      .filter-field input:focus, .filter-field select:focus, .status-select:focus { outline: 2px solid #c7d2fe; outline-offset: 1px; border-color: #818cf8; }
-      .filter-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex: none; }
-      .filter-summary { color: var(--muted); font-size: 12px; white-space: nowrap; }
-      .pagination { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 20px; border-top: 1px solid var(--border); background: var(--surface-soft); }
-      .pagination-summary { color: var(--muted); font-size: 12px; }
-      .pagination-controls { display: flex; align-items: center; gap: 8px; }
-      .page-size-label { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; white-space: nowrap; }
-      .page-size-select { height: 31px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface); color: var(--text); font: 600 12px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 0 6px; }
-      .pagination-button { width: 31px; height: 31px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface); color: #334155; cursor: pointer; font-size: 17px; line-height: 1; }
-      .pagination-button:hover:not(:disabled) { border-color: #a5b4fc; background: var(--primary-soft); color: #4338ca; }
-      .pagination-button:disabled { cursor: not-allowed; opacity: 0.45; }
-      .page-indicator { min-width: 72px; color: #475569; font: 650 12px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: center; white-space: nowrap; }
-      .secondary-button { border: 1px solid var(--border-strong); border-radius: 8px; padding: 7px 11px; background: var(--surface); color: #334155; cursor: pointer; font-size: 12px; font-weight: 700; white-space: nowrap; }
-      .secondary-button:hover { border-color: #a5b4fc; background: var(--primary-soft); color: #4338ca; }
-      .notice { min-height: 18px; margin: 0; color: var(--muted); font-size: 12px; text-align: right; }
+      .filter-field input:hover, .filter-field select:hover, .status-select:hover, .page-size-select:hover { border-color: var(--ink-3); }
+      .filter-field input::placeholder { color: var(--ink-3); }
+      .filter-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; flex: none; }
+      .filter-summary { color: var(--ink-3); font-size: 11.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+      .pagination { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 13px 22px; border-top: 1px solid var(--line); background: var(--sunken); }
+      .pagination-summary { color: var(--ink-3); font-size: 11.5px; font-variant-numeric: tabular-nums; }
+      .pagination-controls { display: flex; align-items: center; gap: 9px; }
+      .page-size-label { display: inline-flex; align-items: center; gap: 7px; color: var(--ink-3); font-size: 11.5px; white-space: nowrap; }
+      .page-size-select { width: auto; padding: 0 6px; }
+      .pagination-button { width: 30px; min-height: 30px; padding: 0; font-size: 13px; }
+      .page-indicator { min-width: 72px; color: var(--ink-2); font: 500 11.5px/1.2 var(--mono); text-align: center; white-space: nowrap; font-variant-numeric: tabular-nums; }
+      .notice { min-height: 17px; margin: 0; color: var(--ink-3); font-size: 11.5px; text-align: right; }
       .notice.error { color: var(--danger); }
       .table-scroll { overflow-x: auto; }
       table { width: 100%; min-width: 1320px; table-layout: fixed; border-collapse: separate; border-spacing: 0; }
-      .col-id { width: 13%; }
-      .col-platform { width: 7%; }
-      .col-status { width: 10%; }
-      .col-config { width: 27%; }
+      .col-id { width: 14%; }
+      .col-platform { width: 8%; }
+      .col-status { width: 16%; }
+      .col-config { width: 21%; }
       .col-output { width: 8%; }
       .col-tab { width: 9%; }
       .col-updated { width: 8%; }
       .col-error { width: 12%; }
       .col-action { width: 140px; }
-      th, td { padding: 14px 16px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; font-size: 13px; }
-      th { position: sticky; top: 0; z-index: 1; background: var(--surface-soft); color: #64748b; font-size: 11px; font-weight: 750; letter-spacing: 0.055em; text-transform: uppercase; }
-      tbody tr { transition: background 120ms ease; }
-      tbody tr:hover { background: #fafbff; }
+      th, td { padding: 15px 16px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; font-size: 12.5px; }
+      th { position: sticky; top: 0; z-index: 1; padding-top: 12px; padding-bottom: 12px; border-bottom: 0; background: var(--surface); box-shadow: inset 0 -1px 0 var(--line); color: var(--ink-3); font-size: 10px; font-weight: 600; letter-spacing: 0.13em; text-transform: uppercase; white-space: nowrap; }
+      tbody tr { transition: background 130ms ease; }
+      tbody tr:hover { background: var(--row-hover); }
       tbody tr:last-child td { border-bottom: 0; }
-      .job-id-cell { display: flex; align-items: flex-start; gap: 7px; min-width: 0; }
-      .job-id { min-width: 0; max-width: 220px; flex: 1; color: #1e293b; font: 650 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
-      .copy-id-button { flex: none; border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px; background: var(--surface-soft); color: var(--muted); cursor: pointer; font-size: 10px; font-weight: 700; white-space: nowrap; }
-      .copy-id-button:hover { border-color: #a5b4fc; background: var(--primary-soft); color: #4338ca; }
-      .copy-id-button:disabled { cursor: default; opacity: 0.7; }
-      .platform { font-weight: 700; }
-      .mode { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; }
-      .status { display: inline-flex; align-items: center; border-radius: 999px; padding: 4px 9px; background: #f1f5f9; color: #475569; font: 650 11px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
-      .status.done { background: #ecfdf3; color: #067647; }
-      .status.queued { background: #eff6ff; color: #1d4ed8; }
-      .status.running { background: #fffbeb; color: #a15c07; }
-      .status.failed { background: var(--danger-soft); color: var(--danger); }
-      .status-cell { display: grid; gap: 7px; }
-      .status-editor { display: flex; align-items: center; gap: 5px; min-width: 0; }
-      .status-editor .status-select { flex: 1; }
-      .status-save-button { flex: none; border: 1px solid #c7d2fe; border-radius: 7px; padding: 6px 8px; background: var(--primary-soft); color: #4338ca; cursor: pointer; font-size: 11px; font-weight: 700; white-space: nowrap; }
-      .status-save-button:hover { border-color: #a5b4fc; background: #e0e7ff; }
-      .status-save-button:disabled { cursor: not-allowed; opacity: 0.55; }
-      .config-summary { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 7px; }
-      .chip { padding: 3px 7px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-soft); color: #475569; font-size: 10px; line-height: 1.35; white-space: nowrap; }
-      .chip.accent { border-color: #c7d2fe; background: var(--primary-soft); color: #4338ca; }
+      .job-id-cell { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+      .job-id { min-width: 0; max-width: 220px; flex: 1; color: var(--ink); font: 500 11px/1.6 var(--mono); letter-spacing: -0.01em; overflow-wrap: anywhere; }
+      .copy-id-button { min-height: 22px; padding: 0 7px; font-size: 10px; opacity: 0; transition: opacity 130ms ease, color 130ms ease, border-color 130ms ease; }
+      tbody tr:hover .copy-id-button, .copy-id-button:focus-visible { opacity: 1; }
+      .copy-id-button:disabled { cursor: default; opacity: 1; color: var(--ok); }
+      .platform { font-weight: 550; letter-spacing: -0.005em; }
+      .mode { display: block; margin-top: 4px; color: var(--ink-3); font: 400 10.5px/1.4 var(--mono); }
+      .status { display: inline-flex; align-items: center; gap: 7px; padding: 0; background: transparent; color: var(--ink-2); font: 500 11.5px/1.4 var(--mono); letter-spacing: -0.01em; white-space: nowrap; }
+      .status::before { content: ""; width: 6px; height: 6px; flex: none; border-radius: 50%; background: currentColor; }
+      .status.done { color: var(--ok); }
+      .status.queued { color: var(--info); }
+      .status.running { color: var(--run); }
+      .status.running::before { animation: breathe 1.6s ease-in-out infinite; }
+      .status.failed { color: var(--danger); }
+      .status-cell { display: grid; gap: 9px; }
+      .status-editor { display: flex; align-items: center; gap: 6px; min-width: 0; }
+      .status-editor .status-select { flex: 1; font-size: 11px; }
+      .status-save-button { min-height: 30px; padding: 0 7px; }
+      .config-summary { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 9px; }
+      .chip { padding: 3px 8px; border: 1px solid transparent; border-radius: 5px; background: var(--sunken); color: var(--ink-3); font-size: 10.5px; line-height: 1.5; white-space: nowrap; }
+      .chip.accent { border-color: var(--line-2); background: transparent; color: var(--accent); }
       details { font-size: 12px; }
-      summary { width: fit-content; color: var(--primary); cursor: pointer; font-weight: 650; }
-      summary:hover { text-decoration: underline; }
-      .json { width: 440px; max-width: 100%; max-height: 340px; margin: 8px 0 0; padding: 12px; overflow: auto; border: 1px solid var(--border); border-radius: 9px; background: #0f172a; color: #dbeafe; font: 11px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
-      .outputs { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; max-width: 130px; }
-      .output-link { display: inline-flex; align-items: center; gap: 5px; font-weight: 650; }
-      .preview { width: 120px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
-      .tab-link { display: inline-flex; align-items: center; gap: 6px; padding: 5px 9px; border: 1px solid #c7d2fe; border-radius: 7px; background: var(--primary-soft); font-size: 12px; font-weight: 700; white-space: nowrap; }
-      .empty-value { color: #94a3b8; }
-      time { display: block; color: #475569; font-size: 12px; line-height: 1.45; white-space: nowrap; font-variant-numeric: tabular-nums; }
-      .error-message { display: block; max-width: 250px; color: var(--danger); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
-      .danger { border: 1px solid #fecdd3; border-radius: 7px; padding: 6px 10px; background: #fff7f7; color: var(--danger); cursor: pointer; font-size: 12px; font-weight: 650; white-space: nowrap; }
-      .danger:hover { border-color: #fda4af; background: var(--danger-soft); }
-      .danger:disabled { cursor: not-allowed; opacity: 0.55; }
+      summary { width: fit-content; color: var(--ink-3); cursor: pointer; font-size: 11.5px; font-weight: 550; }
+      summary:hover { color: var(--ink); text-decoration: none; }
+      .json { width: 440px; max-width: 100%; max-height: 340px; margin: 10px 0 0; padding: 12px 14px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--sunken); color: var(--ink-2); font: 400 11px/1.7 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+      .outputs { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; max-width: 130px; }
+      .output-link { display: inline-flex; align-items: center; gap: 5px; font-weight: 500; }
+      .preview { width: 120px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; }
+      .tab-link { min-height: 26px; }
+      .empty-value { color: var(--ink-3); }
+      time { display: block; color: var(--ink-2); font: 400 11.5px/1.55 var(--mono); white-space: nowrap; font-variant-numeric: tabular-nums; }
+      .error-message { display: block; max-width: 250px; color: var(--danger); font-size: 11.5px; line-height: 1.5; overflow-wrap: anywhere; }
+      .danger:hover:not(:disabled) { border-color: var(--danger); color: var(--danger); }
       .row-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; white-space: normal; }
       .row-actions > button { flex: 0 0 auto; max-width: 100%; }
-      .retry-button { border: 1px solid #c7d2fe; border-radius: 7px; padding: 6px 10px; background: var(--primary-soft); color: #4338ca; cursor: pointer; font-size: 12px; font-weight: 700; white-space: nowrap; }
-      .retry-button:hover { border-color: #a5b4fc; background: #e0e7ff; }
-      .retry-button:disabled { cursor: not-allowed; opacity: 0.55; }
-      .recheck-button { border: 1px solid #bae6fd; border-radius: 7px; padding: 6px 10px; background: #f0f9ff; color: #0369a1; cursor: pointer; font-size: 12px; font-weight: 700; white-space: nowrap; }
-      .recheck-button:hover { border-color: #7dd3fc; background: #e0f2fe; }
-      .recheck-button:disabled { cursor: not-allowed; opacity: 0.55; }
-      .dispatch-button { border: 1px solid #bbf7d0; border-radius: 7px; padding: 6px 10px; background: #f0fdf4; color: #15803d; cursor: pointer; font-size: 12px; font-weight: 700; white-space: nowrap; }
-      .dispatch-button:hover { border-color: #86efac; background: #dcfce7; }
-      .dispatch-button:disabled { cursor: not-allowed; opacity: 0.55; }
-      .reset-dispatch-button { border: 1px solid #fcd34d; border-radius: 7px; padding: 6px 10px; background: #fffbeb; color: #a16207; cursor: pointer; font-size: 12px; font-weight: 700; white-space: nowrap; }
-      .reset-dispatch-button:hover { border-color: #fbbf24; background: #fef3c7; }
-      .reset-dispatch-button:disabled { cursor: not-allowed; opacity: 0.55; }
-      .empty-row { padding: 42px 16px; color: var(--muted); text-align: center; }
+      .empty-row { padding: 56px 16px; color: var(--ink-3); text-align: center; font-size: 12.5px; }
       .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 
-      dialog { width: min(820px, calc(100vw - 32px)); max-height: min(760px, calc(100vh - 48px)); padding: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); color: var(--text); box-shadow: 0 24px 70px rgba(15, 23, 42, 0.25); }
-      dialog::backdrop { background: rgba(15, 23, 42, 0.48); backdrop-filter: blur(2px); }
-      .dialog-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 20px 22px 16px; border-bottom: 1px solid var(--border); }
-      .dialog-header h2 { margin: 0; font-size: 18px; }
-      .dialog-header p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
-      .dialog-close { width: 32px; height: 32px; flex: none; border: 0; border-radius: 8px; background: var(--surface-soft); color: var(--muted); cursor: pointer; font-size: 20px; line-height: 1; }
-      .dialog-close:hover { background: #e2e8f0; color: var(--text); }
-      .dialog-content { max-height: calc(100vh - 150px); padding: 18px 22px 24px; overflow-y: auto; }
-      .legend-section + .legend-section { margin-top: 20px; padding-top: 18px; border-top: 1px solid var(--border); }
-      .legend-section h3 { margin: 0 0 4px; font-size: 14px; }
-      .legend-section > p { margin: 0 0 8px; color: var(--muted); font-size: 12px; }
+      dialog { width: min(820px, calc(100vw - 32px)); max-height: min(760px, calc(100vh - 48px)); padding: 0; overflow: hidden; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); color: var(--ink); box-shadow: var(--shadow-dialog); }
+      dialog::backdrop { background: rgba(12, 12, 13, 0.5); backdrop-filter: blur(3px); }
+      .dialog-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 22px 24px 18px; border-bottom: 1px solid var(--line); }
+      .dialog-header h2 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -0.02em; }
+      .dialog-header p { margin: 7px 0 0; color: var(--ink-3); font-size: 12px; }
+      .dialog-close { width: 30px; height: 30px; flex: none; border: 1px solid var(--line); border-radius: 7px; background: transparent; color: var(--ink-3); cursor: pointer; font-size: 17px; line-height: 1; transition: color 130ms ease, border-color 130ms ease; }
+      .dialog-close:hover { border-color: var(--ink-3); background: transparent; color: var(--ink); }
+      .dialog-content { max-height: calc(100vh - 150px); padding: 20px 24px 26px; overflow-y: auto; }
+      .legend-section + .legend-section { margin-top: 24px; padding-top: 22px; border-top: 1px solid var(--line); }
+      .legend-section h3 { margin: 0 0 6px; font-size: 13px; font-weight: 600; letter-spacing: -0.01em; }
+      .legend-section > p { margin: 0 0 6px; color: var(--ink-3); font-size: 12px; }
       .dialog-content .definition-grid { padding: 4px 0 0; }
 
       @media (max-width: 980px) {
-        .page { padding: 24px 16px 36px; }
+        .page { padding: 28px 18px 44px; }
         .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .stat:nth-child(3) { border-left: 0; }
+        .stat:nth-child(n + 3) { border-top: 1px solid var(--line); }
       }
       @media (max-width: 560px) {
         .page-header { display: block; }
-        .live-pill { margin-top: 16px; }
+        .header-meta { margin-top: 18px; }
+        .stats { grid-template-columns: 1fr; }
+        .stat + .stat { border-left: 0; border-top: 1px solid var(--line); }
         .definition-grid { grid-template-columns: 1fr; }
+        .config-fields { grid-template-columns: 1fr; }
+        .config-field:nth-child(2) { border-top: 1px solid var(--line); }
+        .config-footer { align-items: stretch; flex-direction: column; }
+        .config-footer-actions { justify-content: space-between; }
         .table-toolbar { align-items: flex-start; flex-direction: column; }
         .toolbar-actions { width: 100%; justify-content: space-between; }
         .filter-bar { align-items: stretch; flex-direction: column; }
@@ -187,16 +246,22 @@
         .pagination-controls { width: 100%; justify-content: space-between; }
         .notice { text-align: left; }
       }
+      @media (prefers-reduced-motion: reduce) {
+        * { animation: none !important; transition: none !important; }
+      }
     </style>
   </head>
   <body>
     <main class="page">
       <header class="page-header">
         <div>
-          <h1>auto-chat 任务中心</h1>
+          <h1>auto-chat<span class="h1-cjk">任务中心</span></h1>
           <p class="subtitle">查看任务、对话标签页、输出文件与当前运行配置</p>
         </div>
-        <span class="live-pill"><span class="live-dot"></span>每 3 秒自动刷新</span>
+        <div class="header-meta">
+          <span class="live-pill"><span class="live-dot"></span>每 3 秒自动刷新</span>
+          <button id="theme-toggle" class="ghost" type="button" title="切换外观">跟随系统</button>
+        </div>
       </header>
 
       <nav class="tabs" role="tablist" aria-label="管理页面">
@@ -294,9 +359,25 @@
         <article class="panel">
           <div class="panel-heading">
             <h2>当前系统全局配置</h2>
-            <p>来自服务端 <code>/config</code>，影响所有任务和插件调度。</p>
+            <p>来自服务端 <code>/config</code>，影响所有任务和插件调度。修改后点击“保存配置”写入服务端，对随后领取的任务生效。</p>
           </div>
-          <dl id="global-config" class="definition-grid"></dl>
+          <form id="config-form" novalidate>
+            <div id="config-fields" class="config-fields"></div>
+            <div class="config-footer">
+              <p id="config-notice" class="notice" role="status"></p>
+              <div class="config-footer-actions">
+                <button id="config-reset" class="secondary-button" type="button">放弃修改</button>
+                <button id="config-save" class="secondary-button" type="submit">保存配置</button>
+              </div>
+            </div>
+          </form>
+          <div id="config-extra" class="config-extra" hidden>
+            <div class="panel-heading">
+              <h2>其他服务端字段</h2>
+              <p>服务端返回但控制台未识别的配置，只读展示。</p>
+            </div>
+            <dl id="config-extra-list" class="definition-grid"></dl>
+          </div>
         </article>
       </section>
 
@@ -338,17 +419,18 @@
       const PLATFORM_FILTERS = ['gpt', 'gemini', 'doubao'];
       const MODE_FILTERS = ['image', 'text'];
       const DEFAULT_PAGE_SIZE = 50;
-      const GLOBAL_CONFIG_DEFINITIONS = [
-        ['maxConcurrency', '插件同时执行的最大任务数（1–8）。'],
-        ['stallTimeoutMs', '页面无进展多久后判定为停滞，单位毫秒。'],
-        ['hardTimeoutMs', '单个任务允许执行的最长时间，单位毫秒。'],
-        ['maxRefreshPerJob', '任务停滞后允许自动刷新的最大次数。'],
-        ['expectedImageCount', '图片任务未单独指定时使用的默认图片数。'],
-        ['chatgptUrl', 'GPT 新任务默认打开的页面地址。'],
-        ['geminiUrl', 'Gemini 新任务默认打开的页面地址。'],
-        ['webhookUrls', '任务事件需要推送到的 webhook 地址列表。'],
-        ['autoRetry', '可重试失败发生后是否自动重新入队。'],
-        ['maxRetries', '开启自动重试时允许的最大尝试次数。']
+      const GLOBAL_CONFIG_FIELDS = [
+        { key: 'maxConcurrency', name: '最大并发', control: 'number', min: 1, max: 8, description: '插件同时执行的最大任务数（1–8）。' },
+        { key: 'stallTimeoutMs', name: '停滞超时', control: 'number', min: 30000, step: 1000, description: '页面无进展多久后判定为停滞，单位毫秒，最小 30000。' },
+        { key: 'hardTimeoutMs', name: '硬超时', control: 'number', min: 60000, step: 1000, description: '单个任务允许执行的最长时间，单位毫秒，最小 60000。' },
+        { key: 'maxRefreshPerJob', name: '刷新上限', control: 'number', min: 0, max: 10, description: '任务停滞后允许自动刷新的最大次数（0–10）。' },
+        { key: 'expectedImageCount', name: '默认图片数', control: 'number', min: 1, max: 12, description: '图片任务未单独指定时使用的默认图片数（1–12）。' },
+        { key: 'autoRetry', name: '自动重试', control: 'boolean', description: '可重试失败发生后是否自动重新入队。' },
+        { key: 'maxRetries', name: '重试上限', control: 'number', min: 1, max: 10, optional: true, description: '开启自动重试时允许的最大尝试次数（1–10）；留空表示不设置。' },
+        { key: 'chatgptUrl', name: 'GPT 入口', control: 'url', description: 'GPT 新任务默认打开的页面地址。' },
+        { key: 'geminiUrl', name: 'Gemini 入口', control: 'url', description: 'Gemini 新任务默认打开的页面地址。' },
+        { key: 'doubaoUrl', name: '豆包入口', control: 'url', description: '豆包新任务默认打开的页面地址。' },
+        { key: 'webhookUrls', name: 'Webhook', control: 'urlList', span: 'full', description: '任务事件需要推送到的 webhook 地址列表，每行一个；留空表示不推送。' }
       ];
       const JOB_CONFIG_DEFINITIONS = [
         ['id', '任务唯一标识。'],
@@ -379,12 +461,56 @@
       let latestJobs = [];
       let currentPage = 1;
       let pageSize = DEFAULT_PAGE_SIZE;
+      let latestConfig = null;
+      let configFormBuilt = false;
+      let configFormDirty = false;
+      let savingConfig = false;
+      let configExtraSignature = '';
 
+      setupTheme();
       renderJobConfigLegend();
       renderFilterOptions();
       bindPageControls();
       refresh();
       setInterval(refresh, 3000);
+
+      function setupTheme() {
+        const MODES = [
+          ['system', '跟随系统'],
+          ['light', '浅色'],
+          ['dark', '深色']
+        ];
+        const button = document.querySelector('#theme-toggle');
+        let mode = readStoredMode();
+        if (!MODES.some(([value]) => value === mode)) mode = 'system';
+        apply();
+        button.addEventListener('click', () => {
+          const next = MODES[(MODES.findIndex(([value]) => value === mode) + 1) % MODES.length];
+          mode = next[0];
+          try {
+            localStorage.setItem('auto-chat-theme', mode);
+          } catch {
+            // Private browsing can reject writes; the in-memory mode still applies.
+          }
+          apply();
+        });
+
+        function apply() {
+          const [, label] = MODES.find(([value]) => value === mode);
+          if (mode === 'system') delete document.documentElement.dataset.theme;
+          else document.documentElement.dataset.theme = mode;
+          button.textContent = label;
+        }
+
+        function readStoredMode() {
+          try {
+            return localStorage.getItem('auto-chat-theme');
+          } catch {
+            // Blocked storage must not break the rest of the bootstrap.
+            return null;
+          }
+        }
+      }
 
       async function refresh() {
         try {
@@ -406,13 +532,13 @@
 
       function renderStats(jobs) {
         const values = [
-          ['任务总数', jobs.length],
-          ['排队中', jobs.filter(job => job.status === 'queued').length],
-          ['执行中', jobs.filter(job => RUNNING_STATUSES.has(job.status)).length],
-          ['需处理', jobs.filter(job => FAILED_STATUSES.has(job.status)).length]
+          ['任务总数', jobs.length, 'total'],
+          ['排队中', jobs.filter(job => job.status === 'queued').length, 'queued'],
+          ['执行中', jobs.filter(job => RUNNING_STATUSES.has(job.status)).length, 'running'],
+          ['需处理', jobs.filter(job => FAILED_STATUSES.has(job.status)).length, 'attention']
         ];
-        document.querySelector('#stats').innerHTML = values.map(([label, value]) => `
-          <article class="stat">
+        document.querySelector('#stats').innerHTML = values.map(([label, value, tone]) => `
+          <article class="stat" data-tone="${tone}">
             <div class="stat-label">${escapeHtml(label)}</div>
             <div class="stat-value">${value}</div>
           </article>
@@ -420,17 +546,215 @@
       }
 
       function renderGlobalConfig(config) {
-        const knownKeys = new Set(GLOBAL_CONFIG_DEFINITIONS.map(([key]) => key));
-        const definitions = [
-          ...GLOBAL_CONFIG_DEFINITIONS,
-          ...Object.keys(config).filter(key => !knownKeys.has(key)).map(key => [key, '服务端返回的扩展配置。'])
-        ];
-        document.querySelector('#global-config').innerHTML = definitions.map(([key, description]) => `
-          <div class="definition">
-            <dt>${escapeHtml(key)}</dt>
-            <dd><span class="config-value">${escapeHtml(formatConfigValue(config[key]))}</span><br>${escapeHtml(description)}</dd>
+        latestConfig = config;
+        if (!configFormBuilt) {
+          buildConfigForm();
+          configFormBuilt = true;
+        }
+        // A background refresh must never overwrite what the user is typing.
+        if (!configFormDirty && !savingConfig) fillConfigForm(config);
+        renderConfigExtras(config);
+      }
+
+      function buildConfigForm() {
+        document.querySelector('#config-fields').innerHTML = GLOBAL_CONFIG_FIELDS.map(field => `
+          <div class="config-field" data-config-field="${escapeAttribute(field.key)}" ${field.span === 'full' ? 'data-span="full"' : ''}>
+            <label class="config-label" for="config-${escapeAttribute(field.key)}">
+              <span class="config-key">${escapeHtml(field.key)}</span>
+              <span class="config-name">${escapeHtml(field.name)}</span>
+            </label>
+            ${configControl(field)}
+            <p class="config-hint">${escapeHtml(field.description)}</p>
+            <p class="config-error" data-config-error="${escapeAttribute(field.key)}"></p>
           </div>
         `).join('');
+      }
+
+      function configControl(field) {
+        const attrs = `id="config-${escapeAttribute(field.key)}" class="config-input" data-config-input="${escapeAttribute(field.key)}"`;
+        if (field.control === 'boolean') {
+          return `<select ${attrs}><option value="true">开启</option><option value="false">关闭</option></select>`;
+        }
+        if (field.control === 'urlList') {
+          return `<textarea ${attrs} rows="3" spellcheck="false" placeholder="https://example.com/hook"></textarea>`;
+        }
+        if (field.control === 'number') {
+          return `<input ${attrs} type="number" inputmode="numeric" step="${field.step ?? 1}"` +
+            `${field.min === undefined ? '' : ` min="${field.min}"`}${field.max === undefined ? '' : ` max="${field.max}"`}` +
+            `${field.optional ? ' placeholder="留空表示不设置"' : ''} />`;
+        }
+        return `<input ${attrs} type="url" spellcheck="false" autocomplete="off" placeholder="https://example.com/" />`;
+      }
+
+      function fillConfigForm(config) {
+        for (const field of GLOBAL_CONFIG_FIELDS) {
+          const input = configInput(field.key);
+          const value = config?.[field.key];
+          if (field.control === 'urlList') input.value = Array.isArray(value) ? value.join('\n') : '';
+          else if (field.control === 'boolean') input.value = value === true ? 'true' : 'false';
+          else input.value = value === undefined || value === null ? '' : String(value);
+        }
+        showConfigErrors(new Map());
+      }
+
+      function collectConfigForm() {
+        const values = {};
+        const errors = new Map();
+        for (const field of GLOBAL_CONFIG_FIELDS) {
+          const raw = configInput(field.key).value;
+          if (field.control === 'boolean') {
+            values[field.key] = raw === 'true';
+            continue;
+          }
+          if (field.control === 'urlList') {
+            const list = raw.split(/[\n,]/).map(item => item.trim()).filter(Boolean);
+            const invalid = list.find(item => !isHttpUrl(item));
+            if (invalid) errors.set(field.key, `不是合法的地址：${invalid}`);
+            else values[field.key] = list;
+            continue;
+          }
+          const text = raw.trim();
+          if (field.control === 'number') {
+            if (!text) {
+              // Optional numbers send null so the server can clear the stored value.
+              if (field.optional) values[field.key] = null;
+              else errors.set(field.key, '不能为空。');
+              continue;
+            }
+            const numeric = Number(text);
+            if (!Number.isInteger(numeric)) errors.set(field.key, '必须是整数。');
+            else if (field.min !== undefined && numeric < field.min) errors.set(field.key, `不能小于 ${field.min}。`);
+            else if (field.max !== undefined && numeric > field.max) errors.set(field.key, `不能大于 ${field.max}。`);
+            else values[field.key] = numeric;
+            continue;
+          }
+          if (!isHttpUrl(text)) errors.set(field.key, '必须是 http/https 开头的完整地址。');
+          else values[field.key] = text;
+        }
+        if (values.autoRetry === true && values.maxRetries === null && !errors.has('maxRetries')) {
+          errors.set('maxRetries', '开启自动重试时必须填写重试上限。');
+        }
+        return { values, errors };
+      }
+
+      function buildConfigPatch(values) {
+        const patch = {};
+        for (const [key, value] of Object.entries(values)) {
+          const current = latestConfig?.[key] ?? null;
+          if (JSON.stringify(value) === JSON.stringify(current)) continue;
+          patch[key] = value;
+        }
+        return patch;
+      }
+
+      async function saveGlobalConfig() {
+        if (savingConfig || !configFormBuilt) return;
+        const { values, errors } = collectConfigForm();
+        showConfigErrors(errors);
+        if (errors.size) {
+          setConfigNotice('请先修正标红的配置项。', true);
+          return;
+        }
+        const patch = buildConfigPatch(values);
+        const changed = Object.keys(patch);
+        if (!changed.length) {
+          configFormDirty = false;
+          setConfigNotice('配置没有变化。');
+          return;
+        }
+        savingConfig = true;
+        setConfigFormBusy(true);
+        setConfigNotice(`正在保存 ${changed.join('、')}…`);
+        try {
+          const response = await fetch('/config', {
+            method: 'PATCH',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(patch)
+          });
+          const payload = await response.json().catch(() => null);
+          if (!response.ok) throw new Error(configErrorMessage(payload) || `${response.status} ${response.statusText}`);
+          latestConfig = payload;
+          configFormDirty = false;
+          fillConfigForm(payload);
+          renderConfigExtras(payload);
+          setConfigNotice(`已保存 ${changed.length} 项配置：${changed.join('、')}`);
+        } catch (error) {
+          setConfigNotice(`保存失败：${error}`, true);
+        } finally {
+          savingConfig = false;
+          setConfigFormBusy(false);
+        }
+      }
+
+      function configErrorMessage(payload) {
+        if (!payload || typeof payload !== 'object') return '';
+        if (Array.isArray(payload.issues)) {
+          const errors = new Map();
+          for (const issue of payload.issues) {
+            const key = String(issue?.path ?? '').split('.')[0];
+            if (key) errors.set(key, String(issue?.message ?? '配置不合法。'));
+          }
+          showConfigErrors(errors);
+          return payload.issues.map(issue => `${issue?.path ?? '?'}：${issue?.message ?? ''}`).join('；');
+        }
+        return payload.error ? String(payload.error) : '';
+      }
+
+      function showConfigErrors(errors) {
+        for (const field of GLOBAL_CONFIG_FIELDS) {
+          const message = errors.get(field.key) ?? '';
+          const container = document.querySelector(`[data-config-field="${cssEscape(field.key)}"]`);
+          container.dataset.invalid = String(Boolean(message));
+          container.querySelector('[data-config-error]').textContent = message;
+        }
+      }
+
+      function setConfigFormBusy(busy) {
+        for (const field of GLOBAL_CONFIG_FIELDS) configInput(field.key).disabled = busy;
+        document.querySelector('#config-save').disabled = busy;
+        document.querySelector('#config-reset').disabled = busy;
+        document.querySelector('#config-save').textContent = busy ? '保存中…' : '保存配置';
+      }
+
+      function resetConfigForm() {
+        if (savingConfig || !configFormBuilt) return;
+        fillConfigForm(latestConfig);
+        configFormDirty = false;
+        setConfigNotice('已放弃未保存的修改。');
+      }
+
+      function renderConfigExtras(config) {
+        const known = new Set(GLOBAL_CONFIG_FIELDS.map(field => field.key));
+        const extras = Object.keys(config ?? {}).filter(key => !known.has(key)).sort();
+        const signature = JSON.stringify(extras.map(key => [key, config[key]]));
+        if (signature === configExtraSignature) return;
+        configExtraSignature = signature;
+        document.querySelector('#config-extra').hidden = extras.length === 0;
+        document.querySelector('#config-extra-list').innerHTML = extras.map(key => `
+          <div class="definition">
+            <dt>${escapeHtml(key)}</dt>
+            <dd><span class="config-value">${escapeHtml(formatConfigValue(config[key]))}</span></dd>
+          </div>
+        `).join('');
+      }
+
+      function configInput(key) {
+        return document.querySelector(`[data-config-input="${cssEscape(key)}"]`);
+      }
+
+      function setConfigNotice(message, isError = false) {
+        const notice = document.querySelector('#config-notice');
+        notice.textContent = message;
+        notice.classList.toggle('error', isError);
+      }
+
+      function isHttpUrl(value) {
+        try {
+          const url = new URL(value);
+          return url.protocol === 'http:' || url.protocol === 'https:';
+        } catch {
+          return false;
+        }
       }
 
       function renderJobConfigLegend() {
@@ -473,6 +797,21 @@
         });
         document.querySelector('#page-prev').addEventListener('click', () => changePage(-1));
         document.querySelector('#page-next').addEventListener('click', () => changePage(1));
+
+        const configForm = document.querySelector('#config-form');
+        configForm.addEventListener('submit', event => {
+          event.preventDefault();
+          void saveGlobalConfig();
+        });
+        configForm.addEventListener('input', markConfigDirty);
+        configForm.addEventListener('change', markConfigDirty);
+        document.querySelector('#config-reset').addEventListener('click', resetConfigForm);
+      }
+
+      function markConfigDirty() {
+        if (configFormDirty || savingConfig) return;
+        configFormDirty = true;
+        setConfigNotice('有未保存的修改，保存后才会生效。');
       }
 
       function activateTab(name) {

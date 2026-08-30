@@ -56,6 +56,61 @@ describe("job assets API", () => {
     expect(response.body).toContain("isStatusSelectActive");
     expect(response.body).toContain("target.insertBefore(row, nextRow)");
     expect(response.body).toContain(".row-actions { display: flex; flex-wrap: wrap;");
+    expect(response.body).toContain('id="config-form"');
+    expect(response.body).toContain('id="config-fields"');
+    expect(response.body).toContain('id="config-save"');
+    expect(response.body).toContain('id="config-reset"');
+    expect(response.body).toContain("saveGlobalConfig");
+    expect(response.body).toContain("collectConfigForm");
+    expect(response.body).toContain("configFormDirty");
+    expect(response.body).toContain("doubaoUrl");
+    await app.close();
+    store.close();
+  });
+
+  it("patches, clears and validates the global configuration", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+    const app = await buildServer(store);
+
+    const saved = await app.inject({
+      method: "PATCH",
+      url: "/config",
+      payload: { maxConcurrency: 3, autoRetry: true, maxRetries: 4, webhookUrls: ["https://example.com/hook"] }
+    });
+
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json()).toMatchObject({
+      maxConcurrency: 3,
+      autoRetry: true,
+      maxRetries: 4,
+      webhookUrls: ["https://example.com/hook"]
+    });
+
+    // The dashboard sends null for an emptied optional field; JSON has no undefined.
+    const cleared = await app.inject({
+      method: "PATCH",
+      url: "/config",
+      payload: { autoRetry: false, maxRetries: null }
+    });
+
+    expect(cleared.statusCode).toBe(200);
+    expect(cleared.json()).not.toHaveProperty("maxRetries");
+    expect(store.getConfig().maxRetries).toBeUndefined();
+
+    const rejected = await app.inject({ method: "PATCH", url: "/config", payload: { maxConcurrency: 99 } });
+
+    expect(rejected.statusCode).toBe(400);
+    expect(rejected.json()).toMatchObject({
+      error: "invalid_config",
+      issues: [{ path: "maxConcurrency" }]
+    });
+    expect(store.getConfig().maxConcurrency).toBe(3);
+
+    const missingRetries = await app.inject({ method: "PATCH", url: "/config", payload: { autoRetry: true } });
+
+    expect(missingRetries.statusCode).toBe(400);
+    expect(missingRetries.json()).toMatchObject({ error: "invalid_config", issues: [{ path: "maxRetries" }] });
     await app.close();
     store.close();
   });

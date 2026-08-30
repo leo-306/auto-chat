@@ -15,6 +15,7 @@ import { publicDir, readPackageVersion } from "./paths.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { ZodError } from "zod";
 import { EventHub } from "./events.js";
 
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
@@ -74,10 +75,22 @@ export async function buildServer(
   app.get("/config", async () => store.getConfig());
 
   app.patch("/config", async (request, reply) => {
-    const patch = ConfigSchema.innerType().partial().parse(request.body);
     try {
+      // JSON can't carry `undefined`, so an explicit null means "clear this
+      // optional field" (the dashboard sends it when maxRetries is emptied).
+      const body = (request.body ?? {}) as Record<string, unknown>;
+      const normalized = Object.fromEntries(
+        Object.entries(body).map(([key, value]) => [key, value === null ? undefined : value])
+      );
+      const patch = ConfigSchema.innerType().partial().parse(normalized);
       return store.updateConfig(patch);
     } catch (error) {
+      if (error instanceof ZodError) {
+        return reply.code(400).send({
+          error: "invalid_config",
+          issues: error.issues.map(issue => ({ path: issue.path.join("."), message: issue.message }))
+        });
+      }
       return reply.code(400).send({ error: String(error) });
     }
   });
