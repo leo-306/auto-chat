@@ -45,6 +45,28 @@ type JobRow = {
   updated_at: string;
 };
 
+const ASSET_HOSTS = new Set(["127.0.0.1", "localhost"]);
+const ASSET_PORT = "17321";
+
+function jobAssetUrl(id: string, folder: string, filename: string): string {
+  return `http://127.0.0.1:${ASSET_PORT}/job-assets/${encodeURIComponent(id)}/${folder}/${encodeURIComponent(filename)}`;
+}
+
+// 本地服务自己发出的产物 URL，形如 /job-assets/<jobId>/<folder>/<file>。
+// 认不出来就返回 null，交给调用方按外部 URL 处理。
+function parseJobAssetUrl(url: string): { jobId: string; folder: string; file: string } | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "http:" || !ASSET_HOSTS.has(parsed.hostname) || parsed.port !== ASSET_PORT) return null;
+  const segments = parsed.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+  if (segments.length !== 4 || segments[0] !== "job-assets") return null;
+  return { jobId: segments[1], folder: segments[2], file: segments[3] };
+}
+
 export class JobStore {
   private sql!: SqlJsStatic;
   private db!: Database;
@@ -427,17 +449,31 @@ export class JobStore {
     if (job) fs.writeFileSync(this.paths.jobFile(id, "meta.json"), JSON.stringify(job, null, 2));
   }
 
+  // 参考图统一归档进本任务的 source/，让 job 目录自己就能说明「喂进去的是什么」，
+  // 不依赖上游任务是否还在。所有平台走的都是这一条路，没有 doubao/gemini 之分。
   private normalizeSourceImages(id: string, sourceImages: string[]): string[] {
     return sourceImages.map((source, index) => {
-      if (/^(https?:|data:|blob:)/i.test(source)) return source;
-      const absolute = path.resolve(source);
-      if (!fs.existsSync(absolute)) return source;
-      const extension = path.extname(absolute) || ".png";
+      const local = this.resolveSourceImageFile(id, source);
+      if (!local) return source;
+      const extension = path.extname(local) || ".png";
       const filename = `source-${index + 1}${extension}`;
-      const target = path.join(this.paths.jobDir(id), "source", filename);
-      fs.copyFileSync(absolute, target);
-      return `http://127.0.0.1:17321/job-assets/${encodeURIComponent(id)}/source/${encodeURIComponent(filename)}`;
+      fs.copyFileSync(local, path.join(this.paths.jobDir(id), "source", filename));
+      return jobAssetUrl(id, "source", filename);
     });
+  }
+
+  // 能落到磁盘上的才归档：本地路径直接用；本地服务的 job-assets URL 先还原成磁盘路径
+  // （参考图基本都是上一个任务的产物，这类 URL 才是实际最常见的入参）。
+  // 真正的外部 URL 得联网抓，而 createJob 是同步的，所以留原样不动。
+  private resolveSourceImageFile(id: string, source: string): string | null {
+    const asset = parseJobAssetUrl(source);
+    // 已经指向本任务自己的 source/ 时不用再拷一遍。
+    if (asset) {
+      return asset.jobId === id ? null : this.resolveAssetPath(asset.jobId, asset.folder, asset.file);
+    }
+    if (/^(https?:|data:|blob:)/i.test(source)) return null;
+    const absolute = path.resolve(source);
+    return fs.existsSync(absolute) ? absolute : null;
   }
 
   private copyOutputToJobDir(id: string, outputDir: string, source: string, filename: string): void {

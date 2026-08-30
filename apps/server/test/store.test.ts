@@ -208,6 +208,41 @@ describe("JobStore", () => {
     store.close();
   });
 
+  it("archives job-asset source images from other jobs and leaves external urls alone", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+    store.createJob({ id: "job_up", prompt: "upstream", sourceImages: [], metadata: {} });
+    fs.writeFileSync(path.join(tmp, "data/jobs/job_up/outputs/output-01.png"), "upstream-bytes");
+
+    const created = store.createJob({
+      id: "job_ref",
+      platform: "doubao",
+      mode: "video",
+      prompt: "reference",
+      sourceImages: [
+        "http://127.0.0.1:17321/job-assets/job_up/outputs/output-01.png",
+        "https://example.com/remote.png"
+      ],
+      metadata: {}
+    });
+
+    expect(created.sourceImages[0]).toBe("http://127.0.0.1:17321/job-assets/job_ref/source/source-1.png");
+    expect(fs.readFileSync(path.join(tmp, "data/jobs/job_ref/source/source-1.png"), "utf8")).toBe("upstream-bytes");
+    // 外部 URL 抓取要联网，createJob 是同步的，所以原样保留。
+    expect(created.sourceImages[1]).toBe("https://example.com/remote.png");
+    store.close();
+  });
+
+  it("does not re-copy a source image that already points at the job's own source dir", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+    const url = "http://127.0.0.1:17321/job-assets/job_self/source/source-1.png";
+    const created = store.createJob({ id: "job_self", prompt: "self", sourceImages: [url], metadata: {} });
+    expect(created.sourceImages).toEqual([url]);
+    expect(fs.readdirSync(path.join(tmp, "data/jobs/job_self/source"))).toEqual([]);
+    store.close();
+  });
+
   it("rejects duplicate job ids and supports replace", async () => {
     const store = new JobStore(tmp);
     await store.init();

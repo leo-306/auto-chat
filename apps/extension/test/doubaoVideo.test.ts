@@ -6,6 +6,8 @@ import {
   clampDurationSeconds,
   doubaoVideoSliderSeconds,
   doubaoVideoSliderValue,
+  isDoubaoAttachButtonLabel,
+  isDoubaoAttachControlKey,
   isDoubaoVideoConfirmLabel,
   isDoubaoVideoParamsApplied,
   matchDoubaoVideoRatioOption,
@@ -89,6 +91,36 @@ describe("isDoubaoVideoConfirmLabel", () => {
     // 正文句子不算按钮。
     expect(isDoubaoVideoConfirmLabel("请你确认拥有素材授权后点击下方的确认生成按钮")).toBe(false);
     expect(isDoubaoVideoConfirmLabel("")).toBe(false);
+  });
+});
+
+describe("isDoubaoAttachControlKey", () => {
+  it("只认 upload/attach/file 这类附件 key，不误伤模型和参数面板", () => {
+    expect(isDoubaoAttachControlKey("upload")).toBe(true);
+    expect(isDoubaoAttachControlKey("file-upload")).toBe(true);
+    expect(isDoubaoAttachControlKey("attachment")).toBe(true);
+    expect(isDoubaoAttachControlKey("video-model")).toBe(false);
+    expect(isDoubaoAttachControlKey("model")).toBe(false);
+    expect(isDoubaoAttachControlKey("video-generation-params-panel")).toBe(false);
+    expect(isDoubaoAttachControlKey("")).toBe(false);
+  });
+});
+
+describe("isDoubaoAttachButtonLabel", () => {
+  it("认得「+」和上传类文案", () => {
+    expect(isDoubaoAttachButtonLabel("+")).toBe(true);
+    expect(isDoubaoAttachButtonLabel(" 上传图片 ")).toBe(true);
+    expect(isDoubaoAttachButtonLabel("添加附件")).toBe(true);
+    expect(isDoubaoAttachButtonLabel("Upload image")).toBe(true);
+  });
+
+  it("不把模式 chip、模型下拉和长句当成附件入口", () => {
+    expect(isDoubaoAttachButtonLabel("视频生成")).toBe(false);
+    expect(isDoubaoAttachButtonLabel("图像生成")).toBe(false);
+    expect(isDoubaoAttachButtonLabel("模型 Seedance 2.0 Mini")).toBe(false);
+    expect(isDoubaoAttachButtonLabel("自动 · 10s")).toBe(false);
+    expect(isDoubaoAttachButtonLabel("点这里上传一张参考图然后再描述你想要的画面")).toBe(false);
+    expect(isDoubaoAttachButtonLabel("")).toBe(false);
   });
 });
 

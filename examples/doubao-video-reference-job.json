@@ -1,0 +1,14 @@
+{
+  "id": "doubao_video_ref_001",
+  "platform": "doubao",
+  "mode": "video",
+  "prompt": "以参考图里的人物和场景为第一帧：她沿着退潮后的湿沙滩慢慢向前走，风吹动外套下摆和头发，落日在水面上拉出一条长长的金色反光。镜头跟随她缓慢平移，真实电影质感。",
+  "metadata": {
+    "doubaoModel": "Seedance 2.0 Mini",
+    "doubaoVideoRatio": "9:16",
+    "doubaoVideoDuration": 5
+  },
+  "sourceImages": [
+    "http://127.0.0.1:17321/job-assets/wild010_body01/outputs/output-01.png"
+  ]
+}

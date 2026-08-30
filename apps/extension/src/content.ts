@@ -25,6 +25,8 @@ import {
 } from "./doubaoModel.js";
 import {
   doubaoVideoSliderValue,
+  isDoubaoAttachButtonLabel,
+  isDoubaoAttachControlKey,
   isDoubaoVideoConfirmLabel,
   isDoubaoVideoParamsApplied,
   matchDoubaoVideoRatioOption,
@@ -282,7 +284,9 @@ async function startJob(
       recoveryMode === "resubmit_after_refresh" || postRefreshPromptAction === "resubmit"
     );
   } else if (job.platform === "doubao") {
-    if (job.sourceImages.length > 0) {
+    // 视频模式的参考图要等切进「视频生成」之后再挂：切模式会重建输入框，
+    // 提前上传的附件会被清掉。视频那条路在 fillPromptAndSendDoubao 里按人工顺序处理。
+    if (job.sourceImages.length > 0 && job.mode !== "video") {
       await report(job.id, "uploading");
       await uploadSources(job);
       await waitForDoubaoUploadReady(job.id);
@@ -1545,6 +1549,24 @@ async function uploadSources(job: Job): Promise<void> {
       await sleep(300);
       input = document.querySelector<HTMLInputElement>('input[type="file"]');
     }
+    // 聊天模式下 input 一直在，走不到这里；视频生成模式重建了输入框，
+    // 就得先点一下「+」把 input 挂出来。
+    if (!input) {
+      const attach = findDoubaoAttachButton();
+      await traceJob(job.id, "doubao_attach_button_lookup", {
+        mode: job.mode,
+        found: Boolean(attach),
+        attachLabel: attach ? elementLabel(attach).slice(0, 40) : null,
+        actionbarControls: describeDoubaoActionbarControls()
+      });
+      if (attach) {
+        clickDoubaoControl(attach);
+        input = await waitUntilTruthy(
+          () => document.querySelector<HTMLInputElement>('input[type="file"]'),
+          5_000
+        );
+      }
+    }
   }
   if (!input) throw new Error("File input was not found.");
   const files = await Promise.all(job.sourceImages.map((source, index) => sourceToFile(source, index)));
@@ -1650,6 +1672,13 @@ async function fillPromptAndSendDoubao(job: Job): Promise<void> {
 
     if (job.mode === "video") {
       await enterDoubaoVideoMode();
+      // 顺序照人工来：先挂参考图，再挑模型和比例/时长。
+      // 反过来的话，附件把比例锁成「自动」这类情况会让先设好的参数被悄悄改掉，
+      // 而现在这个顺序下参数回读断言就能直接把它暴露成报错。
+      if (job.sourceImages.length > 0) {
+        await uploadDoubaoVideoReferences(job);
+        await report(job.id, "sending_prompt");
+      }
       const model = readDoubaoModel(job.metadata);
       if (model) await selectDoubaoModel(model, DOUBAO_VIDEO_MODEL_TRIGGER_SELECTOR);
       await applyDoubaoVideoParams(job);
@@ -1858,6 +1887,55 @@ function findDoubaoSendButton(): HTMLButtonElement | null {
     .find(button => isVisible(button) && getComputedStyle(button).backgroundColor === DOUBAO_BRAND_BLUE) ?? null;
 }
 
+const DOUBAO_ACTIONBAR_KEY_ATTRS = [
+  "data-input-engine-actionbar-control-key",
+  "data-input-engine-actionbar-render-entry-key"
+] as const;
+
+const DOUBAO_ACTIONBAR_SELECTOR = DOUBAO_ACTIONBAR_KEY_ATTRS.map(attr => `[${attr}]`).join(",");
+
+function doubaoActionbarControls(): HTMLElement[] {
+  return [...document.querySelectorAll<HTMLElement>(DOUBAO_ACTIONBAR_SELECTOR)]
+    .filter(element => isPresentInLayout(element));
+}
+
+// 输入框那一行的容器：从第一个已知控件往上走，直到这个祖先把所有控件都包住。
+// 「+」自己不一定带 data-key，只能靠这个范围把它和侧栏的「+」区分开。
+function findDoubaoActionbarRoot(): HTMLElement | null {
+  const controls = doubaoActionbarControls();
+  let root = controls[0]?.parentElement ?? null;
+  while (root && !controls.every(control => root!.contains(control))) root = root.parentElement;
+  return root;
+}
+
+// 附件入口先按 actionbar 的 data-key 认（upload/attach/file），
+// 再在同一行里按文案退一步找，绝不扫全页面——侧栏的「新建对话 +」长得一样。
+function findDoubaoAttachButton(): HTMLElement | null {
+  const byKey = doubaoActionbarControls().find(element =>
+    DOUBAO_ACTIONBAR_KEY_ATTRS.some(attr => isDoubaoAttachControlKey(element.getAttribute(attr) ?? "")));
+  if (byKey) return byKey;
+
+  const root = findDoubaoActionbarRoot();
+  if (!root) return null;
+  return [...root.querySelectorAll<HTMLElement>("button,[role='button']")]
+    .find(element => isPresentInLayout(element) && isDoubaoAttachButtonLabel(elementLabel(element))) ?? null;
+}
+
+// 认不出附件入口时把整行控件记进 trace，下次直接照着 key/文案补匹配规则。
+function describeDoubaoActionbarControls(): string[] {
+  const keyed = doubaoActionbarControls().map(element => {
+    const key = DOUBAO_ACTIONBAR_KEY_ATTRS.map(attr => element.getAttribute(attr)).find(Boolean) ?? "";
+    return `key=${key}:${elementLabel(element).slice(0, 24)}`;
+  });
+  const root = findDoubaoActionbarRoot();
+  const plain = root
+    ? [...root.querySelectorAll<HTMLElement>("button,[role='button']")]
+      .filter(element => isPresentInLayout(element))
+      .map(element => `btn:${elementLabel(element).slice(0, 24)}`)
+    : [];
+  return [...keyed, ...plain].slice(0, 32);
+}
+
 async function waitForDoubaoUploadReady(jobId: string): Promise<void> {
   await report(jobId, "waiting_upload_ready");
   for (let attempt = 0; attempt < 120; attempt += 1) {
@@ -1865,6 +1943,26 @@ async function waitForDoubaoUploadReady(jobId: string): Promise<void> {
     await sleep(500);
   }
   throw new Error("豆包图片上传未在超时前完成。");
+}
+
+// 视频模式的参考图：和图片模式共用 file input，但就绪信号只有「发送按钮变蓝」这一个，
+// 而视频模式此时输入框还是空的，蓝按钮不一定会亮。超时就把 actionbar 记进 trace 再报错，
+// 不吞掉——否则会发出一条没带参考图的提示词，看起来还像成功了。
+async function uploadDoubaoVideoReferences(job: Job): Promise<void> {
+  await report(job.id, "uploading");
+  await uploadSources(job);
+  try {
+    await waitForDoubaoUploadReady(job.id);
+  } catch {
+    await traceJob(job.id, "doubao_video_reference_upload_timeout", {
+      sourceImageCount: job.sourceImages.length,
+      actionbarControls: describeDoubaoActionbarControls()
+    });
+    throw new Error(
+      `豆包视频参考图（${job.sourceImages.length} 张）上传后未等到可发送状态，已中止，避免发出不带参考图的提示词。`
+    );
+  }
+  await traceJob(job.id, "doubao_video_reference_uploaded", { sourceImageCount: job.sourceImages.length });
 }
 
 async function fillPromptAndSendOriginal(prompt: string): Promise<void> {

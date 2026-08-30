@@ -82,6 +82,24 @@ export function isDoubaoVideoConfirmLabel(label: string): boolean {
   return normalized.length <= 16 && /确[认定](继续)?生成/.test(normalized);
 }
 
+// 输入框左边的「+」是附件入口。聊天模式下 input[type=file] 一直挂在 DOM 上，
+// 但切进视频生成模式会重建输入框，这时可能要先点「+」才会出现 input。
+// 图标按钮经常没有 aria-label，所以先按 actionbar 的 data-key 认，再退回文案；
+// 两条都认不出时由调用方把整条 actionbar trace 出来，别瞎点。
+export function isDoubaoAttachControlKey(key: string): boolean {
+  return /upload|attach|file/i.test(key);
+}
+
+export function isDoubaoAttachButtonLabel(label: string): boolean {
+  const normalized = label.replace(/\s+/g, " ").trim();
+  // 附件入口是个图标按钮，文案最多是「上传图片」这种短标签；长句是正文，不是按钮。
+  if (!normalized || normalized.length > 16) return false;
+  // 别把模式 chip 和模型/参数下拉当成附件入口。
+  if (/生成|模型|比例|时长/.test(normalized)) return false;
+  return normalized === "+" ||
+    /上传|附件|添加(图片|文件)|参考图|upload|attach|add\s+(file|image|photo)/i.test(normalized);
+}
+
 export function isDoubaoVideoParamsApplied(
   triggerText: string,
   expected: { ratio?: string; seconds?: number }
