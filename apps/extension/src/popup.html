@@ -9,8 +9,8 @@
   <body>
     <header class="app-header">
       <div>
-        <p class="eyebrow">GPT / Gemini / 豆包 automation</p>
-        <h1>auto-chat <span id="extension-version"></span></h1>
+        <p class="eyebrow">GPT · Gemini · 豆包</p>
+        <h1>auto-chat<span id="extension-version"></span></h1>
       </div>
       <span id="server" class="status-pill">检测中</span>
     </header>
@@ -21,50 +21,39 @@
       <button id="tab-doubao" class="tab" data-platform="doubao">豆包</button>
     </nav>
 
-    <section class="panel">
-      <div class="section-head">
-        <div>
-          <h2>运行状态</h2>
-          <p id="status-copy">正在读取插件状态。</p>
+    <div class="card">
+      <section class="block">
+        <h2>运行状态</h2>
+        <p id="status-copy" class="lede">正在读取插件状态。</p>
+        <div class="actions">
+          <button id="pause" class="primary">读取中</button>
+          <button id="tick">执行一次调度</button>
+          <button id="open-tab">切到任务标签页</button>
         </div>
-      </div>
-      <div class="actions">
-        <button id="pause" class="primary">读取中</button>
-        <button id="tick">执行一次调度</button>
-        <button id="open-tab">切到任务标签页</button>
-        <a href="http://127.0.0.1:17321/" target="_blank">打开本地控制台</a>
-      </div>
-    </section>
+        <a class="link-out" href="http://127.0.0.1:17321/" target="_blank" rel="noopener">打开本地控制台<span aria-hidden="true">↗</span></a>
+      </section>
 
-    <section class="panel">
-      <div class="section-head">
-        <div>
-          <h2>正在处理</h2>
-          <p id="workers-copy">当前由插件接管的平台标签页和任务。</p>
-        </div>
-      </div>
-      <div id="workers"></div>
-    </section>
+      <section class="block">
+        <h2>正在处理</h2>
+        <p id="workers-copy" class="hint">当前由插件接管的平台标签页和任务。</p>
+        <div id="workers"></div>
+      </section>
 
-    <section class="panel">
-      <div class="section-head">
-        <div>
-          <h2>最近信息</h2>
-          <p>用于判断本地服务、页面和任务状态。</p>
-        </div>
-      </div>
-      <pre id="debug-output">暂无调试输出</pre>
-      <details class="advanced">
-        <summary>高级/调试</summary>
-        <div class="debug-grid">
-          <button id="inspect">检查当前平台页</button>
-          <button id="debug-success">模拟：保存成功</button>
-          <button id="debug-error" class="warn">模拟：可重试错误</button>
-          <button id="debug-stalled" class="warn">模拟：生成卡住</button>
-          <button id="debug-timeout" class="danger">模拟：需要人工接管</button>
-        </div>
-      </details>
-    </section>
+      <section class="block">
+        <h2>最近信息</h2>
+        <pre id="debug-output">暂无调试输出</pre>
+        <details class="advanced">
+          <summary>高级 / 调试</summary>
+          <div class="debug-grid">
+            <button id="inspect">检查当前平台页</button>
+            <button id="debug-success">模拟：保存成功</button>
+            <button id="debug-error" class="warn">模拟：可重试错误</button>
+            <button id="debug-stalled" class="warn">模拟：生成卡住</button>
+            <button id="debug-timeout" class="danger">模拟：需要人工接管</button>
+          </div>
+        </details>
+      </section>
+    </div>
     <script src="popup.js"></script>
   </body>
 </html>
