@@ -108,10 +108,14 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     if (options.autoId) delete body.id;
     if (options.platform) body.platform = options.platform;
     if (options.model) {
-      body.metadata = { ...(body.metadata ?? {}), doubaoModel: options.model };
+      // 模型的 metadata key 也按平台分：豆包是图片/视频模型选择器，Gemini 是输入框右下角那个下拉。
+      const key = body.platform === "gemini" ? "geminiModel" : "doubaoModel";
+      body.metadata = { ...(body.metadata ?? {}), [key]: options.model };
     }
     if (options.ratio) {
-      body.metadata = { ...(body.metadata ?? {}), doubaoVideoRatio: options.ratio };
+      // 尺寸的 metadata key 按平台分：豆包是「比例 · 时长」面板，Gemini 是视频尺寸下拉。
+      const key = body.platform === "gemini" ? "geminiVideoRatio" : "doubaoVideoRatio";
+      body.metadata = { ...(body.metadata ?? {}), [key]: options.ratio };
     }
     if (options.duration !== undefined) {
       body.metadata = { ...(body.metadata ?? {}), doubaoVideoDuration: options.duration };
@@ -1162,9 +1166,11 @@ Usage:
   auto-chat status
   auto-chat add <job.json> [--replace] [--auto-id] [--json]
   auto-chat add <job.json> [--platform gpt|gemini|doubao]
-  auto-chat add <job.json> [--model "Seedream 4.5"]（豆包图片/视频模式的模型，等价于 metadata.doubaoModel）
-  auto-chat add <job.json> [--ratio 16:9] [--duration 8]（仅豆包视频模式，等价于 metadata.doubaoVideoRatio / doubaoVideoDuration）
-  ("mode": "video" 时豆包会走视频生成，产物为 outputs/output-01.mp4)
+  auto-chat add <job.json> [--model "Seedream 4.5"]（模型：豆包写入 metadata.doubaoModel，Gemini 写入 metadata.geminiModel，如 "3.1 Pro"）
+  auto-chat add <job.json> [--ratio 16:9]（视频尺寸：豆包写入 metadata.doubaoVideoRatio，Gemini 写入 metadata.geminiVideoRatio）
+  auto-chat add <job.json> [--duration 8]（仅豆包视频模式，等价于 metadata.doubaoVideoDuration；Gemini 没有时长控件）
+  ("mode": "video" 时豆包与 Gemini 都会走视频生成，产物为 outputs/output-01.mp4)
+  (Gemini 视频模式的 "sourceImages" 会作为参考图上传，支持多张)
   (job.json 可选 "outputDir": "<dir>"，图片/视频任务完成后会额外复制一份到该目录)
   auto-chat list [--json]
   auto-chat show <jobId> [--json]

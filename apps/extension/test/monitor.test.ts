@@ -2,10 +2,13 @@ import { describe, expect, it } from "vitest";
 import {
   DOUBAO_IMAGE_RENDER_GRACE_MS,
   DOUBAO_VIDEO_CONFIRM_MAX_CLICKS,
-  DOUBAO_VIDEO_WAIT_MIN_MS,
   GPT_IMAGE_RENDER_STALL_MIN_MS,
   GPT_IMAGE_STOP_CONFIRM_TIMEOUT_MS,
+  MEDIA_BLOCK_STABLE_MS,
+  VIDEO_WAIT_MIN_MS,
   hasExplicitGenerationError,
+  classifyMediaBlockText,
+  detectMediaBlock,
   selectGptErrorRefresh,
   selectMonitorStallRecovery,
   selectStuckGptImageStopRecovery,
@@ -13,6 +16,7 @@ import {
   shouldCompleteImageJob,
   shouldCompleteVideoJob,
   shouldFailCompletedDoubaoImageJob,
+  shouldGiveUpOnMediaBlock,
   shouldGiveUpOnMissingDoubaoImages,
   shouldRetryGptImageGenerationInPage,
   shouldResubmitEmptyGptImage,
@@ -169,10 +173,17 @@ describe("monitor stall recovery", () => {
     })).toMatchObject({ recoveryMode: "monitor_only" });
   });
 
-  // 豆包视频是异步的：提交后页面整段时间一动不动，通用停滞超时会把它当成卡死。
-  it("keeps waiting on a pending Doubao video past the generic stall timeout", () => {
+  // 视频生成是异步的：提交后页面整段时间一动不动，通用停滞超时会把它当成卡死。
+  it("keeps waiting on a pending video past the generic stall timeout", () => {
     expect(selectMonitorStallRecovery({
       platform: "doubao",
+      mode: "video",
+      isGenerating: false,
+      idleMs: 300_001,
+      stallTimeoutMs: 300_000
+    })).toBeNull();
+    expect(selectMonitorStallRecovery({
+      platform: "gemini",
       mode: "video",
       isGenerating: false,
       idleMs: 300_001,
@@ -182,7 +193,7 @@ describe("monitor stall recovery", () => {
       platform: "doubao",
       mode: "video",
       isGenerating: false,
-      idleMs: DOUBAO_VIDEO_WAIT_MIN_MS + 1,
+      idleMs: VIDEO_WAIT_MIN_MS + 1,
       stallTimeoutMs: 300_000
     })).toMatchObject({ recoveryMode: "monitor_only" });
     // 图片模式不受影响。
@@ -282,5 +293,65 @@ describe("monitor stall recovery", () => {
     expect(shouldResubmitEmptyGptImage({ ...snapshot, hasOnlyResponseActionMenu: false })).toBe(false);
     expect(shouldResubmitEmptyGptImage({ ...snapshot, sourceImageCount: 1 })).toBe(false);
     expect(shouldResubmitEmptyGptImage({ ...snapshot, loadedImageCount: 1 })).toBe(false);
+  });
+});
+
+describe("media block", () => {
+  const blocked = {
+    mode: "video" as const,
+    assistantExists: true,
+    assistantText: "我无法制作这类视频。我可以帮你做其他事情吗？",
+    isGenerating: false,
+    loadedImageCount: 0,
+    loadedVideoCount: 0
+  };
+
+  it("认出中英文的拒绝话术", () => {
+    expect(classifyMediaBlockText("我无法制作这类视频。我可以帮你做其他事情吗？")).toBe("refusal");
+    expect(classifyMediaBlockText("抱歉，我不能帮你生成这样的内容。")).toBe("refusal");
+    expect(classifyMediaBlockText("我做不了这个视频")).toBe("refusal");
+    expect(classifyMediaBlockText("I can't create that video.")).toBe("refusal");
+    expect(classifyMediaBlockText("Sorry, I'm unable to generate this image.")).toBe("refusal");
+  });
+
+  it("把并发/配额上限单独归成可重试的一类", () => {
+    expect(classifyMediaBlockText("你目前有 2 个视频生成请求正在运行中，已经达到一次可以处理的请求上限。"))
+      .toBe("capacity");
+    expect(classifyMediaBlockText("今日视频额度已用完，请明天再试。")).toBe("capacity");
+    expect(classifyMediaBlockText("You have reached the limit for video generation.")).toBe("capacity");
+    // 两类话术同时出现时按可重试处理，别让人工去改一条本来没问题的 prompt。
+    expect(classifyMediaBlockText("已达到请求上限，暂时无法生成视频。")).toBe("capacity");
+  });
+
+  it("不把正常回复和排队提示当失败", () => {
+    expect(classifyMediaBlockText("视频生成已提交，大约需要 1-3 分钟，请稍等。")).toBeNull();
+    expect(classifyMediaBlockText("好的，正在为你生成视频。")).toBeNull();
+    expect(classifyMediaBlockText("Here is your video.")).toBeNull();
+    expect(classifyMediaBlockText("")).toBeNull();
+  });
+
+  it("长文里出现「无法保证」不算失败", () => {
+    const long = `这是一段很长的说明。${"我会尽量还原参考图里的服饰细节与光线氛围。".repeat(12)}我无法保证每一帧都完全一致。`;
+    expect(long.length).toBeGreaterThan(240);
+    expect(classifyMediaBlockText(long)).toBeNull();
+  });
+
+  it("只在没有产出且回复已结束时判失败", () => {
+    expect(detectMediaBlock(blocked)).toBe("refusal");
+    expect(detectMediaBlock({ ...blocked, mode: "image" })).toBe("refusal");
+    expect(detectMediaBlock({ ...blocked, mode: "text" })).toBeNull();
+    expect(detectMediaBlock({ ...blocked, isGenerating: true })).toBeNull();
+    expect(detectMediaBlock({ ...blocked, assistantExists: false })).toBeNull();
+    expect(detectMediaBlock({ ...blocked, loadedVideoCount: 1 })).toBeNull();
+    expect(detectMediaBlock({ ...blocked, loadedImageCount: 1 })).toBeNull();
+    // Gemini 成功那次也是先回一句排队提示、11 分钟后才渲染视频卡片，不能因此判失败。
+    expect(detectMediaBlock({ ...blocked, assistantText: "视频生成中，请稍候。" })).toBeNull();
+  });
+
+  it("稳定几秒后才收工", () => {
+    const blockedAt = 1_000_000;
+    expect(shouldGiveUpOnMediaBlock({ blockedAt, now: blockedAt + 1_000 })).toBe(false);
+    expect(shouldGiveUpOnMediaBlock({ blockedAt, now: blockedAt + MEDIA_BLOCK_STABLE_MS })).toBe(true);
+    expect(shouldGiveUpOnMediaBlock({ blockedAt: 0, now: blockedAt })).toBe(false);
   });
 });

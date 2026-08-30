@@ -419,10 +419,15 @@ async function maybeReloadExtension(): Promise<void> {
   const stored = await chrome.storage.local.get("extensionReloadToken");
   const seen = typeof stored.extensionReloadToken === "string" ? stored.extensionReloadToken : "";
   if (requested.token === seen) return;
-  await chrome.storage.local.set({ extensionReloadToken: requested.token });
   // 空令牌意味着服务端刚重启，不是一次重载请求。
-  if (!requested.token) return;
+  if (!requested.token) {
+    await chrome.storage.local.set({ extensionReloadToken: requested.token });
+    return;
+  }
+  // 有任务在跑就先别认领这个令牌，等空闲了再重载；
+  // 否则令牌被记下但重载没发生，这次请求就白丢了。
   if (workers.size > 0) return;
+  await chrome.storage.local.set({ extensionReloadToken: requested.token });
   chrome.runtime.reload();
 }
 

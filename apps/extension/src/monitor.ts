@@ -47,11 +47,11 @@ export function shouldCompleteVideoJob(input: {
   return input.mode === "video" && input.loadedVideoCount >= 1;
 }
 
-// 豆包视频是异步生成的：助手先回一句「视频生成已提交…大约需要 1-3 分钟」并把
-// isGenerating 置回 false，之后才追加一条带视频卡片的消息。这段等待期页面签名毫无变化，
+// 视频生成都是异步的：豆包先回一句「视频生成已提交…大约需要 1-3 分钟」并把 isGenerating
+// 置回 false，Gemini 同样先回一段文字再慢慢渲染视频卡片。这段等待期页面签名毫无变化，
 // 会被通用停滞超时（默认 5 分钟）误判成卡死，所以视频任务用一个更长的空闲下限，
 // 上限仍由 hardTimeoutMs（默认 15 分钟）兜住。
-export const DOUBAO_VIDEO_WAIT_MIN_MS = 720_000;
+export const VIDEO_WAIT_MIN_MS = 720_000;
 
 // 豆包视频还可能插一步二次确认：助手先回一段授权声明 + 一个「确认生成 →」按钮，
 // 点了才真正开始排队生成。点击后按钮通常就消失，这里仍留一个次数上限兜底，
@@ -103,6 +103,70 @@ export function shouldGiveUpOnMissingDoubaoImages(input: {
 }): boolean {
   return input.completedWithoutImagesAt > 0 &&
     input.now - input.completedWithoutImagesAt >= DOUBAO_IMAGE_RENDER_GRACE_MS;
+}
+
+// 目标是图片/视频，模型却只回了一段文字并结束回答（没有任何 loading）时，页面签名
+// 从此不再变化，继续等只能等到停滞超时（视频任务下限 12 分钟）或硬超时。
+// 但「只有文字」本身不能当失败：Gemini 成功那次也是先回一句 22 字的排队提示，
+// 视频卡片 11 分钟后才渲染出来。所以只认两类明确说「这单不会有产出」的文案：
+//   refusal —— 内容策略/能力上的拒绝，重试同一条 prompt 没意义，交人工改需求；
+//   capacity —— 并发/配额上限，过一会儿再跑就行，按可重试失败上报。
+export const MEDIA_BLOCK_MAX_TEXT_LENGTH = 240;
+export type MediaBlockKind = "refusal" | "capacity";
+
+const MEDIA_CAPACITY_PATTERN = new RegExp(
+  [
+    // 中文：「已经达到一次可以处理的请求上限」「今日额度已用完」
+    "上限|配额|额度(?:已)?(?:用完|不足|耗尽)|超出.{0,6}限制|请求过多",
+    // 英文：reached the limit / at capacity / too many requests / out of quota
+    "reach(?:ed)?\\s+(?:the\\s+|your\\s+)?(?:limit|maximum)|at\\s+capacity|too\\s+many\\s+(?:requests|videos)|quota|rate\\s+limit"
+  ].join("|"),
+  "i"
+);
+
+const MEDIA_REFUSAL_PATTERN = new RegExp(
+  [
+    // 中文：「我无法制作这类视频」「抱歉，我不能帮你生成这样的内容」
+    "(?:无法|不能|没法|没办法|不便|不支持)(?:为你|帮你|帮您|给你)?(?:制作|生成|创建|做|画|提供|完成|处理|满足)",
+    // 中文里也有不带动词的说法：「我做不了这个视频」
+    "(?:做不了|办不到|帮不了|实现不了)",
+    // 英文：I can't create / I'm unable to generate / I cannot help with that
+    "(?:can(?:'|’)?t|cannot|can\\s+not|unable\\s+to|not\\s+able\\s+to)\\s+(?:create|generate|make|produce|help|assist|fulfill|complete|do)\\b"
+  ].join("|"),
+  "i"
+);
+
+export function classifyMediaBlockText(text: string): MediaBlockKind | null {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  // 这两类话术都很短；长文里出现「无法保证…」之类的句子不算，避免误杀。
+  if (!normalized || normalized.length > MEDIA_BLOCK_MAX_TEXT_LENGTH) return null;
+  // 「因为已达上限所以无法生成」两个模式都会命中，按可重试的那类处理。
+  if (MEDIA_CAPACITY_PATTERN.test(normalized)) return "capacity";
+  if (MEDIA_REFUSAL_PATTERN.test(normalized)) return "refusal";
+  return null;
+}
+
+export function detectMediaBlock(input: {
+  mode: Job["mode"];
+  assistantExists: boolean;
+  assistantText: string;
+  isGenerating: boolean;
+  loadedImageCount: number;
+  loadedVideoCount: number;
+}): MediaBlockKind | null {
+  // 文本任务里这类回复本身就是答案，只在要产出图片/视频时才当失败。
+  if (input.mode === "text") return null;
+  if (!input.assistantExists || input.isGenerating) return null;
+  if (input.loadedImageCount > 0 || input.loadedVideoCount > 0) return null;
+  return classifyMediaBlockText(input.assistantText);
+}
+
+// 流式输出的间隙里 isGenerating 可能短暂为 false，稳定几秒再判，
+// 相比十几分钟的等待这点成本可以忽略。
+export const MEDIA_BLOCK_STABLE_MS = 8_000;
+
+export function shouldGiveUpOnMediaBlock(input: { blockedAt: number; now: number }): boolean {
+  return input.blockedAt > 0 && input.now - input.blockedAt >= MEDIA_BLOCK_STABLE_MS;
 }
 
 export function shouldStopGptImageGeneration(input: {
@@ -205,8 +269,8 @@ function effectiveStallTimeoutMs(input: {
   mode: Job["mode"];
   stallTimeoutMs: number;
 }): number {
-  if (input.platform === "doubao" && input.mode === "video") {
-    return Math.max(input.stallTimeoutMs, DOUBAO_VIDEO_WAIT_MIN_MS);
+  if (input.mode === "video") {
+    return Math.max(input.stallTimeoutMs, VIDEO_WAIT_MIN_MS);
   }
   return input.stallTimeoutMs;
 }

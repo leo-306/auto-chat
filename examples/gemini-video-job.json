@@ -1,0 +1,10 @@
+{
+  "id": "gemini_video_test_001",
+  "platform": "gemini",
+  "mode": "video",
+  "prompt": "一只橘猫坐在窗台上，阳光洒进来，镜头缓慢推近，真实电影质感。",
+  "metadata": {
+    "geminiVideoRatio": "16:9"
+  },
+  "sourceImages": []
+}

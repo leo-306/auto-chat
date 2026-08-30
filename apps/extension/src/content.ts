@@ -1,6 +1,21 @@
 import { buildGeminiOutputPrompt, findLatestJobConversationScope } from "auto-chat-shared";
 import type { AppConfig, ConversationTurnRole, Job, JobPlatform } from "auto-chat-shared";
 import { findGeminiSendControl, isGeminiSendDisabled } from "./gemini.js";
+import {
+  isGeminiModelApplied,
+  isGeminiModelTriggerLabel,
+  matchGeminiModelOption,
+  readGeminiModel
+} from "./geminiModel.js";
+import {
+  isGeminiVideoModeChipLabel,
+  isGeminiVideoPlaceholder,
+  isGeminiVideoRatioApplied,
+  isGeminiVideoReferenceButtonLabel,
+  isGeminiVideoToolLabel,
+  matchGeminiVideoRatioOption,
+  readGeminiVideoRatio
+} from "./geminiVideo.js";
 import { answerGptImagePreferenceComparisons } from "./gptPreference.js";
 import {
   doubaoModelTriggerName,
@@ -32,7 +47,9 @@ import {
 } from "./imageDownload.js";
 import { hasGeneratingText, isGenerationStopControl } from "./inspect.js";
 import {
+  detectMediaBlock,
   hasExplicitGenerationError,
+  MEDIA_BLOCK_MAX_TEXT_LENGTH,
   selectGptErrorRefresh,
   selectMonitorStallRecovery,
   selectStuckGptImageStopRecovery,
@@ -40,6 +57,7 @@ import {
   shouldCompleteVideoJob,
   shouldClickDoubaoVideoConfirm,
   shouldFailCompletedDoubaoImageJob,
+  shouldGiveUpOnMediaBlock,
   shouldGiveUpOnMissingDoubaoImages,
   shouldRetryGptImageGenerationInPage,
   shouldResubmitEmptyGptImage,
@@ -97,7 +115,7 @@ type CollectedVideo = {
   contentType: string;
   byteLength: number;
   sha256: string;
-  acquisition: "doubao_video_download";
+  acquisition: "doubao_video_download" | "gemini_video_download";
 };
 
 class RetryableJobError extends Error {}
@@ -484,6 +502,7 @@ async function monitorJob(
   let tracedDoubaoVideoControls = false;
   let resubmittedEmptyGptImage = hasResubmittedEmptyGptImage(job.id);
   let lastTraceSignature = "";
+  let mediaBlockedAt = 0;
   await traceJob(job.id, "monitor_started", {
     platform: job.platform,
     mode: job.mode,
@@ -685,6 +704,40 @@ async function monitorJob(
         await sleep(MONITOR_INTERVAL_MS);
         continue;
       }
+
+      // 目标是图片/视频，模型却只回了一段「不会有产出」的文字并结束回答
+      // （「我无法制作这类视频」「已达到请求上限」）：再等只会等到停滞或硬超时，
+      // 直接收工并把原文当失败原因带回去。上限类按可重试上报，拒绝类交人工。
+      const mediaBlock = detectMediaBlock({
+        mode: job.mode,
+        assistantExists: state.assistantExists,
+        assistantText: state.assistantText,
+        isGenerating: state.isGenerating,
+        loadedImageCount: state.loadedImages.length,
+        loadedVideoCount: state.loadedVideos.length
+      });
+      if (mediaBlock) {
+        const blockText = state.assistantText.replace(/\s+/g, " ").trim().slice(0, MEDIA_BLOCK_MAX_TEXT_LENGTH);
+        if (!mediaBlockedAt) {
+          mediaBlockedAt = Date.now();
+          await traceJob(job.id, "media_block_detected", {
+            ...monitorSnapshot(job, state),
+            blockKind: mediaBlock,
+            blockText
+          });
+        }
+        if (shouldGiveUpOnMediaBlock({ blockedAt: mediaBlockedAt, now: Date.now() })) {
+          if (mediaBlock === "capacity") {
+            await report(job.id, "failed_retryable", `平台暂时无法接单：${blockText}`);
+          } else {
+            await report(job.id, "needs_manual", `模型拒绝生成：${blockText}`);
+          }
+          return;
+        }
+        await sleep(MONITOR_INTERVAL_MS);
+        continue;
+      }
+      mediaBlockedAt = 0;
 
       if (state.hasError) {
         await traceJob(job.id, "explicit_error_detected", monitorSnapshot(job, state));
@@ -891,7 +944,9 @@ async function inspectJob(jobId: string, platform?: JobPlatform): Promise<{
   const pageImages = findLoadedImages(document);
   // 豆包视频卡片挂在「视频生成好了」那条独立的助手消息里，不一定是 scope.assistant，
   // 所以按整段任务范围找，而不是只在 assistant 元素里找。
-  const loadedVideos = platform === "doubao" ? findJobScopedVideoCards(jobId) : [];
+  const loadedVideos = platform === "doubao" || platform === "gemini"
+    ? findJobScopedVideoCards(jobId, platform)
+    : [];
   if (!assistant) {
     const text = document.body.innerText;
     const jobText = findJobScopeText(jobId);
@@ -1825,11 +1880,19 @@ async function fillPromptAndSendOriginal(prompt: string): Promise<void> {
 }
 
 async function fillPromptPasteSourcesAndSendGemini(job: Job, prompt: string): Promise<void> {
+  // 顺序有讲究：先切到视频模式（输入框会重排、模型和尺寸下拉才挂上去），
+  // 再选模型（聊天模式也有这个下拉，所以放在 if 外面），最后设尺寸。
+  if (job.mode === "video") await enterGeminiVideoMode(job);
+  await applyGeminiModel(job);
+  if (job.mode === "video") await applyGeminiVideoRatio(job);
+
   await report(job.id, "sending_prompt");
   const composer = fillPrompt(prompt);
   if (job.sourceImages.length > 0) {
     await report(job.id, "uploading");
-    await pasteGeminiSources(job, composer);
+    // 视频模式的参考图有独立入口，往输入框贴图不一定被当成参考图。
+    if (job.mode === "video") await uploadGeminiVideoReferences(job, composer);
+    else await pasteGeminiSources(job, composer);
     await waitForGeminiUploadReady(job.id);
   }
 
@@ -1839,6 +1902,300 @@ async function fillPromptPasteSourcesAndSendGemini(job: Job, prompt: string): Pr
   }
 
   throw new RetryableJobError(`Prompt was filled but no submitted Gemini user turn appeared.`);
+}
+
+// Gemini 的视频生成入口在输入框的「+」菜单里（Create video），点完输入框上会多出
+// 一个「Videos」chip 和一个尺寸下拉。这些控件都没有稳定的 class/data-*，
+// 所以统一按「输入框附近的可见按钮 + 文案」找，找不到时把实际读到的文案写进 trace，
+// 下次改选择器不用再靠猜。
+function geminiComposerScope(): ParentNode {
+  const composer = findComposer();
+  if (!(composer instanceof HTMLElement)) return document;
+  let scope: HTMLElement = composer;
+  for (let depth = 0; depth < 6; depth += 1) {
+    const parent = scope.parentElement;
+    if (!parent || parent === document.body) break;
+    scope = parent;
+  }
+  return scope;
+}
+
+function geminiScopeButtons(scope: ParentNode): HTMLElement[] {
+  return [...scope.querySelectorAll<HTMLElement>("button,[role='button'],[role='combobox']")]
+    .filter(isPresentInLayout);
+}
+
+function isGeminiVideoModeActive(): boolean {
+  const placeholder = [...document.querySelectorAll<HTMLElement>("[data-placeholder],[aria-label],[placeholder]")]
+    .filter(isPresentInLayout)
+    .some(element => isGeminiVideoPlaceholder(
+      `${element.getAttribute("data-placeholder") ?? ""} ${element.getAttribute("placeholder") ?? ""} ${element.getAttribute("aria-label") ?? ""}`
+    ));
+  if (placeholder) return true;
+  return geminiScopeButtons(geminiComposerScope()).some(button => isGeminiVideoModeChipLabel(elementLabel(button)));
+}
+
+function findGeminiToolsMenuButton(): HTMLElement | null {
+  const buttons = geminiScopeButtons(geminiComposerScope());
+  const labelled = buttons.find(button =>
+    /upload and tools|upload files|add files|tools|上传|工具|添加/i.test(elementAccessibleLabel(button)));
+  if (labelled) return labelled;
+  // 「+」按钮有时只有图标没有任何文案，退一步认输入框旁边那个开菜单的无文案按钮。
+  const iconOnly = buttons.find(button => button.getAttribute("aria-haspopup") === "menu" && !elementLabel(button));
+  return iconOnly ?? findUploadMenuButton();
+}
+
+function findGeminiOverlayItems(): HTMLElement[] {
+  const selector = [
+    "[role='menu'] [role='menuitem']",
+    "[role='menu'] [role='menuitemradio']",
+    "[role='menu'] button",
+    "[role='listbox'] [role='option']",
+    ".mat-mdc-menu-panel button",
+    ".cdk-overlay-pane [role='menuitem']"
+  ].join(",");
+  const items = [...document.querySelectorAll<HTMLElement>(selector)].filter(isPresentInLayout);
+  // 取最内层命中，避免同一项既匹配 [role=menuitem] 又匹配里面的 button 时重复。
+  return items.filter(item => !items.some(other => other !== item && item.contains(other)));
+}
+
+function closeGeminiOverlay(): void {
+  document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true }));
+}
+
+async function enterGeminiVideoMode(job: Job): Promise<void> {
+  if (isGeminiVideoModeActive()) {
+    await traceJob(job.id, "gemini_video_mode_already_active", {});
+    return;
+  }
+
+  const menuButton = findGeminiToolsMenuButton();
+  if (!menuButton) {
+    await traceJob(job.id, "gemini_video_tools_button_missing", {
+      buttons: geminiScopeButtons(geminiComposerScope()).slice(0, 24).map(button => elementAccessibleLabel(button).slice(0, 40))
+    });
+    throw new Error("Gemini 输入框上的「+」工具菜单按钮未找到。");
+  }
+  menuButton.click();
+
+  const entry = await waitUntilTruthy(() => {
+    const items = findGeminiOverlayItems();
+    return items.find(item => isGeminiVideoToolLabel(elementLabel(item))) ?? null;
+  }, 5_000);
+  if (!entry) {
+    const labels = findGeminiOverlayItems().map(item => elementLabel(item).slice(0, 40));
+    await traceJob(job.id, "gemini_video_menu_probe", { items: labels.slice(0, 24) });
+    closeGeminiOverlay();
+    throw new Error(`Gemini「+」菜单里没找到「Create video」。读到的菜单项：${labels.filter(Boolean).join("、") || "（未读到）"}`);
+  }
+  // 切模式可能带一次 SPA 跳转，先告诉 background 这次 reload 是预期的，
+  // 否则它的「意外刷新」恢复逻辑会把任务判失败（和 startGeminiNewChat 一致）。
+  await setExpectingNavigation(true);
+  try {
+    entry.click();
+    const active = await waitUntilTruthy(() => (isGeminiVideoModeActive() ? true : null), 15_000);
+    if (!active) throw new Error("点击「Create video」后未能进入 Gemini 视频生成模式。");
+  } finally {
+    await setExpectingNavigation(false);
+  }
+  await traceJob(job.id, "gemini_video_mode_entered", {});
+}
+
+// 尺寸下拉的触发按钮上写着当前生效值（例如 "Landscape (16:9)"），拿它做回读断言。
+function findGeminiVideoRatioTrigger(): HTMLElement | null {
+  const buttons = geminiScopeButtons(geminiComposerScope())
+    .filter(button => !isGeminiVideoModeChipLabel(elementLabel(button)));
+  return buttons.find(button => {
+    const label = elementLabel(button);
+    return /\d+\s*[:：]\s*\d+/.test(label) || /landscape|portrait|横屏|竖屏/i.test(label);
+  }) ?? null;
+}
+
+async function applyGeminiVideoRatio(job: Job): Promise<void> {
+  const ratio = readGeminiVideoRatio(job.metadata);
+  if (!ratio) return;
+
+  const trigger = await waitUntilTruthy(findGeminiVideoRatioTrigger, 8_000);
+  if (!trigger) {
+    await traceJob(job.id, "gemini_video_ratio_trigger_missing", {
+      buttons: geminiScopeButtons(geminiComposerScope()).slice(0, 24).map(button => elementLabel(button).slice(0, 40))
+    });
+    throw new Error("Gemini 视频尺寸下拉未找到，可能没进入视频生成模式。");
+  }
+  if (isGeminiVideoRatioApplied(elementLabel(trigger), ratio)) {
+    await traceJob(job.id, "gemini_video_ratio_already_applied", { ratio });
+    return;
+  }
+
+  trigger.click();
+  const options = await waitUntilTruthy(() => {
+    const items = findGeminiOverlayItems();
+    return items.length > 0 ? items : null;
+  }, 5_000);
+  if (!options) throw new Error("点击 Gemini 视频尺寸后下拉没有出现。");
+
+  const match = matchGeminiVideoRatioOption(options.map(elementLabel), ratio);
+  if ("errorMessage" in match) {
+    await traceJob(job.id, "gemini_video_ratio_probe", { wanted: ratio, options: options.map(item => elementLabel(item).slice(0, 40)) });
+    closeGeminiOverlay();
+    throw new Error(match.errorMessage);
+  }
+  options[match.index]!.click();
+
+  const applied = await waitUntilTruthy(() => {
+    const current = findGeminiVideoRatioTrigger();
+    return current && isGeminiVideoRatioApplied(elementLabel(current), ratio) ? current : null;
+  }, 5_000);
+  if (!applied) {
+    closeGeminiOverlay();
+    const current = findGeminiVideoRatioTrigger();
+    throw new Error(`Gemini 视频尺寸未设置成「${ratio}」，当前是「${current ? elementLabel(current) : "未知"}」。`);
+  }
+  await traceJob(job.id, "gemini_video_ratio_applied", { ratio, trigger: elementLabel(applied) });
+}
+
+// 模型下拉在输入框右下角，按钮上写着当前模型的短名（"Flash" / "Pro"），
+// 下拉项则是「3.7 Flash + 一句说明」，所以匹配走 geminiModel.ts 的系列 + 版本逻辑。
+function findGeminiModelTrigger(): HTMLElement | null {
+  return geminiScopeButtons(geminiComposerScope())
+    .find(button => isGeminiModelTriggerLabel(elementLabel(button))) ?? null;
+}
+
+async function applyGeminiModel(job: Job): Promise<void> {
+  const model = readGeminiModel(job.metadata);
+  if (!model) return;
+
+  const trigger = await waitUntilTruthy(findGeminiModelTrigger, 8_000);
+  if (!trigger) {
+    await traceJob(job.id, "gemini_model_trigger_missing", {
+      buttons: geminiScopeButtons(geminiComposerScope()).slice(0, 24).map(button => elementLabel(button).slice(0, 40))
+    });
+    throw new Error("Gemini 模型下拉未找到。");
+  }
+  if (isGeminiModelApplied(elementLabel(trigger), model)) {
+    await traceJob(job.id, "gemini_model_already_applied", { model, trigger: elementLabel(trigger) });
+    return;
+  }
+
+  trigger.click();
+  const options = await waitUntilTruthy(() => {
+    const items = findGeminiOverlayItems();
+    return items.length > 0 ? items : null;
+  }, 5_000);
+  if (!options) throw new Error("点击 Gemini 模型下拉后没有出现选项。");
+
+  const match = matchGeminiModelOption(options.map(elementLabel), model);
+  if ("errorMessage" in match) {
+    await traceJob(job.id, "gemini_model_probe", { wanted: model, options: options.map(item => elementLabel(item).slice(0, 60)) });
+    closeGeminiOverlay();
+    throw new Error(match.errorMessage);
+  }
+  options[match.index]!.click();
+
+  const applied = await waitUntilTruthy(() => {
+    const current = findGeminiModelTrigger();
+    return current && isGeminiModelApplied(elementLabel(current), model) ? current : null;
+  }, 5_000);
+  if (!applied) {
+    closeGeminiOverlay();
+    const current = findGeminiModelTrigger();
+    throw new Error(`Gemini 模型未切到「${model}」，当前是「${current ? elementLabel(current) : "未知"}」。`);
+  }
+  await traceJob(job.id, "gemini_model_applied", { model, trigger: elementLabel(applied) });
+}
+
+// 视频模式的参考图：尺寸下拉左边有个「图片+」图标按钮。
+// 不去点那个按钮本身（可能直接唤起系统文件对话框，那会把浏览器卡住），
+// 只借它/「+」菜单把 Angular 里那个隐藏 input[type=file] 渲染出来，再往里塞文件。
+function findGeminiVideoReferenceButton(): HTMLElement | null {
+  return geminiScopeButtons(geminiComposerScope())
+    .find(button => isGeminiVideoReferenceButtonLabel(elementAccessibleLabel(button))) ?? null;
+}
+
+function findGeminiImageFileInput(): HTMLInputElement | null {
+  const inputs = [...document.querySelectorAll<HTMLInputElement>('input[type="file"]')];
+  return inputs.find(input => /image|\.png|\.jpe?g|\.webp/i.test(input.accept)) ?? inputs.at(-1) ?? null;
+}
+
+// 附件数量：传上去的参考图会在输入框里变成缩略图卡片，卡片上带一个删除按钮。
+// 两种数法取大的那个，缩略图还在转圈时至少删除按钮已经在了。
+function countGeminiComposerAttachments(): number {
+  const scope = geminiComposerScope();
+  const thumbnails = [...scope.querySelectorAll<HTMLImageElement>("img")]
+    .filter(image => isPresentInLayout(image) && /^(blob:|data:)/.test(image.getAttribute("src") ?? "")).length;
+  const removals = geminiScopeButtons(scope)
+    .filter(button => /remove|delete|移除|删除/i.test(elementAccessibleLabel(button))).length;
+  return Math.max(thumbnails, removals);
+}
+
+async function waitForGeminiAttachmentCount(target: number, timeoutMs: number): Promise<number | null> {
+  return waitUntilTruthy(() => {
+    const count = countGeminiComposerAttachments();
+    return count >= target ? count : null;
+  }, timeoutMs);
+}
+
+function assignFilesToInput(input: HTMLInputElement, files: File[]): void {
+  const transfer = new DataTransfer();
+  for (const file of files) transfer.items.add(file);
+  input.files = transfer.files;
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+async function materializeGeminiFileInput(job: Job): Promise<{ input: HTMLInputElement; via: string } | null> {
+  const existing = findGeminiImageFileInput();
+  if (existing) return { input: existing, via: "existing" };
+
+  // 「+」工具菜单一展开，隐藏的 file input 就跟着渲染出来了（和聊天模式上传同一条路）。
+  for (const [via, button] of [["tools_menu", findGeminiToolsMenuButton()], ["reference_button", findGeminiVideoReferenceButton()]] as const) {
+    if (!button) continue;
+    button.click();
+    const input = await waitUntilTruthy(findGeminiImageFileInput, 2_000);
+    closeGeminiOverlay();
+    if (input) return { input, via };
+    await traceJob(job.id, "gemini_video_reference_input_missing", { via });
+  }
+  return null;
+}
+
+async function uploadGeminiVideoReferences(
+  job: Job,
+  composer: HTMLElement | HTMLTextAreaElement
+): Promise<void> {
+  const files = await Promise.all(job.sourceImages.map((source, index) => sourceToFile(source, index)));
+  const before = countGeminiComposerAttachments();
+  const target = await materializeGeminiFileInput(job);
+  if (!target) {
+    // 实在找不到 file input 就退回聊天模式那条「往输入框贴图」的老路，
+    // 别让任务直接死掉；到底认不认参考图，看后面的 accepted 数。
+    await traceJob(job.id, "gemini_video_reference_fallback_paste", {
+      buttons: geminiScopeButtons(geminiComposerScope()).slice(0, 24)
+        .map(button => elementAccessibleLabel(button).slice(0, 40))
+    });
+    await pasteGeminiSources(job, composer);
+  } else if (target.input.multiple || files.length === 1) {
+    assignFilesToInput(target.input, files);
+  } else {
+    // 单选 input 只能一张一张来，每张都等缩略图出现再传下一张。
+    for (const [index, file] of files.entries()) {
+      const input = index === 0 ? target.input : (await materializeGeminiFileInput(job))?.input;
+      if (!input) throw new Error(`Gemini 参考图第 ${index + 1} 张没找到可用的文件输入框。`);
+      assignFilesToInput(input, [file]);
+      await waitForGeminiAttachmentCount(before + index + 1, 30_000);
+    }
+  }
+
+  const accepted = (await waitForGeminiAttachmentCount(before + files.length, 30_000))
+    ?? countGeminiComposerAttachments();
+  await traceJob(job.id, "gemini_video_reference_uploaded", {
+    requested: files.length,
+    accepted: accepted - before,
+    multiple: target?.input.multiple ?? null,
+    via: target?.via ?? "paste"
+  });
+  if (accepted <= before) {
+    throw new Error(`Gemini 视频参考图没传上去（输入框里没出现缩略图，请求 ${files.length} 张）。`);
+  }
 }
 
 async function submitGeminiPromptWithFallback(
@@ -2277,20 +2634,36 @@ function findDoubaoVideoCards(root: ParentNode): HTMLElement[] {
     .filter(card => Boolean(card.querySelector("img[class*='cover-']")));
 }
 
-function findJobScopedVideoCards(jobId: string): HTMLElement[] {
+// Gemini 的视频产物是一个内嵌 <video> 的播放卡片：生成中只有进度占位，
+// 拿到 src 才算真的有产物。整卡的 class 每次发版都会变，所以从 <video> 往上找容器。
+const GEMINI_VIDEO_CONTAINER_SELECTOR = "video-player,generated-video,[data-test-id*='video'],[class*='video-player']";
+
+function findGeminiVideoCards(root: ParentNode): HTMLElement[] {
+  const cards = [...root.querySelectorAll<HTMLVideoElement>("video")]
+    .filter(video => isPresentInLayout(video))
+    .filter(video => Boolean(video.currentSrc || video.getAttribute("src") || video.querySelector("source[src]")))
+    .map(video => video.closest<HTMLElement>(GEMINI_VIDEO_CONTAINER_SELECTOR) ?? video.parentElement ?? video);
+  // 两个 <video> 落在同一个容器里时只算一张卡。
+  return cards.filter((card, index) => cards.indexOf(card) === index);
+}
+
+function findJobScopedVideoCards(jobId: string, platform: JobPlatform): HTMLElement[] {
   const scope = findJobConversationScope(jobId);
   if (!scope) return [];
 
-  return findDoubaoVideoCards(document).filter(card =>
+  const cards = platform === "gemini" ? findGeminiVideoCards(document) : findDoubaoVideoCards(document);
+  return cards.filter(card =>
     !scope.user.contains(card) &&
     isAfter(card, scope.user) && (!scope.nextUser || isBefore(card, scope.nextUser))
   );
 }
 
 async function collectVideos(cards: HTMLElement[]): Promise<CollectedVideo[]> {
+  const isGemini = activeJob?.platform === "gemini";
+  const acquisition = isGemini ? "gemini_video_download" : "doubao_video_download";
   const result: CollectedVideo[] = [];
   for (const [index, card] of cards.entries()) {
-    const blob = await downloadDoubaoVideo(card);
+    const blob = isGemini ? await downloadGeminiVideo(card) : await downloadDoubaoVideo(card);
     // 从 Downloads 读回来的文件如果扩展名认不出来会是 application/octet-stream，
     // 直接用它会让 background 按图片规则存成 .png，所以非视频类型统一按 mp4 记。
     const contentType = blob.type.startsWith("video/") ? blob.type : "video/mp4";
@@ -2300,7 +2673,7 @@ async function collectVideos(cards: HTMLElement[]): Promise<CollectedVideo[]> {
       await traceJob(activeJob.id, "video_asset_collected", {
         index: index + 1,
         sourceId,
-        acquisition: "doubao_video_download",
+        acquisition,
         byteLength: blob.size,
         contentType,
         sha256
@@ -2312,11 +2685,140 @@ async function collectVideos(cards: HTMLElement[]): Promise<CollectedVideo[]> {
       contentType,
       byteLength: blob.size,
       sha256,
-      acquisition: "doubao_video_download",
+      acquisition,
       dataUrl: await blobToDataUrl(blob)
     });
   }
   return result;
+}
+
+// Gemini 视频卡片：mp4 在 Google 的 CDN 上，<video> 的 src 可能是 https 直链，
+// 也可能是页面自己造的 blob:。直链优先（少了量坐标、可信点击这些会飘的环节），
+// 取不到才退回「点卡片上的下载入口 + chrome.downloads 捕获」这条和图片一致的老路。
+async function downloadGeminiVideo(card: HTMLElement): Promise<Blob> {
+  const direct = await fetchGeminiVideoBySource(card);
+  if (direct) return direct;
+
+  const action = await waitForGeminiVideoDownloadAction(card, 10_000);
+  await debugLog("findGeminiVideoDownloadAction", { found: Boolean(action) });
+  if (!action) {
+    if (activeJob) await traceJob(activeJob.id, "gemini_video_card_probe", describeGeminiVideoCard(card));
+    throw new Error("Gemini 视频卡片的下载入口未找到。");
+  }
+
+  await sleep(300);
+  const point = elementCenterPoint(action);
+  await debugLog("geminiVideoDownloadActionPoint", { point, action: describeNodeForTrace(action) });
+  if (!point) throw new Error("Gemini 视频下载按钮没有可点击的屏幕坐标。");
+  const blob = await requestTrustedClickDownload(point, "Gemini video download");
+  if (blob.size === 0) throw new Error("Gemini 视频下载得到的是空文件。");
+  return blob;
+}
+
+async function fetchGeminiVideoBySource(card: HTMLElement): Promise<Blob | null> {
+  const src = await waitUntilTruthy(() => {
+    const video = card.querySelector("video") ?? (card instanceof HTMLVideoElement ? card : null);
+    const candidate = video?.currentSrc || video?.getAttribute("src") ||
+      video?.querySelector("source[src]")?.getAttribute("src") || "";
+    return candidate || null;
+  }, 6_000);
+  const described = src ? describeMediaUrl(src) : null;
+  await debugLog("geminiVideoSource", { found: Boolean(src), scheme: src?.split(":")[0] ?? null, ...described });
+  if (!src) return null;
+
+  // blob: 是页面自己造的地址，同源，内容脚本能直接 fetch；
+  // 但走 MSE 播放时它指向 MediaSource 而不是 Blob，fetch 会直接抛，那就退回下载按钮。
+  const blob = src.startsWith("blob:") ? await fetchBlobUrl(src) : await fetchMediaThroughBackground(src);
+  if (!blob || blob.size === 0) return null;
+  if (activeJob) {
+    await traceJob(activeJob.id, "gemini_video_direct_source_used", { ...described, byteLength: blob.size });
+  }
+  return blob;
+}
+
+async function fetchBlobUrl(src: string): Promise<Blob | null> {
+  try {
+    const response = await fetch(src);
+    if (!response.ok) return null;
+    const blob = await response.blob();
+    return blob.type.startsWith("video/") ? blob : new Blob([await blob.arrayBuffer()], { type: "video/mp4" });
+  } catch (error) {
+    await debugLog("geminiVideoBlobFetchFailed", { error: String(error) });
+    return null;
+  }
+}
+
+// 卡片上的下载入口有两种形态：直接一个下载按钮，或者藏在「More options」菜单里。
+// 先找现成的按钮，没有就点一次卡片上的菜单按钮，再去浮层里找。
+const GEMINI_VIDEO_DOWNLOAD_LABEL_PATTERN = /download|save video|下载|保存视频/i;
+
+function geminiVideoActionScope(card: HTMLElement): HTMLElement {
+  return card.closest<HTMLElement>("message-content,model-response,response-container,[class*='response-container']") ??
+    card.parentElement ??
+    card;
+}
+
+function geminiVideoActionCandidates(card: HTMLElement): HTMLElement[] {
+  return [...geminiVideoActionScope(card).querySelectorAll<HTMLElement>("button,[role='button'],a")]
+    .filter(isPresentInLayout);
+}
+
+function findGeminiVideoDownloadAction(card: HTMLElement): HTMLElement | null {
+  const inOverlay = findGeminiOverlayItems()
+    .find(item => GEMINI_VIDEO_DOWNLOAD_LABEL_PATTERN.test(elementAccessibleLabel(item)));
+  if (inOverlay) return inOverlay;
+  return geminiVideoActionCandidates(card)
+    .find(element => GEMINI_VIDEO_DOWNLOAD_LABEL_PATTERN.test(elementAccessibleLabel(element))) ?? null;
+}
+
+function findGeminiVideoMoreButton(card: HTMLElement): HTMLElement | null {
+  return geminiVideoActionCandidates(card).find(element =>
+    /more options|more actions|更多/i.test(elementAccessibleLabel(element)) ||
+    element.getAttribute("aria-haspopup") === "menu") ?? null;
+}
+
+async function waitForGeminiVideoDownloadAction(card: HTMLElement, timeoutMs: number): Promise<HTMLElement | null> {
+  const deadline = Date.now() + timeoutMs;
+  let openedMenu = false;
+  while (Date.now() < deadline) {
+    const action = findGeminiVideoDownloadAction(card);
+    if (action) return action;
+    if (!openedMenu) {
+      const more = findGeminiVideoMoreButton(card);
+      if (more) {
+        openedMenu = true;
+        await debugLog("geminiVideoMoreButtonClicked", { button: describeNodeForTrace(more) });
+        more.click();
+      }
+    }
+    await sleep(300);
+  }
+  return findGeminiVideoDownloadAction(card);
+}
+
+// 找不到下载入口时把卡片周围的可点击元素记进 trace，改选择器时不用靠猜。
+function describeGeminiVideoCard(card: HTMLElement): Record<string, unknown> {
+  const video = card.querySelector("video") ?? (card instanceof HTMLVideoElement ? card : null);
+  return {
+    cardTag: card.tagName.toLowerCase(),
+    cardClass: elementClassName(card).slice(0, 120),
+    hasVideoElement: Boolean(video),
+    srcScheme: (video?.currentSrc || video?.getAttribute("src") || "").split(":")[0] || null,
+    clickable: geminiVideoActionCandidates(card).slice(0, 24)
+      .map(element => `${describeNodeForTrace(element)}|${elementAccessibleLabel(element).slice(0, 32)}`),
+    overlayItems: findGeminiOverlayItems().slice(0, 16).map(item => elementLabel(item).slice(0, 32))
+  };
+}
+
+async function fetchMediaThroughBackground(src: string): Promise<Blob | null> {
+  const response = await chrome.runtime.sendMessage({ type: "FETCH_MEDIA", url: src }) as
+    { ok?: boolean; contentType?: string; base64?: string; error?: string } | undefined;
+  if (!response?.ok || !response.base64) {
+    await debugLog("geminiVideoSourceFetchFailed", { error: response?.error ?? "no_response" });
+    return null;
+  }
+  const contentType = response.contentType?.startsWith("video/") ? response.contentType : "video/mp4";
+  return base64ToBlob(response.base64, contentType);
 }
 
 // mp4 本体在 ByteDance 的 CDN 上（例如 v26-default.douyin.com），地址是 hover 出来的

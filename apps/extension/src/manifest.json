@@ -23,6 +23,7 @@
     "https://chatgpt.com/*",
     "https://gemini.google.com/*",
     "https://www.doubao.com/*",
+    "https://*.usercontent.google.com/*",
     "*://*.byteimg.com/*",
     "*://*.douyin.com/*",
     "*://*.douyinvod.com/*",
