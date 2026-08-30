@@ -1,0 +1,12 @@
+{
+  "id": "doubao_video_test_001",
+  "platform": "doubao",
+  "mode": "video",
+  "prompt": "一只橘猫蹲在木质窗台上，尾巴轻轻摆动；午后阳光斜照进来，空气里有浮尘。镜头从中景缓慢推近到猫的面部特写，真实电影质感，浅景深。",
+  "metadata": {
+    "doubaoModel": "Seedance 2.5",
+    "doubaoVideoRatio": "16:9",
+    "doubaoVideoDuration": 8
+  },
+  "sourceImages": []
+}
