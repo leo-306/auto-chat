@@ -367,6 +367,54 @@ describe("local downloads read endpoint", () => {
   });
 });
 
+// artifact 上传是去水印的主入口，服务端是唯一的实现点（插件不再自己算）。
+// 这里守的是那几道闸：算法碰不该碰的图，比它漏掉一个水印贵得多。
+describe("artifact upload watermark handling", () => {
+  async function uploadOutput(store: JobStore, jobId: string, bytes: Buffer) {
+    const app = await buildServer(store, undefined, false);
+    const response = await app.inject({
+      method: "POST",
+      url: `/jobs/${jobId}/artifacts`,
+      payload: {
+        kind: "output",
+        filename: "output-01.png",
+        contentType: "image/png",
+        dataBase64: bytes.toString("base64")
+      }
+    });
+    await app.close();
+    return response;
+  }
+
+  function savedBytes(jobId: string): Buffer {
+    return fs.readFileSync(path.join(tmp, "data", "jobs", jobId, "outputs", "output-01.png"));
+  }
+
+  it("leaves a watermark-free Gemini output byte-identical", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+    store.createJob({ id: "wm_gemini", platform: "gemini", prompt: "hi", sourceImages: [], metadata: {} });
+    const bytes = solidPng(64, 64, [30, 40, 50]);
+
+    expect((await uploadOutput(store, "wm_gemini", bytes)).statusCode).toBe(200);
+
+    expect(savedBytes("wm_gemini").equals(bytes)).toBe(true);
+    store.close();
+  });
+
+  it("never touches a non-Gemini output", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+    store.createJob({ id: "wm_gpt", platform: "gpt", prompt: "hi", sourceImages: [], metadata: {} });
+    const bytes = solidPng(64, 64, [30, 40, 50]);
+
+    await uploadOutput(store, "wm_gpt", bytes);
+
+    expect(savedBytes("wm_gpt").equals(bytes)).toBe(true);
+    store.close();
+  });
+});
+
 // 手动点 Gemini 页面下载按钮那条路：文件已经在 Downloads 里了，这个端点就地覆盖。
 // 「带水印的真图会被换掉」靠 watermark.test.ts 覆盖算法本身，这里只验证端点的闸门
 // 和「不该动的时候一个字节都不写」——写坏用户 Downloads 里的原图是最贵的错。
