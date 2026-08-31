@@ -10,8 +10,10 @@ import {
   JobPlatformSchema,
   UpdateStatusSchema
 } from "auto-chat-shared";
+import type { ArtifactRequest } from "auto-chat-shared";
 import { DuplicateJobError, InvalidParentJobError, JobNotQueuedError, JobStore } from "./store.js";
 import { publicDir, readPackageVersion } from "./paths.js";
+import { canRemoveGeminiImageWatermark, removeGeminiImageWatermark } from "./watermark.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -196,8 +198,11 @@ export async function buildServer(
   app.post("/jobs/:id/artifacts", async (request, reply) => {
     const { id } = request.params as { id: string };
     const body = ArtifactSchema.parse(request.body);
+    // 去水印放在落盘之前：这样 outputs/、outputDir 副本、以及后面所有读文件的人
+    // 拿到的都是同一份干净图，store.saveArtifact 一行都不用改。
+    const artifact = await stripGeminiWatermark(id, body);
     try {
-      return store.saveArtifact(id, body);
+      return store.saveArtifact(id, artifact);
     } catch (error) {
       return reply.code(404).send({ error: String(error) });
     }
@@ -309,6 +314,42 @@ export async function buildServer(
     app.log.info({ debugLog: request.body }, "client debug log");
     return { ok: true };
   });
+
+  // Gemini 出图右下角带一枚半透明星芒 logo，落盘前在这里去掉。
+  // 整个函数的原则是「任何一步不顺就退回原图」：留着水印顶多是张带 logo 的图，
+  // 而让后处理把 artifact 上传搞失败，整条采集链路就白跑一趟了。
+  async function stripGeminiWatermark(jobId: string, artifact: ArtifactRequest): Promise<ArtifactRequest> {
+    if (artifact.kind !== "output") return artifact;
+    if (!canRemoveGeminiImageWatermark(artifact.filename, artifact.contentType)) return artifact;
+    if (!store.getConfig().removeGeminiWatermark) return artifact;
+    // job 不存在时不在这里报错，交给下面的 saveArtifact 走原来那条 404。
+    if (store.getJob(jobId)?.platform !== "gemini") return artifact;
+
+    try {
+      const removal = await removeGeminiImageWatermark(Buffer.from(artifact.dataBase64, "base64"), {
+        filename: artifact.filename,
+        contentType: artifact.contentType
+      });
+      // null = 没检测到水印，或者算法判断再动下去会伤画面，两种都保持原图。
+      if (!removal) return artifact;
+      store.appendEvent(jobId, {
+        type: "watermark_removed",
+        payload: {
+          filename: artifact.filename,
+          quality: removal.meta.qualityStatus ?? null,
+          position: removal.meta.position,
+          alphaGain: removal.meta.alphaGain
+        }
+      });
+      return { ...artifact, dataBase64: removal.buffer.toString("base64") };
+    } catch (error) {
+      app.log.warn(
+        { jobId, filename: artifact.filename, error: String(error) },
+        "gemini watermark removal failed, keeping original"
+      );
+      return artifact;
+    }
+  }
 
   return app;
 }

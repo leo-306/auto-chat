@@ -38,7 +38,10 @@ export const ConfigSchema = z.object({
   doubaoUrl: z.string().url().default("https://www.doubao.com/chat/"),
   webhookUrls: z.array(z.string().url()).default([]),
   autoRetry: z.boolean().default(false),
-  maxRetries: z.number().int().min(1).max(10).optional()
+  maxRetries: z.number().int().min(1).max(10).optional(),
+  // Gemini 出图右下角带星芒水印，默认在服务端落盘前就去掉。留开关是因为水印
+  // 一旦改版，算法可能从「去干净」退化成「误伤画面」，那时要能一键退回原图。
+  removeGeminiWatermark: z.boolean().default(true)
 }).superRefine((value, ctx) => {
   if (value.autoRetry && value.maxRetries === undefined) {
     ctx.addIssue({
@@ -61,7 +64,8 @@ export const DEFAULT_CONFIG: AppConfig = {
   geminiUrl: "https://gemini.google.com/app",
   doubaoUrl: "https://www.doubao.com/chat/",
   webhookUrls: [],
-  autoRetry: false
+  autoRetry: false,
+  removeGeminiWatermark: true
 };
 
 export const CreateJobSchema = z.object({

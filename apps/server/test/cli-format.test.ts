@@ -325,7 +325,8 @@ describe("CLI formatting", () => {
       geminiUrl: "https://gemini.google.com/app",
       doubaoUrl: "https://www.doubao.com/chat/",
       webhookUrls: [],
-      autoRetry: false
+      autoRetry: false,
+      removeGeminiWatermark: true
     });
 
     expect(output).toContain("监听环境:");
