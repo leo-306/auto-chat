@@ -115,7 +115,10 @@ export const ArtifactSchema = z.object({
   kind: z.enum(["output", "text_output", "source", "screenshot", "log"]),
   filename: z.string().min(1),
   contentType: z.string().min(1).default("application/octet-stream"),
-  dataBase64: z.string().min(1)
+  dataBase64: z.string().min(1),
+  // 插件端已经跑过去水印时置 true，服务端见到就跳过，免得同一张图算两遍。
+  // 插件没跑（旧插件、跑失败、格式不支持）时缺省，服务端照旧兜底。
+  watermarkHandled: z.boolean().optional()
 });
 
 export type ArtifactRequest = z.infer<typeof ArtifactSchema>;

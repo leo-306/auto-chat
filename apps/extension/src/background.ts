@@ -8,6 +8,7 @@ import {
   shouldRetryOpenedGptImageConversation
 } from "./homeRedirectRecovery.js";
 import type { EmptyAssistantRecoveryMode } from "./recovery.js";
+import { canRemoveGeminiImageWatermark, removeGeminiImageWatermark } from "./watermark.js";
 import {
   findVideoDuration,
   isAllowedFallbackApiUrl,
@@ -828,12 +829,12 @@ async function handleProgress(message: JobProgressMessage, tabId?: number): Prom
         });
       } else {
         for (const image of message.images ?? []) {
-          await saveArtifact(message.jobId, {
+          await saveArtifact(message.jobId, await stripGeminiWatermark(job, {
             kind: "output",
             filename: `output-${String(image.index + 1).padStart(2, "0")}.${extensionFor(image.contentType)}`,
             contentType: image.contentType,
             dataBase64: image.dataUrl.split(",")[1] ?? image.dataUrl
-          });
+          }));
         }
         await postEvent(message.jobId, {
           type: "image_order",
@@ -931,6 +932,46 @@ async function writeTrace(
 
 async function saveArtifact(jobId: string, body: ArtifactRequest): Promise<void> {
   await api(`/jobs/${jobId}/artifacts`, { method: "POST", body });
+}
+
+// Gemini 出图右下角带一枚半透明星芒 logo，在这里、图片还没离开浏览器之前去掉。
+// 原则跟服务端那份一样：任何一步不顺就原样上传。留着水印顶多是张带 logo 的图，
+// 而让后处理把 artifact 上传搞失败，整条采集链路就白跑一趟了。
+// 这里失败时不置 watermarkHandled，服务端会自己再兜一次底。
+async function stripGeminiWatermark(job: Job, artifact: ArtifactRequest): Promise<ArtifactRequest> {
+  if (job.platform !== "gemini") return artifact;
+  if (!config.removeGeminiWatermark) return artifact;
+  if (!canRemoveGeminiImageWatermark(artifact.filename, artifact.contentType)) return artifact;
+
+  try {
+    const removal = await removeGeminiImageWatermark(artifact.dataBase64, {
+      filename: artifact.filename,
+      contentType: artifact.contentType
+    });
+    // null = 没检测到水印，或者算法判断再动下去会伤画面。两种都保持原图，
+    // 但都算「这一步已经做过了」，服务端不用再重复跑一遍同样的结论。
+    if (!removal) {
+      return { ...artifact, watermarkHandled: true };
+    }
+    await postEvent(job.id, {
+      type: "watermark_removed",
+      payload: {
+        site: "extension",
+        filename: artifact.filename,
+        quality: removal.meta.qualityStatus ?? null,
+        position: removal.meta.position,
+        alphaGain: removal.meta.alphaGain,
+        elapsedMs: removal.elapsedMs
+      }
+    });
+    return { ...artifact, dataBase64: removal.dataBase64, watermarkHandled: true };
+  } catch (error) {
+    await writeTrace(job.id, "background", "watermark_removal_failed", {
+      filename: artifact.filename,
+      error: String(error)
+    });
+    return artifact;
+  }
 }
 
 async function api<T>(path: string, options: { method?: string; body?: unknown } = {}): Promise<T> {

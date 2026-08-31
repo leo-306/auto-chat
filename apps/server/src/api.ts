@@ -320,6 +320,8 @@ export async function buildServer(
   // 而让后处理把 artifact 上传搞失败，整条采集链路就白跑一趟了。
   async function stripGeminiWatermark(jobId: string, artifact: ArtifactRequest): Promise<ArtifactRequest> {
     if (artifact.kind !== "output") return artifact;
+    // 插件端已经处理过就别再算一遍：同一套算法跑第二遍只会白花 1~6 秒。
+    if (artifact.watermarkHandled) return artifact;
     if (!canRemoveGeminiImageWatermark(artifact.filename, artifact.contentType)) return artifact;
     if (!store.getConfig().removeGeminiWatermark) return artifact;
     // job 不存在时不在这里报错，交给下面的 saveArtifact 走原来那条 404。
@@ -335,6 +337,7 @@ export async function buildServer(
       store.appendEvent(jobId, {
         type: "watermark_removed",
         payload: {
+          site: "server",
           filename: artifact.filename,
           quality: removal.meta.qualityStatus ?? null,
           position: removal.meta.position,
