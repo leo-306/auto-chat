@@ -41,7 +41,7 @@ export type JobProgressMessage = {
     contentType: string;
     byteLength?: number;
     sha256?: string;
-    acquisition?: "doubao_video_download" | "gemini_video_download";
+    acquisition?: "doubao_video_download" | "doubao_video_unwatermarked" | "gemini_video_download";
   }>;
   imageOrderComplete?: boolean;
   text?: string;

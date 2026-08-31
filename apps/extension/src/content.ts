@@ -35,6 +35,15 @@ import {
   readDoubaoVideoRatio
 } from "./doubaoVideo.js";
 import {
+  DOUBAO_FALLBACK_API_MESSAGE,
+  DOUBAO_VIDEO_DIAG_MESSAGE,
+  isAllowedFallbackApiUrl,
+  matchResolvedVideo,
+  videoIdOf,
+  videoObjectIdOf
+} from "./doubaoVideoWatermark.js";
+import type { DoubaoResolvedVideo, DoubaoVideoMatch, DoubaoVideoTarget } from "./doubaoVideoWatermark.js";
+import {
   hasGptUnavailableContentMessage,
   isGptConversationPath,
   normalizeGptConversationUrl,
@@ -117,8 +126,97 @@ type CollectedVideo = {
   contentType: string;
   byteLength: number;
   sha256: string;
-  acquisition: "doubao_video_download" | "gemini_video_download";
+  acquisition: "doubao_video_download" | "doubao_video_unwatermarked" | "gemini_video_download";
 };
+
+type DownloadedVideo = { blob: Blob; acquisition: CollectedVideo["acquisition"] };
+
+// 无水印视频要用的 fallback_api 地址只有主世界看得到（在 doubaoWatermarkPage.ts 里从接口
+// 响应里收集），通过 postMessage 递到这里。一条聊天记录里往前翻会有好几条视频，所以顺序
+// 不当依据：收齐之后交给 background 全部解成元信息，用的时候按宽高/时长对号。
+const doubaoFallbackApis: string[] = [];
+const DOUBAO_FALLBACK_API_LIMIT = 64;
+// 每条候选是从哪个钩子来的（json_parse / fetch_body / fetch_request / xhr_* / inline_script），
+// 候选收不全时这是唯一能指向「哪条采集路径没生效」的线索。
+const doubaoFallbackApiSources = new Map<string, string>();
+// 每条候选在响应里归属的消息 id。DOM 卡片祖先上挂的 data-message-id 和它同源，
+// 是唯一能精确对号的钥匙，宽高/时长/objectId 都只是间接指纹。
+const doubaoFallbackApiMessageIds = new Map<string, string>();
+// 主世界看见的相关请求概况，只进日志。
+const doubaoVideoDiag: Record<string, unknown>[] = [];
+const DOUBAO_VIDEO_DIAG_LIMIT = 40;
+// background 解好的候选元信息（不含直链），手动点下载时要在同一个事件里查表，所以必须先备好。
+let doubaoResolvedVideos: DoubaoResolvedVideo[] = [];
+let doubaoResolveTimer = 0;
+
+window.addEventListener("message", event => {
+  if (event.source !== window) return;
+  const data = event.data as { type?: unknown; url?: unknown; source?: unknown; messageId?: unknown } | null;
+  if (!data) return;
+  if (data.type === DOUBAO_VIDEO_DIAG_MESSAGE) {
+    const { type: _type, ...detail } = data as Record<string, unknown>;
+    if (doubaoVideoDiag.length < DOUBAO_VIDEO_DIAG_LIMIT) doubaoVideoDiag.push(detail);
+    return;
+  }
+  if (data.type !== DOUBAO_FALLBACK_API_MESSAGE || typeof data.url !== "string") return;
+  // 主世界的消息任何页面脚本都能伪造，域名白名单必须在这边再走一遍。
+  if (!isAllowedFallbackApiUrl(data.url)) return;
+  const messageId = typeof data.messageId === "string" ? data.messageId : "";
+  if (doubaoFallbackApis.includes(data.url)) {
+    // 同一条地址被另一条采集路径又看见一次，这回认出了 message_id：只补 id，不重复解析。
+    if (!messageId || doubaoFallbackApiMessageIds.get(data.url)) return;
+    doubaoFallbackApiMessageIds.set(data.url, messageId);
+    for (const video of doubaoResolvedVideos) {
+      if (video.fallbackApi === data.url) video.messageId = messageId;
+    }
+    return;
+  }
+  doubaoFallbackApis.push(data.url);
+  doubaoFallbackApiSources.set(data.url, typeof data.source === "string" ? data.source : "");
+  if (messageId) doubaoFallbackApiMessageIds.set(data.url, messageId);
+  if (doubaoFallbackApis.length > DOUBAO_FALLBACK_API_LIMIT) {
+    const dropped = doubaoFallbackApis.shift();
+    if (dropped) {
+      doubaoFallbackApiSources.delete(dropped);
+      doubaoFallbackApiMessageIds.delete(dropped);
+    }
+  }
+  scheduleDoubaoVideoResolve();
+});
+
+// 一条消息里的候选是一串一串到的，等它们到齐再一次性解，省掉重复请求。
+function scheduleDoubaoVideoResolve(): void {
+  window.clearTimeout(doubaoResolveTimer);
+  doubaoResolveTimer = window.setTimeout(() => {
+    void resolveDoubaoVideos();
+  }, 800);
+}
+
+async function resolveDoubaoVideos(): Promise<DoubaoResolvedVideo[]> {
+  if (!isExtensionContextAlive() || doubaoFallbackApis.length === 0) return doubaoResolvedVideos;
+  try {
+    const response = await chrome.runtime.sendMessage({
+      type: "RESOLVE_DOUBAO_VIDEOS",
+      fallbackApis: [...doubaoFallbackApis]
+    }) as { ok?: boolean; videos?: DoubaoResolvedVideo[]; failures?: string[] } | undefined;
+    if (response?.ok && Array.isArray(response.videos)) {
+      // messageId 只有这一侧知道（background 拿到的只是地址列表），按 fallbackApi 补回去。
+      doubaoResolvedVideos = response.videos.map(video => ({
+        ...video,
+        messageId: doubaoFallbackApiMessageIds.get(video.fallbackApi) ?? ""
+      }));
+    }
+    void debugLog("doubaoVideosResolved", {
+      collected: doubaoFallbackApis.length,
+      resolved: doubaoResolvedVideos.length,
+      withMessageId: doubaoResolvedVideos.filter(video => video.messageId).length,
+      failures: response?.failures ?? []
+    });
+  } catch {
+    // 解不出来只是少一条无水印路径，下载仍然走页面自己那条。
+  }
+  return doubaoResolvedVideos;
+}
 
 class RetryableJobError extends Error {}
 
@@ -2758,10 +2856,12 @@ function findJobScopedVideoCards(jobId: string, platform: JobPlatform): HTMLElem
 
 async function collectVideos(cards: HTMLElement[]): Promise<CollectedVideo[]> {
   const isGemini = activeJob?.platform === "gemini";
-  const acquisition = isGemini ? "gemini_video_download" : "doubao_video_download";
   const result: CollectedVideo[] = [];
   for (const [index, card] of cards.entries()) {
-    const blob = isGemini ? await downloadGeminiVideo(card) : await downloadDoubaoVideo(card);
+    const { blob, acquisition } = isGemini
+      ? { blob: await downloadGeminiVideo(card), acquisition: "gemini_video_download" as const }
+      // fallback_api 是整页共享的，认不出哪条对应哪张卡片，所以只有一条视频时才敢走无水印。
+      : await downloadDoubaoVideo(card, cards.length === 1);
     // 从 Downloads 读回来的文件如果扩展名认不出来会是 application/octet-stream，
     // 直接用它会让 background 按图片规则存成 .png，所以非视频类型统一按 mp4 记。
     const contentType = blob.type.startsWith("video/") ? blob.type : "video/mp4";
@@ -2923,61 +3023,406 @@ async function fetchMediaThroughBackground(src: string): Promise<Blob | null> {
 // <video> 上那条带签名的临时直链：页面里 fetch 会被 CORS 拦，但 background 配了
 // host 权限就能直接取，所以优先走直链，取不到才退回「页面自己下载 + chrome.downloads
 // 捕获」这条和图片、Gemini 一致的老路。
-async function downloadDoubaoVideo(card: HTMLElement): Promise<Blob> {
-  // 先试直链：悬停后 xgplayer 会把 <video> 挂上来。它的地址是带签名的临时直链，
-  // 页面里 fetch 会被 CORS 拦，但 background 有对应 host 权限，能直接取字节。
-  // 这条路比「量坐标 → 可信点击 → 捕获 chrome.downloads」少了一堆会飘的环节，
-  // 取不到（例如 MSE 播放时 src 是 blob:）才退回点下载按钮那条路。
-  const direct = await fetchDoubaoVideoBySource(card);
-  if (direct) return direct;
+//
+// 但直链和页面下载拿到的都是带台标的转码流，所以最先试的是无水印那条：拿接口响应里
+// 收集到的 fallback_api 换个 logo_type 再问一次，服务端会给同一条视频的干净转码流。
+async function downloadDoubaoVideo(card: HTMLElement, allowUnwatermarked: boolean): Promise<DownloadedVideo> {
+  // 先悬停量一次：<video> 上的原生宽高和时长是无水印那条路对号用的依据，
+  // 顺手也就拿到了退回直链下载要用的地址，省掉后面再悬停一遍。
+  const source = await readDoubaoVideoSource(card);
+  const clean = allowUnwatermarked ? await fetchDoubaoUnwatermarkedVideo(source?.target ?? null) : null;
+  if (clean) return { blob: clean, acquisition: "doubao_video_unwatermarked" };
+
+  // 直链是带签名的临时地址，页面里 fetch 会被 CORS 拦，但 background 有对应 host 权限，
+  // 能直接取字节。这条路比「量坐标 → 可信点击 → 捕获 chrome.downloads」少了一堆会飘的
+  // 环节，取不到（例如 MSE 播放时 src 是 blob:）才退回点下载按钮那条路。
+  const direct = source ? await fetchDoubaoVideoBySource(source) : null;
+  if (direct) return { blob: direct, acquisition: "doubao_video_download" };
 
   const hoverPoint = elementCenterPoint(card);
   if (!hoverPoint) throw new Error("豆包视频卡片没有可悬停的屏幕坐标。");
   await sleep(200);
 
-  const blob = await requestHoverClickDownload(hoverPoint, async () => {
-    // 到这里真实指针已经压在卡片上，悬停条才真的出现，坐标也只有这时候量才是准的。
-    hoverDoubaoVideoCard(card);
-    const action = await waitForDoubaoVideoDownloadAction(card, 8_000);
-    await debugLog("findDoubaoVideoDownloadAction", { found: Boolean(action) });
-    if (!action) {
-      if (activeJob) {
-        await traceJob(activeJob.id, "doubao_video_card_probe", describeDoubaoVideoCard(card));
+  // 这条兜底路会真的点一次页面自己的下载按钮，得先把上面那个点击拦截关掉。
+  suppressDoubaoVideoClickIntercept = true;
+  let blob: Blob;
+  try {
+    blob = await requestHoverClickDownload(hoverPoint, async () => {
+      // 到这里真实指针已经压在卡片上，悬停条才真的出现，坐标也只有这时候量才是准的。
+      hoverDoubaoVideoCard(card);
+      const action = await waitForDoubaoVideoDownloadAction(card, 8_000);
+      await debugLog("findDoubaoVideoDownloadAction", { found: Boolean(action) });
+      if (!action) {
+        if (activeJob) {
+          await traceJob(activeJob.id, "doubao_video_card_probe", describeDoubaoVideoCard(card));
+        }
+        return null;
       }
-      return null;
-    }
-    // scrollIntoView 会把卡片挪走、把指针甩出悬停区，所以这里只量不滚。
-    const point = elementViewportPoint(action);
-    // 上一轮就是「按钮找到了、点了、但没有任何下载开始」，所以要知道这个坐标上
-    // 最顶层到底是不是这个按钮 —— 如果被播放器蒙层盖住，可信点击就打在蒙层上了。
-    const hit = point ? document.elementFromPoint(point.x, point.y) : null;
-    await debugLog("doubaoVideoDownloadActionPoint", {
-      point,
-      action: describeNodeForTrace(action),
-      hit: hit instanceof HTMLElement ? describeNodeForTrace(hit) : null,
-      hitIsAction: Boolean(hit && (action.contains(hit) || hit.contains(action)))
-    });
-    return point;
-  }, "Doubao video download");
+      // scrollIntoView 会把卡片挪走、把指针甩出悬停区，所以这里只量不滚。
+      const point = elementViewportPoint(action);
+      // 上一轮就是「按钮找到了、点了、但没有任何下载开始」，所以要知道这个坐标上
+      // 最顶层到底是不是这个按钮 —— 如果被播放器蒙层盖住，可信点击就打在蒙层上了。
+      const hit = point ? document.elementFromPoint(point.x, point.y) : null;
+      await debugLog("doubaoVideoDownloadActionPoint", {
+        point,
+        action: describeNodeForTrace(action),
+        hit: hit instanceof HTMLElement ? describeNodeForTrace(hit) : null,
+        hitIsAction: Boolean(hit && (action.contains(hit) || hit.contains(action)))
+      });
+      return point;
+    }, "Doubao video download");
+  } finally {
+    suppressDoubaoVideoClickIntercept = false;
+  }
 
   await debugLog("downloadDoubaoVideo succeeded", { size: blob.size, type: blob.type });
   if (blob.size === 0) throw new Error("豆包视频下载得到的是空文件。");
+  return { blob, acquisition: "doubao_video_download" };
+}
+
+// 无水印路径：把收集到的 fallback_api 交给 background（它有 host 权限，页面里请求会被
+// CORS 拦），由它解出每条候选的宽高/时长，再和页面上这条视频对号，只取对上的那条字节。
+// 对不上号就返回 null，退回页面自己那条带台标的下载 —— 存错视频比带水印严重得多。
+async function fetchDoubaoUnwatermarkedVideo(target: DoubaoVideoTarget | null): Promise<Blob | null> {
+  // 视频卡片渲染出来时消息响应一般已经解析过了，这里再等一小会儿只是为了容忍时序抖动。
+  const ready = await waitUntilTruthy(() => doubaoFallbackApis.length > 0 ? true : null, 3_000);
+  if (!ready) {
+    await debugLog("doubaoUnwatermarkedVideoNoCandidate", {});
+    return null;
+  }
+
+  const candidates = [...doubaoFallbackApis];
+  const response = await chrome.runtime.sendMessage({
+    type: "FETCH_DOUBAO_UNWATERMARKED_VIDEO",
+    fallbackApis: candidates,
+    ...(target ? { target } : {})
+  }) as {
+    ok?: boolean;
+    base64?: string;
+    contentType?: string;
+    host?: string;
+    path?: string;
+    width?: number;
+    height?: number;
+    bitrate?: number;
+    duration?: number;
+    matchReason?: string;
+    candidates?: unknown;
+    error?: string;
+  } | undefined;
+
+  if (!response?.ok || !response.base64) {
+    await debugLog("doubaoUnwatermarkedVideoFailed", {
+      candidates: candidates.length,
+      target,
+      resolved: response?.candidates ?? null,
+      error: response?.error ?? "no_response"
+    });
+    return null;
+  }
+
+  const contentType = response.contentType?.startsWith("video/") ? response.contentType : "video/mp4";
+  const blob = base64ToBlob(response.base64, contentType);
+  if (blob.size === 0) {
+    await debugLog("doubaoUnwatermarkedVideoEmpty", { host: response.host ?? null });
+    return null;
+  }
+  const detail = {
+    host: response.host ?? null,
+    path: response.path ?? null,
+    width: response.width ?? null,
+    height: response.height ?? null,
+    bitrate: response.bitrate ?? null,
+    duration: response.duration ?? null,
+    matchReason: response.matchReason ?? null,
+    byteLength: blob.size
+  };
+  await debugLog("doubaoUnwatermarkedVideoFetched", detail);
+  if (activeJob) await traceJob(activeJob.id, "doubao_video_unwatermarked_used", detail);
   return blob;
 }
 
-async function fetchDoubaoVideoBySource(card: HTMLElement): Promise<Blob | null> {
-  const src = await waitUntilTruthy(() => {
+// 手动点卡片上那个下载按钮时，豆包并不会再去问一次「视频信息」接口 —— 它直接存播放用的
+// 那条带台标转码流，所以没有可以在请求发出前改写的东西（试过，一次都没触发）。这里改成在
+// 捕获阶段拦下这一次点击：只有当已经解好的候选里能按指纹（对象 id / 宽高 / 时长）对上这张
+// 卡片时才接手，自己取无水印字节并用 <a download> 存盘；对不上号就原样放行给豆包，
+// 宁可带水印也不能存错视频（之前照顺序猜，存下来的是历史里另一条视频）。
+//
+// 只对视频卡片生效，图片那条路完全不经过这里。
+// 存盘刻意不用 chrome.downloads：background 在跑任务时会捕获并删掉下载项。
+let suppressDoubaoVideoClickIntercept = false;
+
+document.addEventListener("click", event => {
+  // 我们自己发的可信点击（任务里的兜底下载）不能被自己拦下来。
+  if (suppressDoubaoVideoClickIntercept) return;
+  // 插件刚重载时旧的 content script 还挂在页面上，这时候拦下来只会让点击白掉。
+  if (!isExtensionContextAlive()) return;
+  if (!(event.target instanceof Element)) return;
+  const card = event.target.closest<HTMLElement>(DOUBAO_VIDEO_CARD_SELECTOR);
+  if (!card) return;
+  const action = findDoubaoVideoDownloadAction(card);
+  if (!action || !(action.contains(event.target) || event.target.contains(action))) return;
+
+  // 决定要不要接手必须在这一个事件里同步做完，所以候选是页面早先就解好的。
+  const video = card.querySelector("video");
+  // 没悬停播放过就没有 <video>，量不到宽高时长；但卡片上的 message_id 一直都在，
+  // 单靠它也足够对号，所以这种情况仍然造一个只带 message_id 的目标。
+  const cardMessageId = doubaoCardMessageId(card);
+  const target = video
+    ? doubaoVideoTargetOf(video)
+    : cardMessageId ? { width: 0, height: 0, duration: 0, objectId: "", messageId: cardMessageId } : null;
+  const matched = matchResolvedVideo(doubaoResolvedVideos, target);
+  if (!matched) {
+    // 刷新页面后马上点下载会撞上一个空窗期：fallback_api 已经收到了，但 background 还在
+    // 逐条请求 video_info 解元信息（防抖 800ms + 并发 3 次网络往返）。这时候放行就白白
+    // 退回带水印的那条，所以先拦下来等解析完 —— 等不出结果再把点击补回去。
+    const pending = pendingDoubaoFallbackApis(target?.messageId ?? "");
+    if (pending.length > 0) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      void waitForDoubaoVideoThenSave(target, action, pending.length);
+      return;
+    }
+    // 上一轮日志只有候选指纹，看出「候选压根不是这条视频」之后就不够用了：
+    // 还要能区分是采集根本没收到这条视频的 fallback_api，还是收到了但解析失败。
+    void debugLog("doubaoManualVideoNoMatch", {
+      target,
+      videoSrc: (video?.currentSrc || video?.getAttribute("src") || "").slice(0, 160),
+      messageIds: doubaoMessageIdsOf(card),
+      collected: doubaoFallbackApis.map(url => ({
+        videoId: videoIdOf(url),
+        source: doubaoFallbackApiSources.get(url) ?? "",
+        messageId: doubaoFallbackApiMessageIds.get(url) ?? ""
+      })),
+      candidates: doubaoResolvedVideos.map(candidate => ({
+        width: candidate.width,
+        height: candidate.height,
+        duration: candidate.duration,
+        objectId: candidate.objectId,
+        objectIds: candidate.objectIds ?? [],
+        messageId: candidate.messageId ?? ""
+      })),
+      diag: doubaoVideoDiag
+    });
+    return;
+  }
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  void debugLog("doubaoManualVideoMatched", {
+    reason: matched.reason,
+    messageId: matched.video.messageId ?? "",
+    width: matched.video.width,
+    height: matched.video.height,
+    duration: matched.video.duration
+  });
+  void saveDoubaoUnwatermarkedVideo(matched, action);
+}, true);
+
+// 已经采集到、但 background 还没解出元信息的候选。卡片上没有 message_id 时一律不拦：
+// 分不清那些待解析的候选是不是这条视频，拦了反而可能存错。
+function pendingDoubaoFallbackApis(messageId: string): string[] {
+  if (!messageId) return [];
+  return doubaoFallbackApis.filter(url =>
+    doubaoFallbackApiMessageIds.get(url) === messageId &&
+    !doubaoResolvedVideos.some(video => video.fallbackApi === url));
+}
+
+// 同一条消息正在等的时候再点，只提示，不重复发起。
+const doubaoVideoWaiting = new Set<string>();
+
+async function waitForDoubaoVideoThenSave(
+  target: DoubaoVideoTarget | null,
+  action: HTMLElement,
+  pendingCount: number
+): Promise<void> {
+  const messageId = target?.messageId ?? "";
+  if (doubaoVideoWaiting.has(messageId)) {
+    showDoubaoNotice("正在取无水印视频，请稍候…", 1_600);
+    return;
+  }
+  doubaoVideoWaiting.add(messageId);
+  showDoubaoNotice("正在取无水印视频…", 0);
+  try {
+    await resolveDoubaoVideos();
+    const matched = matchResolvedVideo(doubaoResolvedVideos, target);
+    await debugLog("doubaoManualVideoWaited", {
+      messageId,
+      pendingCount,
+      reason: matched?.reason ?? "",
+      resolved: doubaoResolvedVideos.length
+    });
+    if (!matched) {
+      showDoubaoNotice("没认出这条视频，已按豆包原样下载（带水印）");
+      replayDoubaoDownloadClick(action);
+      return;
+    }
+    await saveDoubaoUnwatermarkedVideo(matched, action);
+  } catch {
+    // 极罕见：走到这儿说明存盘过程本身出错了。不补点击 —— 那一步可能已经存下无水印的了，
+    // 再放行会多出一个带水印的文件；提示一下让用户自己决定要不要再点。
+    showDoubaoNotice("取无水印出错，可以再点一次下载");
+  } finally {
+    doubaoVideoWaiting.delete(messageId);
+  }
+}
+
+// 右下角的一行提示。豆包页面自己的 CSS 会命中裸标签选择器，样式全部写成 inline 的。
+// holdMs 传 0 表示常驻，直到下一次调用把它换掉。
+let doubaoNoticeElement: HTMLDivElement | null = null;
+let doubaoNoticeTimer = 0;
+
+function showDoubaoNotice(text: string, holdMs = 2_400): void {
+  window.clearTimeout(doubaoNoticeTimer);
+  if (!doubaoNoticeElement?.isConnected) {
+    const element = document.createElement("div");
+    element.style.cssText = [
+      "position:fixed", "right:20px", "bottom:20px", "z-index:2147483647",
+      "max-width:280px", "padding:10px 14px", "border-radius:10px",
+      "background:rgba(24,24,27,.92)", "color:#fff",
+      "font:13px/1.5 -apple-system,BlinkMacSystemFont,system-ui,sans-serif",
+      "box-shadow:0 6px 24px rgba(0,0,0,.24)", "pointer-events:none"
+    ].join(";");
+    (document.body ?? document.documentElement).append(element);
+    doubaoNoticeElement = element;
+  }
+  doubaoNoticeElement.textContent = text;
+  // holdMs 传 0 是「等结果出来再换掉」，但仍留个兜底上限：中间万一抛了异常，
+  // 提示不能一直挂在页面上。
+  doubaoNoticeTimer = window.setTimeout(() => {
+    doubaoNoticeElement?.remove();
+    doubaoNoticeElement = null;
+  }, holdMs > 0 ? holdMs : 30_000);
+}
+
+// 拦下点击之后由我们负责把文件存下来。取字节失败就把点击补回去，让豆包按它自己那条路存，
+// 免得用户点了一下什么都没发生。
+async function saveDoubaoUnwatermarkedVideo(
+  matched: DoubaoVideoMatch<DoubaoResolvedVideo>,
+  action: HTMLElement
+): Promise<void> {
+  // 一条视频十几二十兆，取字节要几秒，这段时间页面上什么都不会动，必须有反馈。
+  showDoubaoNotice("正在取无水印视频…", 0);
+  const response = await chrome.runtime.sendMessage({
+    type: "FETCH_DOUBAO_UNWATERMARKED_VIDEO",
+    fallbackApis: [matched.video.fallbackApi]
+  }).catch(() => undefined) as
+    { ok?: boolean; base64?: string; contentType?: string; host?: string; path?: string; error?: string }
+    | undefined;
+
+  if (!response?.ok || !response.base64) {
+    await debugLog("doubaoManualVideoFailed", { error: response?.error ?? "no_response" });
+    showDoubaoNotice("取无水印失败，已按豆包原样下载（带水印）");
+    replayDoubaoDownloadClick(action);
+    return;
+  }
+  const contentType = response.contentType?.startsWith("video/") ? response.contentType : "video/mp4";
+  const blob = base64ToBlob(response.base64, contentType);
+  if (blob.size === 0) {
+    await debugLog("doubaoManualVideoFailed", { error: "empty_blob" });
+    showDoubaoNotice("取无水印失败，已按豆包原样下载（带水印）");
+    replayDoubaoDownloadClick(action);
+    return;
+  }
+  saveBlobAsFile(blob, `doubao-video-${fileTimestamp()}.mp4`);
+  showDoubaoNotice(`已保存无水印视频 · ${(blob.size / 1_048_576).toFixed(1)}MB`);
+  await debugLog("doubaoManualVideoSaved", {
+    host: response.host ?? null,
+    path: response.path ?? null,
+    matchReason: matched.reason,
+    byteLength: blob.size
+  });
+}
+
+function replayDoubaoDownloadClick(action: HTMLElement): void {
+  suppressDoubaoVideoClickIntercept = true;
+  try {
+    action.click();
+  } finally {
+    suppressDoubaoVideoClickIntercept = false;
+  }
+}
+
+function saveBlobAsFile(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.style.display = "none";
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  // Chrome 要把 blob 读完才落盘，立刻 revoke 会存出空文件。
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+function fileTimestamp(): string {
+  const now = new Date();
+  const pad = (value: number): string => String(value).padStart(2, "0");
+  const date = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}`;
+  return `${date}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+}
+
+type DoubaoVideoSource = { src: string; target: DoubaoVideoTarget };
+
+// 悬停后 xgplayer 会把 <video> 挂上来：地址是带签名的临时直链，元素上的原生宽高和时长
+// 就是这条视频的指纹，无水印候选靠它们对号。
+async function readDoubaoVideoSource(card: HTMLElement): Promise<DoubaoVideoSource | null> {
+  const video = await waitUntilTruthy(() => {
     // <video> 只在悬停时才挂上来，每轮都补一次合成悬停。
     hoverDoubaoVideoCard(card);
-    const video = card.querySelector("video");
-    const candidate = video?.currentSrc || video?.getAttribute("src") || "";
-    return candidate.startsWith("http") ? candidate : null;
+    const element = card.querySelector("video");
+    const candidate = element?.currentSrc || element?.getAttribute("src") || "";
+    return element && candidate.startsWith("http") ? element : null;
   }, 6_000);
-  const described = src ? describeMediaUrl(src) : null;
-  await debugLog("doubaoVideoSource", { found: Boolean(src), ...described });
-  if (!src) return null;
+  if (!video) {
+    await debugLog("doubaoVideoSource", { found: false });
+    return null;
+  }
+  // 宽高和时长要等 metadata 到位才有值，等不到就退化成只按对象 id 对号。
+  await waitUntilTruthy(() => video.videoWidth > 0 && Number.isFinite(video.duration) ? true : null, 3_000);
+  const source = { src: video.currentSrc || video.getAttribute("src") || "", target: doubaoVideoTargetOf(video) };
+  await debugLog("doubaoVideoSource", { found: true, ...describeMediaUrl(source.src), ...source.target });
+  return source;
+}
 
-  const response = await chrome.runtime.sendMessage({ type: "FETCH_MEDIA", url: src }) as
+function doubaoVideoTargetOf(video: HTMLVideoElement): DoubaoVideoTarget {
+  return {
+    width: video.videoWidth,
+    height: video.videoHeight,
+    duration: Number.isFinite(video.duration) ? video.duration : 0,
+    objectId: videoObjectIdOf(video.currentSrc || video.getAttribute("src") || ""),
+    messageId: doubaoCardMessageId(video)
+  };
+}
+
+// 卡片祖先上挂着 data-message-id，和接口响应里 fallback_api 所属的 message_id 同源。
+function doubaoCardMessageId(node: Element): string {
+  const holder = node.closest<HTMLElement>("[data-message-id],[data-msg-id]");
+  if (!holder) return "";
+  const value = holder.getAttribute("data-message-id") ?? holder.getAttribute("data-msg-id") ?? "";
+  return value.trim();
+}
+
+// 参考实现是按 message_id 把 fallback_api 归到具体消息上的。如果 DOM 上也挂着同一个 id，
+// 那它比宽高/时长这些间接指纹可靠得多 —— 先探一探卡片祖先上到底有没有这种属性。
+function doubaoMessageIdsOf(card: HTMLElement): string[] {
+  const found: string[] = [];
+  let node: HTMLElement | null = card;
+  for (let depth = 0; node && depth < 12; depth += 1) {
+    for (const attribute of node.attributes) {
+      if (!/mess?age|msg/i.test(attribute.name)) continue;
+      const value = attribute.value.trim();
+      if (!value || value.length > 40 || found.includes(`${attribute.name}=${value}`)) continue;
+      found.push(`${attribute.name}=${value}`);
+    }
+    node = node.parentElement;
+  }
+  return found.slice(0, 8);
+}
+
+async function fetchDoubaoVideoBySource(source: DoubaoVideoSource): Promise<Blob | null> {
+  const described = describeMediaUrl(source.src);
+  const response = await chrome.runtime.sendMessage({ type: "FETCH_MEDIA", url: source.src }) as
     { ok?: boolean; contentType?: string; base64?: string; error?: string } | undefined;
   if (!response?.ok || !response.base64) {
     await debugLog("doubaoVideoSourceFetchFailed", { error: response?.error ?? "no_response" });

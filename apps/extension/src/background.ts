@@ -8,6 +8,17 @@ import {
   shouldRetryOpenedGptImageConversation
 } from "./homeRedirectRecovery.js";
 import type { EmptyAssistantRecoveryMode } from "./recovery.js";
+import {
+  findVideoDuration,
+  isAllowedFallbackApiUrl,
+  matchResolvedVideo,
+  resolveUnwatermarkedVideo,
+  resolveVideoObjectIds,
+  unwatermarkedVideoInfoUrl,
+  videoIdOf,
+  videoObjectIdOf
+} from "./doubaoVideoWatermark.js";
+import type { DoubaoResolvedVideo, DoubaoVideoTarget } from "./doubaoVideoWatermark.js";
 import type {
   DebugInspectMessage,
   DebugInspectResult,
@@ -174,6 +185,12 @@ async function handleMessage(message: unknown, sender: chrome.runtime.MessageSen
     } catch (error) {
       return { ok: false, error: String(error) };
     }
+  }
+  if (isResolveDoubaoVideos(message)) {
+    return resolveDoubaoVideos(message.fallbackApis);
+  }
+  if (isFetchDoubaoUnwatermarkedVideo(message)) {
+    return fetchDoubaoUnwatermarkedVideo(message.fallbackApis, message.target ?? null);
   }
   if (isProgress(message)) {
     await handleProgress(message, sender.tab?.id);
@@ -1166,7 +1183,187 @@ function isFetchMedia(message: unknown): message is { type: "FETCH_MEDIA"; url: 
   return candidate.type === "FETCH_MEDIA" && typeof candidate.url === "string" && candidate.url.startsWith("http");
 }
 
+function isFetchDoubaoUnwatermarkedVideo(
+  message: unknown
+): message is {
+  type: "FETCH_DOUBAO_UNWATERMARKED_VIDEO";
+  fallbackApis: string[];
+  target?: DoubaoVideoTarget;
+} {
+  if (!message || typeof message !== "object") return false;
+  const candidate = message as { type?: string; fallbackApis?: unknown };
+  return candidate.type === "FETCH_DOUBAO_UNWATERMARKED_VIDEO" &&
+    Array.isArray(candidate.fallbackApis) &&
+    candidate.fallbackApis.every(url => typeof url === "string");
+}
+
+function isResolveDoubaoVideos(
+  message: unknown
+): message is { type: "RESOLVE_DOUBAO_VIDEOS"; fallbackApis: string[] } {
+  if (!message || typeof message !== "object") return false;
+  const candidate = message as { type?: string; fallbackApis?: unknown };
+  return candidate.type === "RESOLVE_DOUBAO_VIDEOS" &&
+    Array.isArray(candidate.fallbackApis) &&
+    candidate.fallbackApis.every(url => typeof url === "string");
+}
+
+// 一条 fallback_api 只解一次：手动下载那条路要在点击的瞬间就知道能不能对上号，
+// 所以页面一收集到候选就先把元信息全解出来放这儿，点下去时只查表。
+type CachedVideo = DoubaoResolvedVideo & { url: string };
+const resolvedDoubaoVideos = new Map<string, CachedVideo | null>();
+const DOUBAO_CANDIDATE_LIMIT = 24;
+const DOUBAO_RESOLVE_CONCURRENCY = 3;
+
+// 把候选解成「无水印直链 + 宽高时长」。直链只留在 background 里，返回给页面的只有对号要用的元信息。
+async function resolveDoubaoVideos(fallbackApis: string[]): Promise<unknown> {
+  const candidates = fallbackApis.filter(isAllowedFallbackApiUrl).slice(0, DOUBAO_CANDIDATE_LIMIT);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(DOUBAO_RESOLVE_CONCURRENCY, candidates.length) }, async () => {
+    while (next < candidates.length) {
+      const fallbackApi = candidates[next]!;
+      next += 1;
+      await resolveOneDoubaoVideo(fallbackApi);
+    }
+  });
+  await Promise.all(workers);
+  const videos = candidates
+    .map(fallbackApi => resolvedDoubaoVideos.get(fallbackApi))
+    .filter((video): video is CachedVideo => Boolean(video))
+    .map(({ url: _url, ...meta }) => meta);
+  // 解不出来的那些也要能看见：候选收到了但解析全挂，和候选压根没收到，是两个完全不同的病。
+  const failures = candidates.filter(fallbackApi => !resolvedDoubaoVideos.get(fallbackApi))
+    .map(fallbackApi => videoIdOf(fallbackApi) || "unknown");
+  return { ok: true, videos, candidates: candidates.length, failures };
+}
+
+// 点下载时页面会再催一次解析，很可能和防抖那次撞在一起。共享同一个进行中的 Promise，
+// 免得同一条候选被请求两遍 video_info。
+const resolvingDoubaoVideos = new Map<string, Promise<CachedVideo | null>>();
+
+async function resolveOneDoubaoVideo(fallbackApi: string): Promise<CachedVideo | null> {
+  const cached = resolvedDoubaoVideos.get(fallbackApi);
+  if (cached !== undefined) return cached;
+  const inFlight = resolvingDoubaoVideos.get(fallbackApi);
+  if (inFlight) return inFlight;
+  const task = fetchOneDoubaoVideo(fallbackApi)
+    .finally(() => resolvingDoubaoVideos.delete(fallbackApi));
+  resolvingDoubaoVideos.set(fallbackApi, task);
+  return task;
+}
+
+async function fetchOneDoubaoVideo(fallbackApi: string): Promise<CachedVideo | null> {
+  let resolved: CachedVideo | null = null;
+  try {
+    const infoResponse = await fetch(unwatermarkedVideoInfoUrl(fallbackApi), {
+      method: "GET",
+      credentials: "omit",
+      headers: { accept: "application/json,text/plain,*/*" }
+    });
+    if (infoResponse.ok) {
+      const payload = await infoResponse.json() as unknown;
+      const video = await resolveUnwatermarkedVideo(payload);
+      if (video) {
+        resolved = {
+          fallbackApi,
+          url: video.url,
+          width: video.width,
+          height: video.height,
+          bitrate: video.bitrate,
+          duration: findVideoDuration(payload),
+          objectId: videoObjectIdOf(video.url),
+          objectIds: await watermarkedObjectIds(fallbackApi)
+        };
+      }
+    }
+  } catch {
+    // 解不出来就当这条候选不存在，缓存 null 免得反复请求。
+  }
+  resolvedDoubaoVideos.set(fallbackApi, resolved);
+  return resolved;
+}
+
+// 页面 <video> 播的是带台标的转码流，它的对象 id 和无水印那档不是同一个，所以再用
+// 原样的 fallback_api（不改 logo_type）请求一次，把播放器能用的那几档 id 全收上来 ——
+// 卡片上量到的 id 一定在这里面，这才是唯一可靠的对号依据。取不到就返回空数组，
+// 让 matchResolvedVideo 退回宽高/时长那几层。
+async function watermarkedObjectIds(fallbackApi: string): Promise<string[]> {
+  try {
+    const response = await fetch(fallbackApi, {
+      method: "GET",
+      credentials: "omit",
+      headers: { accept: "application/json,text/plain,*/*" }
+    });
+    if (!response.ok) return [];
+    return await resolveVideoObjectIds(await response.json() as unknown);
+  } catch {
+    return [];
+  }
+}
+
+// 先把候选全解出来，再按宽高/时长/对象 id 挑出页面上这条视频，最后才取字节。
+// 对不上号就返回 no_match，让 content 退回页面自己的下载 —— 宁可带水印，也不能存错视频。
+async function fetchDoubaoUnwatermarkedVideo(
+  fallbackApis: string[],
+  target: DoubaoVideoTarget | null
+): Promise<unknown> {
+  const resolveResult = await resolveDoubaoVideos(fallbackApis) as { videos: DoubaoResolvedVideo[] };
+  const candidates = resolveResult.videos
+    .map(video => resolvedDoubaoVideos.get(video.fallbackApi))
+    .filter((video): video is CachedVideo => Boolean(video));
+  if (candidates.length === 0) return { ok: false, error: "no_playable_url" };
+
+  const matched = matchResolvedVideo(candidates, target);
+  if (!matched) {
+    return {
+      ok: false,
+      error: "no_match",
+      target,
+      candidates: candidates.map(video => ({
+        width: video.width,
+        height: video.height,
+        duration: video.duration,
+        objectId: video.objectId,
+        objectIds: video.objectIds ?? [],
+        videoId: new URL(video.fallbackApi).searchParams.get("video_id") ?? ""
+      }))
+    };
+  }
+
+  const video = matched.video;
+  try {
+    const mediaResponse = await fetch(video.url, { credentials: "omit" });
+    if (!mediaResponse.ok) return { ok: false, error: `media ${mediaResponse.status} ${hostOf(video.url)}` };
+    const buffer = await mediaResponse.arrayBuffer();
+    if (buffer.byteLength === 0) return { ok: false, error: "empty_body" };
+    const located = new URL(video.url);
+    return {
+      ok: true,
+      contentType: mediaResponse.headers.get("content-type") ?? "video/mp4",
+      base64: bytesToBase64(buffer),
+      host: located.host,
+      path: located.pathname.slice(0, 120),
+      width: video.width,
+      height: video.height,
+      bitrate: video.bitrate,
+      duration: video.duration,
+      matchReason: matched.reason
+    };
+  } catch (error) {
+    // 无水印直链可能落在没配 host 权限的 CDN 上，把域名带进错误里，好照着补权限。
+    return { ok: false, error: String(error) };
+  }
+}
+
+function hostOf(value: string): string {
+  try {
+    return new URL(value).host;
+  } catch {
+    return "";
+  }
+}
+
 function isTrace(message: unknown): message is JobTraceMessage {
+
   return Boolean(
     message &&
     typeof message === "object" &&
