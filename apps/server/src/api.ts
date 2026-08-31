@@ -305,6 +305,45 @@ export async function buildServer(
     }
   });
 
+  // 用户在 Gemini 页面手点「下载」拿到的是浏览器原生下载：文件直接落到
+  // Downloads，整条 job 采集链路（以及挂在 artifact 上传上的那个去水印钩子）
+  // 都碰不到它。插件监听到这类下载完成后调这里，就地把水印去掉再覆盖回去。
+  // 只覆盖不删除；算法没动过像素时一个字节都不写。
+  app.post("/local-downloads/dewatermark", async (request, reply) => {
+    const body = (request.body ?? {}) as { path?: unknown };
+    const target = typeof body.path === "string" ? body.path : "";
+    // 跟 /local-downloads/read 同一道闸：只认 Downloads 目录里的已知媒体扩展名。
+    if (!isReadableLocalDownload(target)) {
+      return reply.code(400).send({ error: "invalid_path" });
+    }
+    if (!store.getConfig().removeGeminiWatermark) return { changed: false, reason: "disabled" };
+    const resolved = path.resolve(target);
+    // 视频扩展名能过上面那道闸，但去水印目前只做图片，这里筛掉。
+    if (!canRemoveGeminiImageWatermark(resolved)) return { changed: false, reason: "unsupported_type" };
+
+    try {
+      const removal = await removeGeminiImageWatermark(await fs.promises.readFile(resolved), {
+        filename: resolved
+      });
+      if (!removal) return { changed: false, reason: "no_watermark" };
+      // 先写同目录临时文件再 rename：中途出错也不会把用户的图留成半截。
+      const temp = `${resolved}.dewatermark.tmp`;
+      await fs.promises.writeFile(temp, removal.buffer);
+      await fs.promises.rename(temp, resolved);
+      const info = {
+        path: resolved,
+        quality: removal.meta.qualityStatus ?? null,
+        position: removal.meta.position,
+        bytes: removal.buffer.length
+      };
+      app.log.info(info, "manual download dewatermarked");
+      return { changed: true, ...info };
+    } catch (error) {
+      app.log.warn({ path: resolved, error: String(error) }, "manual download dewatermark failed");
+      return reply.code(500).send({ error: String(error) });
+    }
+  });
+
   // Temporary diagnostic endpoint: content.ts has no way to surface what
   // actually happened during the GPT download-capture flow (its
   // console.log output only reaches the ChatGPT tab's own DevTools, which

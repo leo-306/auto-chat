@@ -1,11 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildServer, isReadableLocalDownload } from "../src/api.js";
 import { JobStore } from "../src/store.js";
+import { PNG } from "pngjs";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 let tmp = "";
+
+function solidPng(width: number, height: number, rgb: [number, number, number]): Buffer {
+  const png = new PNG({ width, height });
+  for (let i = 0; i < width * height; i++) {
+    png.data[i * 4] = rgb[0];
+    png.data[i * 4 + 1] = rgb[1];
+    png.data[i * 4 + 2] = rgb[2];
+    png.data[i * 4 + 3] = 255;
+  }
+  return PNG.sync.write(png);
+}
 
 beforeEach(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "auto-chat-api-"));
@@ -351,6 +363,94 @@ describe("local downloads read endpoint", () => {
 
     expect(response.statusCode).toBe(400);
     await app.close();
+    store.close();
+  });
+});
+
+// 手动点 Gemini 页面下载按钮那条路：文件已经在 Downloads 里了，这个端点就地覆盖。
+// 「带水印的真图会被换掉」靠 watermark.test.ts 覆盖算法本身，这里只验证端点的闸门
+// 和「不该动的时候一个字节都不写」——写坏用户 Downloads 里的原图是最贵的错。
+describe("manual download dewatermark API", () => {
+  const downloadsDir = path.join(os.homedir(), "Downloads");
+  const testDownloadPaths: string[] = [];
+
+  afterEach(() => {
+    for (const filePath of testDownloadPaths.splice(0)) {
+      fs.rmSync(filePath, { force: true });
+    }
+  });
+
+  async function dewatermark(store: JobStore, target: string) {
+    const app = await buildServer(store, undefined, false);
+    const response = await app.inject({
+      method: "POST",
+      url: "/local-downloads/dewatermark",
+      payload: { path: target }
+    });
+    await app.close();
+    return response;
+  }
+
+  function writeDownload(extension: string, bytes: Buffer): string {
+    fs.mkdirSync(downloadsDir, { recursive: true });
+    const filePath = path.join(downloadsDir, `auto-chat-test-${Date.now()}-${Math.random().toString(36).slice(2)}.${extension}`);
+    testDownloadPaths.push(filePath);
+    fs.writeFileSync(filePath, bytes);
+    return filePath;
+  }
+
+  it("leaves a watermark-free image byte-identical", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+    const target = writeDownload("png", solidPng(64, 64, [10, 20, 30]));
+    const before = fs.readFileSync(target);
+
+    const response = await dewatermark(store, target);
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ changed: false, reason: "no_watermark" });
+    expect(fs.readFileSync(target).equals(before)).toBe(true);
+    store.close();
+  });
+
+  it("does nothing when removeGeminiWatermark is off", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+    store.updateConfig({ removeGeminiWatermark: false });
+    const target = writeDownload("png", solidPng(64, 64, [10, 20, 30]));
+    const before = fs.readFileSync(target);
+
+    const response = await dewatermark(store, target);
+
+    expect(response.json()).toMatchObject({ changed: false, reason: "disabled" });
+    expect(fs.readFileSync(target).equals(before)).toBe(true);
+    store.close();
+  });
+
+  // 视频扩展名过得了 Downloads 那道闸（读回豆包视频要用），但去水印只做图片。
+  it("skips a video that passes the Downloads path check", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+    const target = writeDownload("mp4", Buffer.from("not really a video"));
+
+    const response = await dewatermark(store, target);
+
+    expect(response.json()).toMatchObject({ changed: false, reason: "unsupported_type" });
+    expect(fs.existsSync(target)).toBe(true);
+    store.close();
+  });
+
+  it("rejects a path outside the Downloads folder", async () => {
+    const store = new JobStore(tmp);
+    await store.init();
+    const outsidePath = path.join(tmp, "not-a-download.png");
+    fs.writeFileSync(outsidePath, solidPng(8, 8, [1, 2, 3]));
+    const before = fs.readFileSync(outsidePath);
+
+    const response = await dewatermark(store, outsidePath);
+
+    expect(response.statusCode).toBe(400);
+    expect(fs.readFileSync(outsidePath).equals(before)).toBe(true);
     store.close();
   });
 });

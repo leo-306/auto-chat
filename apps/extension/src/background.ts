@@ -1036,6 +1036,41 @@ chrome.downloads.onChanged.addListener(delta => {
   }
 });
 
+// 用户在 Gemini 页面手点「下载」拿到的是浏览器原生下载，文件直接落到 Downloads，
+// 不经过 job 的 artifact 上传，所以挂在那儿的去水印钩子碰不到它。这里补上：等下载
+// 落盘后让服务端就地覆盖成去掉水印的版本。代价是文件会先带水印落盘、1~2 秒后被换掉，
+// 秒开的话看到的还是带水印那一版。
+//
+// 单独注册一个 listener 而不是改上面那个，是为了不把 job 链路的抓取逻辑搅进来。
+const GEMINI_MANUAL_DOWNLOAD_PREFIX = "Gemini_Generated_Image_";
+
+chrome.downloads.onChanged.addListener(delta => {
+  // job 链路抓的那次下载归 pendingCapture 管（它会把文件读走再删掉），别插一脚。
+  if (pendingCapture?.downloadId === delta.id) return;
+  if (delta.state?.current !== "complete") return;
+  void dewatermarkManualDownload(delta.id);
+});
+
+async function dewatermarkManualDownload(downloadId: number): Promise<void> {
+  if (!config.removeGeminiWatermark) return;
+  try {
+    const [item] = await chrome.downloads.search({ id: downloadId });
+    if (!item?.filename) return;
+    // 用文件名前缀筛，而不是筛 URL：Gemini 的图片地址是一次性签名的，
+    // 而下载按钮给的文件名固定是这个前缀（Chrome 撞名只会追加 " (1)"，前缀不变）。
+    const basename = item.filename.split(/[/\\]/).pop() ?? "";
+    if (!basename.startsWith(GEMINI_MANUAL_DOWNLOAD_PREFIX)) return;
+    const result = await api<{ changed: boolean; reason?: string }>("/local-downloads/dewatermark", {
+      method: "POST",
+      body: { path: item.filename }
+    });
+    console.log("[auto-chat] 手动下载去水印", basename, result);
+  } catch (error) {
+    // 手动下载不属于任何 job，没有 trace 可写，失败就留在这儿的日志里。
+    console.warn("[auto-chat] 手动下载去水印失败", String(error));
+  }
+}
+
 chrome.runtime.onConnect.addListener(port => {
   if (port.name !== "image-download-capture") return;
   const tabId = port.sender?.tab?.id;
