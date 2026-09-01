@@ -18,7 +18,7 @@ import {
   videoIdOf,
   videoObjectIdOf
 } from "./doubaoVideoWatermark.js";
-import type { DoubaoResolvedVideo, DoubaoVideoTarget } from "./doubaoVideoWatermark.js";
+import type { DoubaoResolvedVideo } from "./doubaoVideoWatermark.js";
 import type {
   DebugInspectMessage,
   DebugInspectResult,
@@ -190,7 +190,7 @@ async function handleMessage(message: unknown, sender: chrome.runtime.MessageSen
     return resolveDoubaoVideos(message.fallbackApis);
   }
   if (isFetchDoubaoUnwatermarkedVideo(message)) {
-    return fetchDoubaoUnwatermarkedVideo(message.fallbackApis, message.target ?? null);
+    return fetchDoubaoUnwatermarkedVideo(message.fallbackApis);
   }
   if (isProgress(message)) {
     await handleProgress(message, sender.tab?.id);
@@ -1223,7 +1223,6 @@ function isFetchDoubaoUnwatermarkedVideo(
 ): message is {
   type: "FETCH_DOUBAO_UNWATERMARKED_VIDEO";
   fallbackApis: string[];
-  target?: DoubaoVideoTarget;
 } {
   if (!message || typeof message !== "object") return false;
   const candidate = message as { type?: string; fallbackApis?: unknown };
@@ -1335,24 +1334,23 @@ async function watermarkedObjectIds(fallbackApi: string): Promise<string[]> {
   }
 }
 
-// 先把候选全解出来，再按宽高/时长/对象 id 挑出页面上这条视频，最后才取字节。
-// 对不上号就返回 no_match，让 content 退回页面自己的下载 —— 宁可带水印，也不能存错视频。
-async function fetchDoubaoUnwatermarkedVideo(
-  fallbackApis: string[],
-  target: DoubaoVideoTarget | null
-): Promise<unknown> {
+// 按 content 挑好的 fallback_api 取无水印字节。**对号不在这里做**：唯一可靠的钥匙
+// message_id 只有 content 那边知道（这里收到的只是地址列表），以前在这儿判反而让
+// message_id 那层永远落空，只能靠会轮换的 objectId 去猜。这里只留最后一道保险 ——
+// 传进来的候选必须全指向同一条视频（matchResolvedVideo 不给 target 时就是这个语义），
+// 认不出唯一一条就报 no_match，让 content 退回页面自己的下载：宁可带水印，也不能存错视频。
+async function fetchDoubaoUnwatermarkedVideo(fallbackApis: string[]): Promise<unknown> {
   const resolveResult = await resolveDoubaoVideos(fallbackApis) as { videos: DoubaoResolvedVideo[] };
   const candidates = resolveResult.videos
     .map(video => resolvedDoubaoVideos.get(video.fallbackApi))
     .filter((video): video is CachedVideo => Boolean(video));
   if (candidates.length === 0) return { ok: false, error: "no_playable_url" };
 
-  const matched = matchResolvedVideo(candidates, target);
+  const matched = matchResolvedVideo(candidates, null);
   if (!matched) {
     return {
       ok: false,
       error: "no_match",
-      target,
       candidates: candidates.map(video => ({
         width: video.width,
         height: video.height,

@@ -1920,7 +1920,14 @@ async function setDoubaoVideoDuration(seconds: number): Promise<void> {
     .querySelector<HTMLElement>(DOUBAO_VIDEO_PARAMS_PANEL_SELECTOR)
     ?.querySelector<HTMLElement>("[data-slot='slider-thumb'][role='slider']") ?? null;
 
-  if (!readThumb()) throw new Error("豆包视频时长滑块未找到。");
+  // 面板的外壳先挂上、里面的 slider 晚一拍才渲染是常事（2026-09-01 一单就死在这儿：
+  // 从面板出现到抛错不到 1s，第一发查不到就判了死）。所以这里等一等，并把面板里到底
+  // 有什么写进错误信息 —— 好区分「渲染慢」和「这个模型压根没有时长这一项」。
+  if (!(await waitUntilTruthy(readThumb, 3_000))) {
+    const panelText = document.querySelector<HTMLElement>(DOUBAO_VIDEO_PARAMS_PANEL_SELECTOR)?.innerText ?? "";
+    const summary = panelText.replace(/\s+/g, " ").trim();
+    throw new Error(`豆包视频时长滑块未找到（面板里是「${summary || "空"}」）。`);
+  }
 
   // 刚切完模型时滑块可能还挂着上一个模型的量程，所以给它一点时间涨上来。
   const sliderMax = await waitUntilTruthy(() => {
@@ -3120,9 +3127,14 @@ async function downloadDoubaoVideo(card: HTMLElement, allowUnwatermarked: boolea
   return { blob, acquisition: "doubao_video_download" };
 }
 
-// 无水印路径：把收集到的 fallback_api 交给 background（它有 host 权限，页面里请求会被
-// CORS 拦），由它解出每条候选的宽高/时长，再和页面上这条视频对号，只取对上的那条字节。
-// 对不上号就返回 null，退回页面自己那条带台标的下载 —— 存错视频比带水印严重得多。
+// 无水印路径：先在 content 这一侧对号，再把选中的那一条 fallback_api 交给 background
+// 取字节（它有 host 权限，页面里请求会被 CORS 拦）。对不上号就返回 null，退回页面自己
+// 那条带台标的下载 —— 存错视频比带水印严重得多。
+//
+// 对号刻意留在这一侧：message_id 只有这边知道（background 收到的只是地址列表），而它是
+// 唯一可靠的钥匙。之前把整串候选连 target 一起丢给 background 判，message_id 那一层必然
+// 落空，只剩会随刷新轮换的 objectId 和常常量不到的宽高时长去猜，一页里有好几条视频时
+// 就直接判成对不上号、白白退回带水印的那条。
 async function fetchDoubaoUnwatermarkedVideo(target: DoubaoVideoTarget | null): Promise<Blob | null> {
   // 视频卡片渲染出来时消息响应一般已经解析过了，这里再等一小会儿只是为了容忍时序抖动。
   const ready = await waitUntilTruthy(() => doubaoFallbackApis.length > 0 ? true : null, 3_000);
@@ -3131,11 +3143,20 @@ async function fetchDoubaoUnwatermarkedVideo(target: DoubaoVideoTarget | null): 
     return null;
   }
 
-  const candidates = [...doubaoFallbackApis];
+  const matched = await matchDoubaoVideoWhileCollecting(target, 6_000);
+  if (!matched) {
+    await debugLog("doubaoUnwatermarkedVideoFailed", {
+      candidates: doubaoFallbackApis.length,
+      target,
+      resolved: doubaoResolvedVideos.map(describeResolvedVideo),
+      error: "no_match"
+    });
+    return null;
+  }
+
   const response = await chrome.runtime.sendMessage({
     type: "FETCH_DOUBAO_UNWATERMARKED_VIDEO",
-    fallbackApis: candidates,
-    ...(target ? { target } : {})
+    fallbackApis: [matched.video.fallbackApi]
   }) as {
     ok?: boolean;
     base64?: string;
@@ -3146,16 +3167,14 @@ async function fetchDoubaoUnwatermarkedVideo(target: DoubaoVideoTarget | null): 
     height?: number;
     bitrate?: number;
     duration?: number;
-    matchReason?: string;
-    candidates?: unknown;
     error?: string;
   } | undefined;
 
   if (!response?.ok || !response.base64) {
     await debugLog("doubaoUnwatermarkedVideoFailed", {
-      candidates: candidates.length,
+      candidates: doubaoFallbackApis.length,
       target,
-      resolved: response?.candidates ?? null,
+      matchReason: matched.reason,
       error: response?.error ?? "no_response"
     });
     return null;
@@ -3174,12 +3193,47 @@ async function fetchDoubaoUnwatermarkedVideo(target: DoubaoVideoTarget | null): 
     height: response.height ?? null,
     bitrate: response.bitrate ?? null,
     duration: response.duration ?? null,
-    matchReason: response.matchReason ?? null,
+    // background 那边只收到一条候选，它报的原因永远是 only_candidate；取证要看的是
+    // 这一侧真正靠什么对上的号（理想是 message_id）。
+    matchReason: matched.reason,
+    messageId: matched.video.messageId ?? "",
     byteLength: blob.size
   };
   await debugLog("doubaoUnwatermarkedVideoFetched", detail);
   if (activeJob) await traceJob(activeJob.id, "doubao_video_unwatermarked_used", detail);
   return blob;
+}
+
+// 视频刚生成时候选是一条条到的，这条视频自己那条可能还在路上，所以对不上号先等新候选
+// 再试，别急着退回带水印的那条。候选没变多就不重复解（background 有缓存，但省掉往返）。
+async function matchDoubaoVideoWhileCollecting(
+  target: DoubaoVideoTarget | null,
+  timeoutMs: number
+): Promise<DoubaoVideoMatch<DoubaoResolvedVideo> | null> {
+  const deadline = Date.now() + timeoutMs;
+  let lastSeen = -1;
+  for (;;) {
+    if (doubaoFallbackApis.length !== lastSeen) {
+      lastSeen = doubaoFallbackApis.length;
+      const matched = matchResolvedVideo(await resolveDoubaoVideos(), target);
+      if (matched) return matched;
+    }
+    if (Date.now() >= deadline) return null;
+    await sleep(300);
+  }
+}
+
+// 候选进日志时的固定形状：对不上号时全靠这几个字段判断是「候选压根不是这条视频」
+// 还是「指纹没量到」，messageId 尤其关键 —— 它是唯一同源的钥匙。
+function describeResolvedVideo(video: DoubaoResolvedVideo): Record<string, unknown> {
+  return {
+    width: video.width,
+    height: video.height,
+    duration: video.duration,
+    objectId: video.objectId,
+    objectIds: video.objectIds ?? [],
+    messageId: video.messageId ?? ""
+  };
 }
 
 // 手动点卡片上那个下载按钮时，豆包并不会再去问一次「视频信息」接口 —— 它直接存播放用的
@@ -3234,14 +3288,7 @@ document.addEventListener("click", event => {
         source: doubaoFallbackApiSources.get(url) ?? "",
         messageId: doubaoFallbackApiMessageIds.get(url) ?? ""
       })),
-      candidates: doubaoResolvedVideos.map(candidate => ({
-        width: candidate.width,
-        height: candidate.height,
-        duration: candidate.duration,
-        objectId: candidate.objectId,
-        objectIds: candidate.objectIds ?? [],
-        messageId: candidate.messageId ?? ""
-      })),
+      candidates: doubaoResolvedVideos.map(describeResolvedVideo),
       diag: doubaoVideoDiag
     });
     return;
@@ -3418,11 +3465,49 @@ async function readDoubaoVideoSource(card: HTMLElement): Promise<DoubaoVideoSour
     await debugLog("doubaoVideoSource", { found: false });
     return null;
   }
-  // 宽高和时长要等 metadata 到位才有值，等不到就退化成只按对象 id 对号。
+  // 宽高和时长要等 metadata 到位才有值。页面这个 <video> 由 xgplayer 管着，不播的时候
+  // 常常一直停在 readyState 0（上一轮就是这样：宽高时长全是 0，间接指纹整条废掉）。
   await waitUntilTruthy(() => video.videoWidth > 0 && Number.isFinite(video.duration) ? true : null, 3_000);
-  const source = { src: video.currentSrc || video.getAttribute("src") || "", target: doubaoVideoTargetOf(video) };
+  const src = video.currentSrc || video.getAttribute("src") || "";
+  const target = doubaoVideoTargetOf(video);
+  // 页面那个元素量不到就另开一个离屏元素读同一条直链 —— 不碰它自己（对它 load() 会打断
+  // 播放器）。时长是 message_id 之外最靠得住的指纹，objectId 每次刷新还会轮换。
+  if (!(target.width > 0) || !(target.duration > 0)) {
+    const probed = await probeVideoMetadata(src, 6_000);
+    await debugLog("doubaoVideoMetadataProbed", { ...probed, probed: Boolean(probed) });
+    if (probed) {
+      target.width = target.width || probed.width;
+      target.height = target.height || probed.height;
+      target.duration = target.duration || probed.duration;
+    }
+  }
+  const source = { src, target };
   await debugLog("doubaoVideoSource", { found: true, ...describeMediaUrl(source.src), ...source.target });
   return source;
+}
+
+// 离屏读一条视频直链的原生宽高和时长。preload=metadata 只会取文件头（Range 请求），
+// 拿到就立刻断开，不留下在后台继续缓冲的元素。不设 crossOrigin：媒体元素加载跨域视频
+// 不需要 CORS，宽高和时长照样读得到（只有往 canvas 上画才会被拦）。
+async function probeVideoMetadata(
+  src: string,
+  timeoutMs: number
+): Promise<{ width: number; height: number; duration: number } | null> {
+  if (!src.startsWith("http")) return null;
+  const probe = document.createElement("video");
+  probe.preload = "metadata";
+  probe.muted = true;
+  probe.src = src;
+  try {
+    const ready = await waitUntilTruthy(
+      () => probe.videoWidth > 0 && Number.isFinite(probe.duration) && probe.duration > 0 ? true : null,
+      timeoutMs);
+    if (!ready) return null;
+    return { width: probe.videoWidth, height: probe.videoHeight, duration: probe.duration };
+  } finally {
+    probe.removeAttribute("src");
+    probe.load();
+  }
 }
 
 function doubaoVideoTargetOf(video: HTMLVideoElement): DoubaoVideoTarget {

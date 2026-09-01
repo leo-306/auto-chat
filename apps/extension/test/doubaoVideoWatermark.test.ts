@@ -226,6 +226,40 @@ describe("把候选和页面上那条视频对号", () => {
     expect(matchResolvedVideo([tagged, cat], target)).toEqual({ video: tagged, reason: "duration" });
   });
 
+  // 2026-09-01 的线上现场：一页里 4 条候选（历史几条 + 这次生成的 15s），页面那个 <video>
+  // 一直停在 readyState 0 所以宽高时长全量成 0，直链里那段对象 id 又轮换成了候选里没有的值。
+  // 这时候唯一能对号的就只剩 message_id —— 而当初对号是在 background 做的，那边收到的只是
+  // 地址列表、候选上没有 messageId，于是整条无水印路径白白退回了带台标的下载。
+  it("只剩 message_id 可用时照样对得上；候选丢了 messageId 就必须判对不上号", () => {
+    const history = [
+      video({ fallbackApi: "h1", objectId: "1".repeat(32), duration: 5.05, messageId: "54180000000000001" }),
+      video({
+        fallbackApi: "h2", objectId: "2".repeat(32), width: 1280, height: 720, duration: 4.05,
+        messageId: "54180000000000002"
+      }),
+      video({
+        fallbackApi: "h3", objectId: "3".repeat(32), width: 1280, height: 720, duration: 4.05,
+        messageId: "54180000000000003"
+      })
+    ];
+    const fresh = video({
+      fallbackApi: "fresh", objectId: "4".repeat(32), width: 1280, height: 720, duration: 15.042,
+      messageId: "54180828195680002"
+    });
+    const target = {
+      width: 0,
+      height: 0,
+      duration: 0,
+      objectId: "ccb8f94d3ff0773a57e6163edaed2885",
+      messageId: "54180828195680002"
+    };
+    expect(matchResolvedVideo([...history, fresh], target)).toEqual({ video: fresh, reason: "message_id" });
+
+    // 把 messageId 抹掉就是 background 那侧看到的样子：同一个现场只能判 no_match。
+    const anonymous = [...history, fresh].map(({ messageId: _messageId, ...rest }) => rest);
+    expect(matchResolvedVideo(anonymous, target)).toBeNull();
+  });
+
   it("对象 id 对不上时按宽高，再不行按时长", () => {
     const bySize = matchResolvedVideo([cat, beach], { width: 720, height: 1280, duration: 0, objectId: "" });
     expect(bySize).toEqual({ video: beach, reason: "size" });
