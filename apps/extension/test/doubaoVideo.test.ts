@@ -4,8 +4,6 @@ import {
   DOUBAO_VIDEO_MIN_DURATION_SECONDS,
   DOUBAO_VIDEO_RATIOS,
   clampDurationSeconds,
-  doubaoVideoSliderSeconds,
-  doubaoVideoSliderValue,
   isDoubaoAttachButtonLabel,
   isDoubaoAttachControlKey,
   isDoubaoVideoConfirmLabel,
@@ -38,19 +36,11 @@ describe("readDoubaoVideoDurationSeconds", () => {
   });
 });
 
-describe("滑块与秒数换算", () => {
-  it("aria-valuenow 0 对应 4s，11 对应 15s", () => {
-    expect(doubaoVideoSliderValue(4)).toBe(0);
-    expect(doubaoVideoSliderValue(15)).toBe(11);
-    expect(doubaoVideoSliderValue(10)).toBe(6);
-    expect(doubaoVideoSliderSeconds(0)).toBe(4);
-    expect(doubaoVideoSliderSeconds(11)).toBe(15);
-  });
-
-  it("越界秒数先夹再换算", () => {
-    expect(doubaoVideoSliderValue(1)).toBe(0);
-    expect(doubaoVideoSliderValue(60)).toBe(11);
+describe("clampDurationSeconds", () => {
+  it("四舍五入并夹在 4~15 秒之间", () => {
     expect(clampDurationSeconds(7.4)).toBe(7);
+    expect(clampDurationSeconds(1)).toBe(DOUBAO_VIDEO_MIN_DURATION_SECONDS);
+    expect(clampDurationSeconds(60)).toBe(DOUBAO_VIDEO_MAX_DURATION_SECONDS);
   });
 });
 

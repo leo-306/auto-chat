@@ -12,8 +12,9 @@ export const DOUBAO_VIDEO_MODELS = [
 
 export const DOUBAO_VIDEO_RATIOS = ["自动", "3:4", "4:3", "9:16", "16:9", "1:1", "21:9"] as const;
 
-// 时长是一个 Radix slider，aria-valuemin=0 / aria-valuemax=11，
-// 面板两端标着 4s 与 15s，即「秒数 = aria-valuenow + 4」（2026-08 线上实测）。
+// 时长是一个 Radix slider，面板两端标着 4s 与 15s，但 15s 只是控件上限：
+// 每个模型能选到多长要看豆包自己的回弹（Seedance 2.0 Fast / Mini 只到 10s，2026-09 实测），
+// 所以这里只做请求值的兜底裁剪，真正生效的时长由 content.ts 从触发按钮回读。
 export const DOUBAO_VIDEO_MIN_DURATION_SECONDS = 4;
 export const DOUBAO_VIDEO_MAX_DURATION_SECONDS = 15;
 
@@ -39,14 +40,6 @@ export function clampDurationSeconds(seconds: number): number {
   if (rounded < DOUBAO_VIDEO_MIN_DURATION_SECONDS) return DOUBAO_VIDEO_MIN_DURATION_SECONDS;
   if (rounded > DOUBAO_VIDEO_MAX_DURATION_SECONDS) return DOUBAO_VIDEO_MAX_DURATION_SECONDS;
   return rounded;
-}
-
-export function doubaoVideoSliderValue(seconds: number): number {
-  return clampDurationSeconds(seconds) - DOUBAO_VIDEO_MIN_DURATION_SECONDS;
-}
-
-export function doubaoVideoSliderSeconds(sliderValue: number): number {
-  return sliderValue + DOUBAO_VIDEO_MIN_DURATION_SECONDS;
 }
 
 export type DoubaoVideoRatioMatch = { index: number } | { errorMessage: string };
