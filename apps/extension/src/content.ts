@@ -24,7 +24,7 @@ import {
   readDoubaoModel
 } from "./doubaoModel.js";
 import {
-  clampDurationSeconds,
+  DOUBAO_VIDEO_MAX_DURATION_SECONDS,
   DOUBAO_VIDEO_MIN_DURATION_SECONDS,
   isDoubaoAttachButtonLabel,
   isDoubaoAttachControlKey,
@@ -1876,7 +1876,7 @@ async function applyDoubaoVideoParams(job: Job): Promise<void> {
 
   try {
     if (ratio) await selectDoubaoVideoRatio(panel, ratio);
-    if (seconds !== undefined) await setDoubaoVideoDuration(panel, seconds);
+    if (seconds !== undefined) await setDoubaoVideoDuration(seconds);
   } catch (error) {
     closeDoubaoDropdown();
     throw error;
@@ -1910,36 +1910,52 @@ async function selectDoubaoVideoRatio(panel: HTMLElement, ratio: string): Promis
 }
 
 // 时长 slider 用键盘驱动最稳：拖拽要算像素，而 ArrowLeft/ArrowRight 每次正好动 1 格。
-// 面板打开时 actionbar 仍保留旧值，所以调节过程中读滑块自身的 aria-valuenow；
-// 面板关闭后再由调用方读取 actionbar，确认参数确实提交给豆包。超出当前模型上限时，
-// 豆包会在关闭面板后回弹到可用值。
-async function setDoubaoVideoDuration(panel: HTMLElement, seconds: number): Promise<void> {
-  const thumb = panel.querySelector<HTMLElement>("[data-slot='slider-thumb'][role='slider']");
-  if (!thumb) throw new Error("豆包视频时长滑块未找到。");
+// 起点固定 4s、每格 1s，但终点跟着模型变（2.0 家族 15s，Seedance 2.5 30s），
+// 所以上限以滑块自己的 aria-valuemax 为准。切模型会重建整个面板，旧的 thumb 引用
+// 一脱离文档按键就再也不生效（只会看到「卡在某个秒数」），因此每轮都重新取节点。
+// 面板打开时 actionbar 会同步更新，但真正的提交结果仍由调用方回读触发按钮确认。
+async function setDoubaoVideoDuration(seconds: number): Promise<void> {
+  const wantedSliderValue = seconds - DOUBAO_VIDEO_MIN_DURATION_SECONDS;
+  const readThumb = () => document
+    .querySelector<HTMLElement>(DOUBAO_VIDEO_PARAMS_PANEL_SELECTOR)
+    ?.querySelector<HTMLElement>("[data-slot='slider-thumb'][role='slider']") ?? null;
 
-  const wanted = clampDurationSeconds(seconds);
-  const wantedSliderValue = wanted - DOUBAO_VIDEO_MIN_DURATION_SECONDS;
-  thumb.focus();
+  if (!readThumb()) throw new Error("豆包视频时长滑块未找到。");
 
-  for (let guard = 0; guard < 32; guard += 1) {
+  // 刚切完模型时滑块可能还挂着上一个模型的量程，所以给它一点时间涨上来。
+  const sliderMax = await waitUntilTruthy(() => {
+    const max = Number(readThumb()?.getAttribute("aria-valuemax"));
+    return Number.isFinite(max) && max >= wantedSliderValue ? max : null;
+  }, 2_000);
+  if (sliderMax === null) {
+    const max = Number(readThumb()?.getAttribute("aria-valuemax"));
+    const maxSeconds = Number.isFinite(max) ? `${max + DOUBAO_VIDEO_MIN_DURATION_SECONDS}s` : "未知";
+    throw new Error(`豆包视频时长调不到 ${seconds}s，当前模型最多 ${maxSeconds}，请换支持更长时长的模型。`);
+  }
+
+  const maxSteps = DOUBAO_VIDEO_MAX_DURATION_SECONDS - DOUBAO_VIDEO_MIN_DURATION_SECONDS + 1;
+  for (let guard = 0; guard < maxSteps; guard += 1) {
+    const thumb = readThumb();
+    if (!thumb) throw new Error("豆包视频时长滑块在调节过程中消失了。");
     const current = Number(thumb.getAttribute("aria-valuenow"));
     if (!Number.isFinite(current)) throw new Error("豆包视频时长滑块没有 aria-valuenow。");
     if (current === wantedSliderValue) return;
 
     const key = current > wantedSliderValue ? "ArrowLeft" : "ArrowRight";
+    thumb.focus();
     thumb.dispatchEvent(new KeyboardEvent("keydown", { key, code: key, bubbles: true, cancelable: true }));
     thumb.dispatchEvent(new KeyboardEvent("keyup", { key, code: key, bubbles: true, cancelable: true }));
 
     const moved = await waitUntilTruthy(() => {
-      const next = Number(thumb.getAttribute("aria-valuenow"));
+      const next = Number(readThumb()?.getAttribute("aria-valuenow"));
       return Number.isFinite(next) && next !== current ? next : null;
     }, 600);
     if (moved === null) {
       const currentSeconds = current + DOUBAO_VIDEO_MIN_DURATION_SECONDS;
-      throw new Error(`豆包视频时长卡在 ${currentSeconds}s，调不到 ${wanted}s。`);
+      throw new Error(`豆包视频时长卡在 ${currentSeconds}s，调不到 ${seconds}s。`);
     }
   }
-  throw new Error(`豆包视频时长未能调到 ${wanted}s，仍是 ${readAppliedDoubaoVideoSeconds() ?? "未知"}s。`);
+  throw new Error(`豆包视频时长未能调到 ${seconds}s，仍是 ${readAppliedDoubaoVideoSeconds() ?? "未知"}s。`);
 }
 
 // 触发按钮上的「比例 · 时长」才是真正生效的参数，滑块只是面板里的临时状态。

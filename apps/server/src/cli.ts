@@ -1169,6 +1169,7 @@ Usage:
   auto-chat add <job.json> [--model "Seedream 4.5"]（模型：豆包写入 metadata.doubaoModel，Gemini 写入 metadata.geminiModel，如 "3.1 Pro"）
   auto-chat add <job.json> [--ratio 16:9]（视频尺寸：豆包写入 metadata.doubaoVideoRatio，Gemini 写入 metadata.geminiVideoRatio）
   auto-chat add <job.json> [--duration 8]（仅豆包视频模式，等价于 metadata.doubaoVideoDuration；Gemini 没有时长控件）
+  (豆包时长范围 4~15s，只有 --model "Seedance 2.5" 能到 30s，超出上限会被压到该模型的最大值)
   ("mode": "video" 时豆包与 Gemini 都会走视频生成，产物为 outputs/output-01.mp4)
   (视频模式的 "sourceImages" 会作为参考图上传，豆包与 Gemini 都支持，可多张)
   (job.json 可选 "outputDir": "<dir>"，图片/视频任务完成后会额外复制一份到该目录)

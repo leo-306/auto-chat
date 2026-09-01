@@ -9,6 +9,7 @@ import {
   isDoubaoVideoConfirmLabel,
   isDoubaoVideoParamsApplied,
   matchDoubaoVideoRatioOption,
+  maxDurationSecondsForModel,
   parseDoubaoVideoParamsTrigger,
   readDoubaoVideoDurationSeconds,
   readDoubaoVideoRatio
@@ -24,23 +25,50 @@ describe("readDoubaoVideoRatio", () => {
   });
 });
 
+describe("maxDurationSecondsForModel", () => {
+  it("Seedance 2.5 到 30s，其他模型按 15s 兜底", () => {
+    expect(maxDurationSecondsForModel("Seedance 2.5")).toBe(30);
+    expect(maxDurationSecondsForModel("  seedance   2.5 ")).toBe(30);
+    expect(maxDurationSecondsForModel("Seedance 2.0")).toBe(15);
+    expect(maxDurationSecondsForModel("Seedance 2.0 Fast")).toBe(15);
+    expect(maxDurationSecondsForModel("Seedance 2.0 Mini")).toBe(15);
+    expect(maxDurationSecondsForModel(undefined)).toBe(15);
+  });
+});
+
 describe("readDoubaoVideoDurationSeconds", () => {
-  it("接受数字与带 s 的字符串，并夹在 4~15 秒之间", () => {
+  it("接受数字与带 s 的字符串，并按模型上限裁剪", () => {
     expect(readDoubaoVideoDurationSeconds({ doubaoVideoDuration: 8 })).toBe(8);
     expect(readDoubaoVideoDurationSeconds({ doubaoVideoDuration: "10s" })).toBe(10);
     expect(readDoubaoVideoDurationSeconds({ doubaoVideoDuration: " 12 " })).toBe(12);
     expect(readDoubaoVideoDurationSeconds({ doubaoVideoDuration: 1 })).toBe(DOUBAO_VIDEO_MIN_DURATION_SECONDS);
-    expect(readDoubaoVideoDurationSeconds({ doubaoVideoDuration: 99 })).toBe(DOUBAO_VIDEO_MAX_DURATION_SECONDS);
     expect(readDoubaoVideoDurationSeconds({ doubaoVideoDuration: "abc" })).toBeUndefined();
     expect(readDoubaoVideoDurationSeconds({})).toBeUndefined();
+  });
+
+  it("没写模型或写了 2.0 家族时超过 15s 会被压到 15s", () => {
+    expect(readDoubaoVideoDurationSeconds({ doubaoVideoDuration: 30 })).toBe(15);
+    expect(readDoubaoVideoDurationSeconds({ doubaoVideoDuration: 22, doubaoModel: "Seedance 2.0 Fast" })).toBe(15);
+  });
+
+  it("Seedance 2.5 能保留 15s 以上的请求", () => {
+    expect(readDoubaoVideoDurationSeconds({ doubaoVideoDuration: 22, doubaoModel: "Seedance 2.5" })).toBe(22);
+    expect(readDoubaoVideoDurationSeconds({ doubaoVideoDuration: 99, doubaoModel: "Seedance 2.5" }))
+      .toBe(DOUBAO_VIDEO_MAX_DURATION_SECONDS);
   });
 });
 
 describe("clampDurationSeconds", () => {
-  it("四舍五入并夹在 4~15 秒之间", () => {
+  it("四舍五入，下限 4s，上限默认到控件极限 30s", () => {
     expect(clampDurationSeconds(7.4)).toBe(7);
     expect(clampDurationSeconds(1)).toBe(DOUBAO_VIDEO_MIN_DURATION_SECONDS);
     expect(clampDurationSeconds(60)).toBe(DOUBAO_VIDEO_MAX_DURATION_SECONDS);
+  });
+
+  it("传入模型上限时按它裁剪，且不会超过控件极限", () => {
+    expect(clampDurationSeconds(22, 15)).toBe(15);
+    expect(clampDurationSeconds(12, 15)).toBe(12);
+    expect(clampDurationSeconds(60, 99)).toBe(DOUBAO_VIDEO_MAX_DURATION_SECONDS);
   });
 });
 
@@ -124,9 +152,10 @@ describe("isDoubaoVideoParamsApplied", () => {
     expect(isDoubaoVideoParamsApplied("16:9 · 8s", {})).toBe(true);
   });
 
-  it("越界的期望秒数按夹紧后的值比较", () => {
-    expect(isDoubaoVideoParamsApplied("16:9 · 15s", { seconds: 99 })).toBe(true);
-    expect(isDoubaoVideoParamsApplied("16:9 · 4s", { seconds: 1 })).toBe(true);
+  it("期望秒数只四舍五入，不再自己夹紧上限", () => {
+    expect(isDoubaoVideoParamsApplied("16:9 · 8s", { seconds: 8.4 })).toBe(true);
+    expect(isDoubaoVideoParamsApplied("16:9 · 22s", { seconds: 22 })).toBe(true);
+    expect(isDoubaoVideoParamsApplied("16:9 · 15s", { seconds: 99 })).toBe(false);
   });
 
   it("读不出回显时不认为已生效", () => {

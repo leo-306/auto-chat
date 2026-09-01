@@ -12,11 +12,22 @@ export const DOUBAO_VIDEO_MODELS = [
 
 export const DOUBAO_VIDEO_RATIOS = ["自动", "3:4", "4:3", "9:16", "16:9", "1:1", "21:9"] as const;
 
-// 时长是一个 Radix slider，面板两端标着 4s 与 15s，但 15s 只是控件上限：
-// 每个模型能选到多长要看豆包自己的回弹（Seedance 2.0 Fast / Mini 只到 10s，2026-09 实测），
-// 所以这里只做请求值的兜底裁剪，真正生效的时长由 content.ts 从触发按钮回读。
+// 时长是一个 Radix slider，起点固定 4s，每格 1s（秒数 = aria-valuenow + 4），
+// 但**终点跟着模型变**：Seedance 2.5 到 30s，2.0 家族到 15s（2026-09 线上实测）。
+// 所以裁剪要带上模型；真正生效的时长仍由 content.ts 从触发按钮回读。
 export const DOUBAO_VIDEO_MIN_DURATION_SECONDS = 4;
-export const DOUBAO_VIDEO_MAX_DURATION_SECONDS = 15;
+export const DOUBAO_VIDEO_MAX_DURATION_SECONDS = 30;
+const DOUBAO_VIDEO_DEFAULT_MAX_DURATION_SECONDS = 15;
+const DOUBAO_VIDEO_MODEL_MAX_DURATION_SECONDS: Record<string, number> = {
+  "seedance 2.5": 30
+};
+
+// 模型名按 doubaoModel.ts 的口径归一化后查表，写不出来的模型按 15s 兜底。
+export function maxDurationSecondsForModel(model?: string): number {
+  const key = model?.replace(/\s+/g, " ").trim().toLowerCase();
+  if (!key) return DOUBAO_VIDEO_DEFAULT_MAX_DURATION_SECONDS;
+  return DOUBAO_VIDEO_MODEL_MAX_DURATION_SECONDS[key] ?? DOUBAO_VIDEO_DEFAULT_MAX_DURATION_SECONDS;
+}
 
 export function readDoubaoVideoRatio(metadata: Record<string, unknown>): string | undefined {
   const value = metadata.doubaoVideoRatio;
@@ -25,6 +36,7 @@ export function readDoubaoVideoRatio(metadata: Record<string, unknown>): string 
   return trimmed ? trimmed : undefined;
 }
 
+// 时长上限取决于同一份 metadata 里的模型，所以这里顺手把 doubaoModel 读出来。
 export function readDoubaoVideoDurationSeconds(metadata: Record<string, unknown>): number | undefined {
   const value = metadata.doubaoVideoDuration;
   const seconds = typeof value === "number"
@@ -32,13 +44,19 @@ export function readDoubaoVideoDurationSeconds(metadata: Record<string, unknown>
     : typeof value === "string"
       ? Number(value.trim().replace(/s$/i, ""))
       : Number.NaN;
-  return Number.isFinite(seconds) ? clampDurationSeconds(seconds) : undefined;
+  if (!Number.isFinite(seconds)) return undefined;
+  const model = typeof metadata.doubaoModel === "string" ? metadata.doubaoModel : undefined;
+  return clampDurationSeconds(seconds, maxDurationSecondsForModel(model));
 }
 
-export function clampDurationSeconds(seconds: number): number {
+export function clampDurationSeconds(
+  seconds: number,
+  maxSeconds: number = DOUBAO_VIDEO_MAX_DURATION_SECONDS
+): number {
+  const ceiling = Math.min(maxSeconds, DOUBAO_VIDEO_MAX_DURATION_SECONDS);
   const rounded = Math.round(seconds);
   if (rounded < DOUBAO_VIDEO_MIN_DURATION_SECONDS) return DOUBAO_VIDEO_MIN_DURATION_SECONDS;
-  if (rounded > DOUBAO_VIDEO_MAX_DURATION_SECONDS) return DOUBAO_VIDEO_MAX_DURATION_SECONDS;
+  if (rounded > ceiling) return ceiling;
   return rounded;
 }
 
@@ -93,6 +111,8 @@ export function isDoubaoAttachButtonLabel(label: string): boolean {
     /上传|附件|添加(图片|文件)|参考图|upload|attach|add\s+(file|image|photo)/i.test(normalized);
 }
 
+// 期望秒数由调用方按模型上限裁剪好再传进来，这里只做四舍五入，不再自己夹紧——
+// 上限跟着模型变，在这儿夹反而会把「2.5 的 22s」错判成没生效。
 export function isDoubaoVideoParamsApplied(
   triggerText: string,
   expected: { ratio?: string; seconds?: number }
@@ -100,6 +120,6 @@ export function isDoubaoVideoParamsApplied(
   const parsed = parseDoubaoVideoParamsTrigger(triggerText);
   if (!parsed) return false;
   if (expected.ratio !== undefined && normalizeRatio(parsed.ratio) !== normalizeRatio(expected.ratio)) return false;
-  if (expected.seconds !== undefined && parsed.seconds !== clampDurationSeconds(expected.seconds)) return false;
+  if (expected.seconds !== undefined && parsed.seconds !== Math.round(expected.seconds)) return false;
   return true;
 }
