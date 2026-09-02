@@ -74,9 +74,14 @@ export function shouldClickDoubaoVideoConfirm(input: {
     input.confirmClickCount < DOUBAO_VIDEO_CONFIRM_MAX_CLICKS;
 }
 
-// 豆包可能在图片没有渲染出来时先结束助手回复。对图片任务来说，
-// 已完成的非空回复不能被当作成功，避免一直等待到通用停滞超时。
-export function shouldFailCompletedDoubaoImageJob(input: {
+// 目标是图片，助手回复已经结束（isGenerating 转 false）、内容非空，却一张图都没有：
+// 这一轮不会再有产出了，继续等只能等到停滞超时（默认 5 分钟）。
+// 豆包会在图片没渲染出来时先结束回复；ChatGPT 撞上免费额度时也只回一句
+// "You've hit the Free plan limit for image generations requests." 就收尾。
+// Gemini 暂不纳入：还没有它在图片任务上这样收尾的实测样本，先不冒误杀的风险。
+const COMPLETED_IMAGE_FAILURE_PLATFORMS = new Set<JobPlatform>(["doubao", "gpt"]);
+
+export function shouldFailCompletedImageJob(input: {
   platform: JobPlatform;
   mode: Job["mode"];
   assistantExists: boolean;
@@ -84,7 +89,7 @@ export function shouldFailCompletedDoubaoImageJob(input: {
   loadedImageCount: number;
   isGenerating: boolean;
 }): boolean {
-  return input.platform === "doubao" &&
+  return COMPLETED_IMAGE_FAILURE_PLATFORMS.has(input.platform) &&
     input.mode === "image" &&
     input.assistantExists &&
     Boolean(input.assistantText.trim()) &&
@@ -97,12 +102,23 @@ export function shouldFailCompletedDoubaoImageJob(input: {
 // 线上实测会把图片确实生成成功的任务误杀，所以单独给一个长得多的等待窗口。
 export const DOUBAO_IMAGE_RENDER_GRACE_MS = 120_000;
 
-export function shouldGiveUpOnMissingDoubaoImages(input: {
+// ChatGPT 的图片是在同一条回复里边生成边渲染的，渲染中 stop 控件还在、
+// isGenerating 仍为 true，所以回复一结束就能定性，不需要豆包那么长的宽限期。
+// 留 30 秒兜住 blob src 晚一步挂上的情况——队列里后面还有几十条同样会撞额度的任务，
+// 每条多等两分钟就是几十分钟的空耗。
+export const GPT_IMAGE_RENDER_GRACE_MS = 30_000;
+
+export function imageRenderGraceMs(platform: JobPlatform): number {
+  return platform === "gpt" ? GPT_IMAGE_RENDER_GRACE_MS : DOUBAO_IMAGE_RENDER_GRACE_MS;
+}
+
+export function shouldGiveUpOnMissingImages(input: {
+  platform: JobPlatform;
   completedWithoutImagesAt: number;
   now: number;
 }): boolean {
   return input.completedWithoutImagesAt > 0 &&
-    input.now - input.completedWithoutImagesAt >= DOUBAO_IMAGE_RENDER_GRACE_MS;
+    input.now - input.completedWithoutImagesAt >= imageRenderGraceMs(input.platform);
 }
 
 // 目标是图片/视频，模型却只回了一段文字并结束回答（没有任何 loading）时，页面签名
@@ -118,8 +134,12 @@ const MEDIA_CAPACITY_PATTERN = new RegExp(
   [
     // 中文：「已经达到一次可以处理的请求上限」「今日额度已用完」
     "上限|配额|额度(?:已)?(?:用完|不足|耗尽)|超出.{0,6}限制|请求过多",
-    // 英文：reached the limit / at capacity / too many requests / out of quota
-    "reach(?:ed)?\\s+(?:the\\s+|your\\s+)?(?:limit|maximum)|at\\s+capacity|too\\s+many\\s+(?:requests|videos)|quota|rate\\s+limit"
+    // 英文：reached / hit / exceeded the limit。ChatGPT 免费额度那句是
+    // "You've hit the Free plan limit for image generations requests."，
+    // limit 前面还夹着套餐名，所以允许中间有几个词。
+    "(?:reach(?:ed)?|hit|exceed(?:ed)?)\\s+(?:the\\s+|your\\s+|a\\s+)?(?:[\\w-]+\\s+){0,3}(?:limit|maximum|cap)\\b",
+    // 英文：limit resets in 22 hours / usage limit / at capacity / too many requests / out of quota
+    "limit\\s+(?:will\\s+)?resets?\\b|usage\\s+limit|at\\s+capacity|too\\s+many\\s+(?:requests|videos)|quota|rate\\s+limit"
   ].join("|"),
   "i"
 );

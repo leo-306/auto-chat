@@ -463,6 +463,14 @@ describe("JobStore", () => {
 
     expect(retried.metadata.autoChatReloadOnly).toBeUndefined();
     expect(retried.status).toBe("queued");
+    // 重试要回到原会话里重发提示词：地址留着，同时挂上重发标记，否则 content 端会把
+    // 上一次尝试的回复当成「已经有结果了」而只监听不重发。
+    expect(retried.conversationUrl).toBe("https://chatgpt.com/c/retry-job");
+    expect(retried.metadata.autoChatResubmit).toBe(true);
+
+    const reloaded = store.reloadJob("retry_job");
+    expect(reloaded.metadata.autoChatResubmit).toBeUndefined();
+    expect(reloaded.metadata.autoChatReloadOnly).toBe(true);
     store.close();
   });
 

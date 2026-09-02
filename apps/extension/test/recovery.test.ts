@@ -192,6 +192,31 @@ describe("GPT empty assistant recovery", () => {
     })).toBe(false);
   });
 
+  it("resubmits into the same conversation on an explicit retry", () => {
+    // 重试：会话里留着上一次尝试的 user/assistant turn，仍然要重发提示词。
+    expect(shouldMonitorWithoutSubmit({
+      reloadOnly: false,
+      resubmit: true,
+      hasExistingAssistant: true,
+      isGeminiMultiImage: false
+    })).toBe(false);
+    // reload 优先：只回去看，不重发。
+    expect(shouldMonitorWithoutSubmit({
+      reloadOnly: true,
+      resubmit: true,
+      hasExistingAssistant: true,
+      isGeminiMultiImage: false
+    })).toBe(true);
+    // 恢复重启（刷新后重新接管）也不该被重发标记带成重发。
+    expect(shouldMonitorWithoutSubmit({
+      recoveryMode: "monitor_only",
+      reloadOnly: false,
+      resubmit: true,
+      hasExistingAssistant: true,
+      isGeminiMultiImage: false
+    })).toBe(true);
+  });
+
   it("retries reload-only recovery when the job user turn is missing", () => {
     expect(shouldRetryReloadWithoutJobTurn({
       reloadOnly: true,

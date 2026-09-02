@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DOUBAO_IMAGE_RENDER_GRACE_MS,
   DOUBAO_VIDEO_CONFIRM_MAX_CLICKS,
+  GPT_IMAGE_RENDER_GRACE_MS,
   GPT_IMAGE_RENDER_STALL_MIN_MS,
   GPT_IMAGE_STOP_CONFIRM_TIMEOUT_MS,
   MEDIA_BLOCK_STABLE_MS,
@@ -15,9 +16,9 @@ import {
   shouldClickDoubaoVideoConfirm,
   shouldCompleteImageJob,
   shouldCompleteVideoJob,
-  shouldFailCompletedDoubaoImageJob,
+  shouldFailCompletedImageJob,
   shouldGiveUpOnMediaBlock,
-  shouldGiveUpOnMissingDoubaoImages,
+  shouldGiveUpOnMissingImages,
   shouldRetryGptImageGenerationInPage,
   shouldResubmitEmptyGptImage,
   shouldStopGptImageGeneration
@@ -62,7 +63,7 @@ describe("monitor stall recovery", () => {
     })).toBe(false);
   });
 
-  it("fails a completed Doubao image response that has no image", () => {
+  it("fails a completed image response that has no image", () => {
     const snapshot = {
       platform: "doubao" as const,
       mode: "image" as const,
@@ -72,30 +73,54 @@ describe("monitor stall recovery", () => {
       isGenerating: false
     };
 
-    expect(shouldFailCompletedDoubaoImageJob(snapshot)).toBe(true);
-    expect(shouldFailCompletedDoubaoImageJob({ ...snapshot, platform: "gpt" })).toBe(false);
-    expect(shouldFailCompletedDoubaoImageJob({ ...snapshot, isGenerating: true })).toBe(false);
-    expect(shouldFailCompletedDoubaoImageJob({ ...snapshot, assistantText: "" })).toBe(false);
-    expect(shouldFailCompletedDoubaoImageJob({ ...snapshot, loadedImageCount: 1 })).toBe(false);
-    expect(shouldFailCompletedDoubaoImageJob({ ...snapshot, mode: "text" })).toBe(false);
+    expect(shouldFailCompletedImageJob(snapshot)).toBe(true);
+    // ChatGPT 撞上免费额度时也只回一句话就结束，同样不该等到停滞超时。
+    expect(shouldFailCompletedImageJob({
+      ...snapshot,
+      platform: "gpt",
+      assistantText: "You've hit the Free plan limit for image generations requests."
+    })).toBe(true);
+    // Gemini 会先回一句排队提示、产出晚很久才渲染，暂不纳入。
+    expect(shouldFailCompletedImageJob({ ...snapshot, platform: "gemini" })).toBe(false);
+    expect(shouldFailCompletedImageJob({ ...snapshot, isGenerating: true })).toBe(false);
+    expect(shouldFailCompletedImageJob({ ...snapshot, assistantText: "" })).toBe(false);
+    expect(shouldFailCompletedImageJob({ ...snapshot, loadedImageCount: 1 })).toBe(false);
+    expect(shouldFailCompletedImageJob({ ...snapshot, mode: "text" })).toBe(false);
   });
 
   // 豆包先结束文字回复、图片卡片晚一步渲染，短宽限期会误杀成功任务。
   it("gives Doubao a long grace period before declaring the images missing", () => {
     const completedWithoutImagesAt = 1_000_000;
+    const doubao = { platform: "doubao" as const, completedWithoutImagesAt };
 
-    expect(shouldGiveUpOnMissingDoubaoImages({ completedWithoutImagesAt, now: completedWithoutImagesAt + 6_000 })).toBe(false);
-    expect(shouldGiveUpOnMissingDoubaoImages({
-      completedWithoutImagesAt,
+    expect(shouldGiveUpOnMissingImages({ ...doubao, now: completedWithoutImagesAt + 6_000 })).toBe(false);
+    expect(shouldGiveUpOnMissingImages({
+      ...doubao,
       now: completedWithoutImagesAt + DOUBAO_IMAGE_RENDER_GRACE_MS - 1
     })).toBe(false);
-    expect(shouldGiveUpOnMissingDoubaoImages({
-      completedWithoutImagesAt,
+    expect(shouldGiveUpOnMissingImages({
+      ...doubao,
       now: completedWithoutImagesAt + DOUBAO_IMAGE_RENDER_GRACE_MS
     })).toBe(true);
     // 还没进入「回复已完成但没图」状态时不能判失败。
-    expect(shouldGiveUpOnMissingDoubaoImages({ completedWithoutImagesAt: 0, now: completedWithoutImagesAt })).toBe(false);
+    expect(shouldGiveUpOnMissingImages({ ...doubao, completedWithoutImagesAt: 0, now: completedWithoutImagesAt })).toBe(false);
     expect(DOUBAO_IMAGE_RENDER_GRACE_MS).toBeGreaterThanOrEqual(60_000);
+  });
+
+  // ChatGPT 的图片跟着同一条回复边生成边渲染，回复一结束就能定性，不必陪等两分钟。
+  it("declares GPT images missing much sooner than Doubao", () => {
+    const completedWithoutImagesAt = 1_000_000;
+    const gpt = { platform: "gpt" as const, completedWithoutImagesAt };
+
+    expect(GPT_IMAGE_RENDER_GRACE_MS).toBeLessThan(DOUBAO_IMAGE_RENDER_GRACE_MS);
+    expect(shouldGiveUpOnMissingImages({
+      ...gpt,
+      now: completedWithoutImagesAt + GPT_IMAGE_RENDER_GRACE_MS - 1
+    })).toBe(false);
+    expect(shouldGiveUpOnMissingImages({
+      ...gpt,
+      now: completedWithoutImagesAt + GPT_IMAGE_RENDER_GRACE_MS
+    })).toBe(true);
   });
 
   it("stops a GPT response only after all expected images are available", () => {
@@ -319,6 +344,10 @@ describe("media block", () => {
       .toBe("capacity");
     expect(classifyMediaBlockText("今日视频额度已用完，请明天再试。")).toBe("capacity");
     expect(classifyMediaBlockText("You have reached the limit for video generation.")).toBe("capacity");
+    // ChatGPT 免费额度的原文，limit 前面还夹着套餐名。
+    expect(classifyMediaBlockText("You've hit the Free plan limit for image generations requests. You can create more images when the limit resets in 22 hours and 35 minutes."))
+      .toBe("capacity");
+    expect(classifyMediaBlockText("You've reached your daily usage limit for image generation.")).toBe("capacity");
     // 两类话术同时出现时按可重试处理，别让人工去改一条本来没问题的 prompt。
     expect(classifyMediaBlockText("已达到请求上限，暂时无法生成视频。")).toBe("capacity");
   });

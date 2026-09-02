@@ -68,9 +68,9 @@ import {
   shouldCompleteImageJob,
   shouldCompleteVideoJob,
   shouldClickDoubaoVideoConfirm,
-  shouldFailCompletedDoubaoImageJob,
+  shouldFailCompletedImageJob,
   shouldGiveUpOnMediaBlock,
-  shouldGiveUpOnMissingDoubaoImages,
+  shouldGiveUpOnMissingImages,
   shouldRetryGptImageGenerationInPage,
   shouldResubmitEmptyGptImage,
   shouldStopGptImageGeneration
@@ -288,7 +288,8 @@ async function startJob(
     mode: job.mode,
     expectedImageCount: job.expectedImageCount,
     recoveryMode: recoveryMode ?? "initial",
-    reloadOnly: isReloadOnly(job)
+    reloadOnly: isReloadOnly(job),
+    resubmit: isResubmit(job)
   });
 
   if (isReloadOnly(job)) {
@@ -322,6 +323,7 @@ async function startJob(
   if (shouldMonitorWithoutSubmit({
     recoveryMode,
     reloadOnly: isReloadOnly(job),
+    resubmit: isResubmit(job),
     hasExistingAssistant: Boolean(existing),
     isGeminiMultiImage
   })) {
@@ -380,7 +382,11 @@ async function startJob(
     await report(job.id, "sending_prompt");
     await fillPromptAndSendGpt(
       job,
-      recoveryMode === "resubmit_after_refresh" || postRefreshPromptAction === "resubmit"
+      // 原会话里已经有这个 job 上一次的 user turn，isPromptSubmitted 会立刻返回 true，
+      // 必须改成「数 user turn 有没有变多」才能确认这一次真的发出去了。
+      recoveryMode === "resubmit_after_refresh" ||
+      postRefreshPromptAction === "resubmit" ||
+      isResubmit(job)
     );
   } else if (job.platform === "doubao") {
     // 视频模式的参考图要等切进「视频生成」之后再挂：切模式会重建输入框，
@@ -489,6 +495,11 @@ function geminiPrompts(job: Job): string[] | undefined {
 
 function isReloadOnly(job: Job): boolean {
   return job.metadata.autoChatReloadOnly === true;
+}
+
+// retryJob 挂的标记：这一趟要在原会话里把提示词重新发一遍，而不是回去干等旧回复。
+function isResubmit(job: Job): boolean {
+  return job.metadata.autoChatResubmit === true;
 }
 
 async function waitForReloadConversation(jobId: string): Promise<boolean> {
@@ -600,7 +611,7 @@ async function monitorJob(
   let retriedInPage = false;
   let gptStopRequestedAt = 0;
   let capturedGptImages: CollectedImage[] | null = null;
-  let doubaoNoImageDoneAt = 0;
+  let noImageDoneAt = 0;
   let doubaoVideoConfirmClicks = 0;
   let tracedDoubaoVideoControls = false;
   let resubmittedEmptyGptImage = hasResubmittedEmptyGptImage(job.id);
@@ -637,7 +648,7 @@ async function monitorJob(
         lastSignature = state.signature;
         lastChangedAt = Date.now();
         maybeDoneAt = 0;
-        doubaoNoImageDoneAt = 0;
+        noImageDoneAt = 0;
       }
       if (state.signature !== lastTraceSignature) {
         lastTraceSignature = state.signature;
@@ -905,7 +916,7 @@ async function monitorJob(
         return;
       }
 
-      if (shouldFailCompletedDoubaoImageJob({
+      if (shouldFailCompletedImageJob({
         platform: job.platform,
         mode: job.mode,
         assistantExists: state.assistantExists,
@@ -913,8 +924,8 @@ async function monitorJob(
         loadedImageCount: state.loadedImages.length,
         isGenerating: state.isGenerating
       })) {
-        if (!doubaoNoImageDoneAt) {
-          doubaoNoImageDoneAt = Date.now();
+        if (!noImageDoneAt) {
+          noImageDoneAt = Date.now();
           await sendProgress({
             type: "JOB_PROGRESS",
             jobId: job.id,
@@ -922,11 +933,19 @@ async function monitorJob(
             signature: state.signature
           });
         }
-        if (shouldGiveUpOnMissingDoubaoImages({ completedWithoutImagesAt: doubaoNoImageDoneAt, now: Date.now() })) {
-          const errorMessage = "豆包会话已结束，但未检测到生成图片。";
-          await traceJob(job.id, "doubao_image_missing_after_completed_response", {
+        if (shouldGiveUpOnMissingImages({
+          platform: job.platform,
+          completedWithoutImagesAt: noImageDoneAt,
+          now: Date.now()
+        })) {
+          // 把回复原文带回去：ChatGPT 撞额度、豆包吞图，都靠这段文字区分。
+          const replyText = state.assistantText.replace(/\s+/g, " ").trim().slice(0, MEDIA_BLOCK_MAX_TEXT_LENGTH);
+          const errorMessage = replyText
+            ? `回复已结束但未检测到生成图片：${replyText}`
+            : "回复已结束但未检测到生成图片。";
+          await traceJob(job.id, "image_missing_after_completed_response", {
             ...monitorSnapshot(job, state),
-            waitedMs: Date.now() - doubaoNoImageDoneAt,
+            waitedMs: Date.now() - noImageDoneAt,
             reason: errorMessage
           });
           await report(job.id, "failed_retryable", errorMessage);
@@ -1855,6 +1874,32 @@ const DOUBAO_VIDEO_PARAMS_PANEL_SELECTOR =
   "[data-slot='dropdown-menu-content'][data-creation-params-panel-id]";
 const DOUBAO_MENU_SELECTOR = "[role='menu'][data-slot='dropdown-menu-content']";
 const DOUBAO_MENU_ITEM_SELECTOR = "[role='menuitem'][data-slot='dropdown-menu-item']";
+const DOUBAO_VIDEO_SLIDER_THUMB_SELECTOR = "[data-slot='slider-thumb'][role='slider']";
+
+// 选模型紧接着就是设参数，而切模型会重建这个面板：新面板挂上时旧的空壳还在 DOM 里留一拍，
+// 两个节点都能通过 isPresentInLayout。document.querySelector 拿的是文档序第一个，正好是空壳——
+// 2026-09-02 一单就死在这儿：比例用捕获到的 panel 选中成功，时长却在空面板里找不到滑块。
+// 所以统一按「里面真有想要的东西」来挑，取最后一个（新挂上的那个），并且每次都重新取。
+function findDoubaoVideoParamsPanel(requiredChildSelector: string): HTMLElement | null {
+  const panels = presentDoubaoVideoParamsPanels().filter(panel => panel.querySelector(requiredChildSelector));
+  return panels[panels.length - 1] ?? null;
+}
+
+function presentDoubaoVideoParamsPanels(): HTMLElement[] {
+  return [...document.querySelectorAll<HTMLElement>(DOUBAO_VIDEO_PARAMS_PANEL_SELECTOR)]
+    .filter(panel => isPresentInLayout(panel));
+}
+
+// 面板认错了和面板真没这一项，报出来长得一样，所以把在场的每个面板的文字都列出来：
+// 有一个面板写着「比例 时长」而另一个是空的 → 是挑错了节点；只有一个且没有时长 → 是模型没这项。
+function describeDoubaoVideoParamsPanels(): string {
+  const total = document.querySelectorAll(DOUBAO_VIDEO_PARAMS_PANEL_SELECTOR).length;
+  const present = presentDoubaoVideoParamsPanels();
+  const summaries = present
+    .map((panel, index) => `#${index + 1}「${(panel.innerText ?? "").replace(/\s+/g, " ").trim() || "空"}」`)
+    .join("，");
+  return `面板节点 ${present.length}/${total} 个在场${summaries ? `：${summaries}` : ""}。`;
+}
 
 // 「比例 · 时长」面板：比例是一排 button，时长是一个 radix slider。
 // 触发按钮上的文字就是当前生效值（例如 "16:9 · 4s"），拿它做回读断言。
@@ -1868,11 +1913,8 @@ async function applyDoubaoVideoParams(job: Job): Promise<void> {
   if (isDoubaoVideoParamsApplied(trigger.innerText ?? "", { ratio, seconds })) return;
 
   clickDoubaoControl(trigger);
-  const panel = await waitUntilTruthy(() => {
-    const element = document.querySelector<HTMLElement>(DOUBAO_VIDEO_PARAMS_PANEL_SELECTOR);
-    return element && isPresentInLayout(element) ? element : null;
-  }, 5_000);
-  if (!panel) throw new Error("点击「比例 · 时长」后参数面板未出现。");
+  const panel = await waitUntilTruthy(() => findDoubaoVideoParamsPanel("div.grid button"), 5_000);
+  if (!panel) throw new Error(`点击「比例 · 时长」后参数面板未出现。${describeDoubaoVideoParamsPanels()}`);
 
   try {
     if (ratio) await selectDoubaoVideoRatio(panel, ratio);
@@ -1916,17 +1958,14 @@ async function selectDoubaoVideoRatio(panel: HTMLElement, ratio: string): Promis
 // 面板打开时 actionbar 会同步更新，但真正的提交结果仍由调用方回读触发按钮确认。
 async function setDoubaoVideoDuration(seconds: number): Promise<void> {
   const wantedSliderValue = seconds - DOUBAO_VIDEO_MIN_DURATION_SECONDS;
-  const readThumb = () => document
-    .querySelector<HTMLElement>(DOUBAO_VIDEO_PARAMS_PANEL_SELECTOR)
-    ?.querySelector<HTMLElement>("[data-slot='slider-thumb'][role='slider']") ?? null;
+  const readThumb = () => findDoubaoVideoParamsPanel(DOUBAO_VIDEO_SLIDER_THUMB_SELECTOR)
+    ?.querySelector<HTMLElement>(DOUBAO_VIDEO_SLIDER_THUMB_SELECTOR) ?? null;
 
   // 面板的外壳先挂上、里面的 slider 晚一拍才渲染是常事（2026-09-01 一单就死在这儿：
   // 从面板出现到抛错不到 1s，第一发查不到就判了死）。所以这里等一等，并把面板里到底
   // 有什么写进错误信息 —— 好区分「渲染慢」和「这个模型压根没有时长这一项」。
   if (!(await waitUntilTruthy(readThumb, 3_000))) {
-    const panelText = document.querySelector<HTMLElement>(DOUBAO_VIDEO_PARAMS_PANEL_SELECTOR)?.innerText ?? "";
-    const summary = panelText.replace(/\s+/g, " ").trim();
-    throw new Error(`豆包视频时长滑块未找到（面板里是「${summary || "空"}」）。`);
+    throw new Error(`豆包视频时长滑块未找到。${describeDoubaoVideoParamsPanels()}`);
   }
 
   // 刚切完模型时滑块可能还挂着上一个模型的量程，所以给它一点时间涨上来。

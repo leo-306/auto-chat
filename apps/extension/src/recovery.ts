@@ -52,6 +52,7 @@ export async function waitForEmptyAssistantRecovery(options: {
 export function shouldMonitorWithoutSubmit(input: {
   recoveryMode?: EmptyAssistantRecoveryMode;
   reloadOnly: boolean;
+  resubmit?: boolean;
   hasExistingAssistant: boolean;
   isGeminiMultiImage: boolean;
 }): boolean {
@@ -71,7 +72,13 @@ export function shouldMonitorWithoutSubmit(input: {
     input.recoveryMode === "resubmit_if_prompt_missing_after_refresh"
   ) return false;
   if (input.recoveryMode) return true;
-  return input.reloadOnly || input.hasExistingAssistant;
+  if (input.reloadOnly) return true;
+  // An explicit retry re-sends the prompt into the same conversation, so the
+  // previous attempt's assistant turn must not be mistaken for work in
+  // progress. Without this a retry would silently degrade into a reload:
+  // reopen the old conversation, watch the stale answer, fail the same way.
+  if (input.resubmit) return false;
+  return input.hasExistingAssistant;
 }
 
 export function selectPostRefreshPromptAction(input: {

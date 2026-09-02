@@ -238,7 +238,10 @@ export class JobStore {
   retryJob(id: string): Job {
     const existing = this.mustGet(id);
     const now = new Date().toISOString();
-    const metadata = { ...existing.metadata };
+    // 重试 = 回到原会话里重新发一遍提示词，所以 conversation_url 要留着（launchJob 靠它
+    // 打开原会话）。但必须同时告诉 content 端「这次要重发」：否则它在会话里看到上一次
+    // 尝试留下的回复，就走 shouldMonitorWithoutSubmit 的纯监听分支，重试静默退化成 reload。
+    const metadata: Record<string, unknown> = { ...existing.metadata, autoChatResubmit: true };
     delete metadata.autoChatReloadOnly;
     this.run(
       `update jobs set status = 'queued', tab_id = null, worker_id = null, error_message = null,
@@ -258,7 +261,9 @@ export class JobStore {
       throw new Error(`Job has no recorded conversation URL: ${id}`);
     }
     const now = new Date().toISOString();
-    const metadata = { ...existing.metadata, autoChatReloadOnly: true };
+    const metadata: Record<string, unknown> = { ...existing.metadata, autoChatReloadOnly: true };
+    // reload 是「只回去看，不重发」，和 retryJob 挂的重发标记互斥。
+    delete metadata.autoChatResubmit;
     this.run(
       `update jobs set status = 'queued', tab_id = null, conversation_url = ?, worker_id = null, error_message = null,
        metadata = ?,
