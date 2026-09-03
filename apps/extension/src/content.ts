@@ -750,7 +750,6 @@ async function monitorJob(
           mode: job.mode,
           hasConfirmButton: Boolean(confirmButton),
           loadedVideoCount: state.loadedVideos.length,
-          isGenerating: state.isGenerating,
           confirmClickCount: doubaoVideoConfirmClicks
         })) {
           doubaoVideoConfirmClicks += 1;

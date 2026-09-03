@@ -58,18 +58,21 @@ export const VIDEO_WAIT_MIN_MS = 720_000;
 // 避免按钮一直留在页面上时被无限点击。
 export const DOUBAO_VIDEO_CONFIRM_MAX_CLICKS = 3;
 
+// isGenerating 不能当门。2026-09-03 实测另一个变体：免费额度用完时豆包回
+// 「今日视频生成免费额度已用完，本次将消耗付费额度。是否继续生成?」+「确认生成 →」，
+// 而页面在等人点的整段时间里一直报 isGenerating=true（回复没收尾），
+// 于是原来的 !isGenerating 让这个按钮永远点不到，任务只能等硬超时。
+// 按钮本身就是「豆包在等一次点击」的证据，出片（loadedVideoCount>0）和点击次数上限兜底就够。
 export function shouldClickDoubaoVideoConfirm(input: {
   platform: JobPlatform;
   mode: Job["mode"];
   hasConfirmButton: boolean;
   loadedVideoCount: number;
-  isGenerating: boolean;
   confirmClickCount: number;
 }): boolean {
   return input.platform === "doubao" &&
     input.mode === "video" &&
     input.hasConfirmButton &&
-    !input.isGenerating &&
     input.loadedVideoCount === 0 &&
     input.confirmClickCount < DOUBAO_VIDEO_CONFIRM_MAX_CLICKS;
 }

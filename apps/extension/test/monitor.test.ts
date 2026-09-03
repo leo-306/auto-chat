@@ -238,14 +238,12 @@ describe("monitor stall recovery", () => {
       mode: "video" as const,
       hasConfirmButton: true,
       loadedVideoCount: 0,
-      isGenerating: false,
       confirmClickCount: 0
     };
 
     expect(shouldClickDoubaoVideoConfirm(snapshot)).toBe(true);
     expect(shouldClickDoubaoVideoConfirm({ ...snapshot, hasConfirmButton: false })).toBe(false);
-    // 已经在生成 / 已经出片，就别再点了。
-    expect(shouldClickDoubaoVideoConfirm({ ...snapshot, isGenerating: true })).toBe(false);
+    // 已经出片就别再点了。
     expect(shouldClickDoubaoVideoConfirm({ ...snapshot, loadedVideoCount: 1 })).toBe(false);
     expect(shouldClickDoubaoVideoConfirm({ ...snapshot, mode: "image" })).toBe(false);
     expect(shouldClickDoubaoVideoConfirm({ ...snapshot, platform: "gpt" })).toBe(false);
