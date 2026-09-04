@@ -10,6 +10,23 @@ export type EmptyAssistantRecoveryMode =
 
 export type PostRefreshPromptAction = "monitor" | "resubmit";
 
+// Recovery modes that reload the conversation and therefore cannot assume this
+// job's own prompt survived the reload. They must look for the JOB_ID user turn
+// on the stable page before deciding to monitor or to send the prompt again.
+const POST_REFRESH_PROMPT_CHECK_MODES: readonly EmptyAssistantRecoveryMode[] = [
+  "resubmit_if_prompt_missing_after_refresh",
+  // When ChatGPT answers with "Something went wrong while generating the
+  // response", reloading can roll the failed turn back out of the conversation
+  // entirely — no user turn, no assistant turn. Monitoring in place then
+  // watches a page this job was never submitted to, and the job sits in
+  // waiting_generation until the hard timeout.
+  "retry_after_refresh"
+];
+
+export function needsPostRefreshPromptCheck(recoveryMode?: EmptyAssistantRecoveryMode): boolean {
+  return recoveryMode !== undefined && POST_REFRESH_PROMPT_CHECK_MODES.includes(recoveryMode);
+}
+
 export type EmptyAssistantSnapshot = {
   assistantExists: boolean;
   assistantText: string;
@@ -67,10 +84,11 @@ export function shouldMonitorWithoutSubmit(input: {
   // An empty GPT image response must refresh the conversation first, then
   // submit exactly once from the stable post-refresh page. The stale empty
   // assistant turn would otherwise make this look like monitor-only work.
-  if (
-    input.recoveryMode === "resubmit_after_refresh" ||
-    input.recoveryMode === "resubmit_if_prompt_missing_after_refresh"
-  ) return false;
+  if (input.recoveryMode === "resubmit_after_refresh") return false;
+  // Modes that reloaded the page must first check whether this job's own user
+  // turn is still there (see selectPostRefreshPromptAction) instead of blindly
+  // monitoring a conversation the prompt may have been rolled back out of.
+  if (needsPostRefreshPromptCheck(input.recoveryMode)) return false;
   if (input.recoveryMode) return true;
   if (input.reloadOnly) return true;
   // An explicit retry re-sends the prompt into the same conversation, so the
@@ -85,7 +103,7 @@ export function selectPostRefreshPromptAction(input: {
   recoveryMode?: EmptyAssistantRecoveryMode;
   hasJobUserTurn: boolean;
 }): PostRefreshPromptAction | null {
-  if (input.recoveryMode !== "resubmit_if_prompt_missing_after_refresh") return null;
+  if (!needsPostRefreshPromptCheck(input.recoveryMode)) return null;
   return input.hasJobUserTurn ? "monitor" : "resubmit";
 }
 

@@ -76,6 +76,7 @@ import {
   shouldStopGptImageGeneration
 } from "./monitor.js";
 import {
+  needsPostRefreshPromptCheck,
   selectPostRefreshPromptAction,
   shouldCheckEmptyAssistantRecovery,
   shouldMonitorWithoutSubmit,
@@ -86,6 +87,7 @@ import type { EmptyAssistantRecoveryMode } from "./recovery.js";
 import { waitForStableReadiness } from "./readiness.js";
 import { submitPromptWithFallback } from "./submit.js";
 import type {
+  ContentScriptPingMessage,
   DebugInspectMessage,
   DebugInspectResult,
   GptExistingConversationRedirectCheckMessage,
@@ -246,7 +248,11 @@ function platformLabel(): string {
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  const typed = message as StartJobMessage | DebugInspectMessage | GptExistingConversationRedirectCheckMessage;
+  const typed = message as StartJobMessage | DebugInspectMessage | GptExistingConversationRedirectCheckMessage | ContentScriptPingMessage;
+  if (typed.type === "PING_CONTENT_SCRIPT") {
+    sendResponse({ ok: true });
+    return false;
+  }
   if (typed.type === "START_JOB") {
     const start = typed;
     void startJob(start.job, start.config, start.recoveryMode)
@@ -305,14 +311,14 @@ async function startJob(
   }
   const postRefreshPromptAction = selectPostRefreshPromptAction({
     recoveryMode,
-    hasJobUserTurn: recoveryMode === "resubmit_if_prompt_missing_after_refresh"
+    hasJobUserTurn: needsPostRefreshPromptCheck(recoveryMode)
       ? await waitForReloadConversation(job.id)
       : false
   });
   if (postRefreshPromptAction === "monitor") {
     await traceJob(job.id, "post_refresh_prompt_found", { recoveryMode });
     await report(job.id, "waiting_generation");
-    void monitorJob(job, nextConfig, controller.signal);
+    void monitorJob(job, nextConfig, controller.signal, recoveryMode === "retry_after_refresh");
     return;
   }
   if (postRefreshPromptAction === "resubmit") {

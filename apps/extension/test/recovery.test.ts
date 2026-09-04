@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  needsPostRefreshPromptCheck,
   selectEmptyAssistantRecovery,
   selectPostRefreshPromptAction,
   shouldCheckEmptyAssistantRecovery,
@@ -120,13 +121,32 @@ describe("GPT empty assistant recovery", () => {
     })).toBe(true);
   });
 
-  it("monitors without submitting after a GPT error refresh", () => {
+  it("does not blindly monitor after a GPT error refresh, because the reload can drop the failed turn", () => {
     expect(shouldMonitorWithoutSubmit({
       recoveryMode: "retry_after_refresh",
       reloadOnly: false,
       hasExistingAssistant: false,
       isGeminiMultiImage: false
-    })).toBe(true);
+    })).toBe(false);
+  });
+
+  it("resubmits after a GPT error refresh only when the job's user turn is gone", () => {
+    expect(selectPostRefreshPromptAction({
+      recoveryMode: "retry_after_refresh",
+      hasJobUserTurn: true
+    })).toBe("monitor");
+    expect(selectPostRefreshPromptAction({
+      recoveryMode: "retry_after_refresh",
+      hasJobUserTurn: false
+    })).toBe("resubmit");
+  });
+
+  it("keeps monitor_only recovery on the monitor-in-place path", () => {
+    expect(needsPostRefreshPromptCheck("monitor_only")).toBe(false);
+    expect(selectPostRefreshPromptAction({
+      recoveryMode: "monitor_only",
+      hasJobUserTurn: false
+    })).toBeNull();
   });
 
   it("submits once after refreshing an empty GPT image response", () => {

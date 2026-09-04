@@ -85,6 +85,16 @@ export type GptExistingConversationRedirectCheckMessage = {
   type: "CHECK_GPT_EXISTING_CONVERSATION_REDIRECT";
 };
 
+// Asked of a tab that is about to be reused for a follow-up job. A reused tab
+// keeps whatever content script it was loaded with, and that script is orphaned
+// by an extension reload (or update) — it can no longer answer any message, so
+// START_JOB would time out and the job would die with "Could not contact
+// content script". An unanswered ping is the signal to reload the tab and get a
+// live script injected instead.
+export type ContentScriptPingMessage = {
+  type: "PING_CONTENT_SCRIPT";
+};
+
 export type GptExistingConversationRedirectCheckResult = {
   hasUnavailableContent: boolean;
 };

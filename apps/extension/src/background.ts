@@ -20,6 +20,7 @@ import {
 } from "./doubaoVideoWatermark.js";
 import type { DoubaoResolvedVideo } from "./doubaoVideoWatermark.js";
 import type {
+  ContentScriptPingMessage,
   DebugInspectMessage,
   DebugInspectResult,
   ExpectNavigationMessage,
@@ -543,6 +544,16 @@ async function launchJob(job: Job): Promise<void> {
       conversationUrl = parentTab.url && isConversationUrl(job.platform, parentTab.url)
         ? normalizedConversationUrl(job.platform, parentTab.url)
         : await findRecordedConversationUrl(parentJob);
+      // The parent's tab keeps the content script it was loaded with. An
+      // extension reload between the two jobs orphans that script: it stops
+      // answering, START_JOB times out, and the follow-up job dies with
+      // "Could not contact content script" while the page just sits there.
+      // Reloading the tab re-injects a live script and keeps the conversation.
+      if (!await hasLiveContentScript(tabId)) {
+        await writeTrace(job.id, "background", "parent_tab_content_script_dead", { tabId });
+        await chrome.tabs.reload(tabId);
+        needsLoad = true;
+      }
     } else {
       conversationUrl = await findRecordedConversationUrl(parentJob);
       const url = conversationUrl ?? urlForPlatform(job.platform);
@@ -656,6 +667,16 @@ async function hasGptExistingConversationUnavailableContent(tabId: number): Prom
     };
     const result = await chrome.tabs.sendMessage(tabId, message) as GptExistingConversationRedirectCheckResult;
     return result.hasUnavailableContent;
+  } catch {
+    return false;
+  }
+}
+
+async function hasLiveContentScript(tabId: number): Promise<boolean> {
+  try {
+    const message: ContentScriptPingMessage = { type: "PING_CONTENT_SCRIPT" };
+    const result = await chrome.tabs.sendMessage(tabId, message) as { ok?: boolean } | undefined;
+    return result?.ok === true;
   } catch {
     return false;
   }
